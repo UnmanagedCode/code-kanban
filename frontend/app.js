@@ -27,6 +27,10 @@ const state = {
   epics: [],
 };
 
+// 2-char rollup-pill labels. s[0] collides (triage and todo both render "t"),
+// so each state gets a distinct short label. Keys track STATES in src/paths.js.
+const ROLLUP_LABEL = { triage: 'tr', backlog: 'bk', todo: 'td', 'in-progress': 'ip', done: 'dn' };
+
 // ---- api ------------------------------------------------------------------
 
 async function api(path, opts = {}) {
@@ -198,7 +202,7 @@ function renderEpics() {
 function renderRollup(rollup) {
   return el('div', { class: 'rollup' }, state.meta.states.map((s) => {
     const n = rollup?.[s] ?? 0;
-    return el('span', { class: 'rollup-pill', dataset: { zero: String(n === 0) } }, `${s[0]}: `, el('b', {}, String(n)));
+    return el('span', { class: 'rollup-pill', dataset: { zero: String(n === 0) } }, `${ROLLUP_LABEL[s] ?? s}: `, el('b', {}, String(n)));
   }));
 }
 

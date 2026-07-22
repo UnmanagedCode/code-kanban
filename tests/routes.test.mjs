@@ -176,3 +176,18 @@ test('unknown epic on file_task -> 200 EPIC_UNKNOWN', async () => {
     assert.equal(body.code, 'EPIC_UNKNOWN');
   });
 });
+
+test('unexpected throw in a board fn -> 500 {error}, not a hung response', async () => {
+  await withServer(async ({ json }) => {
+    // Force the project fetcher (and thus validateProject inside board.js) to
+    // throw — an unexpected exception, not a domain refusal. Express 4 does NOT
+    // forward a rejected async handler to the error middleware, so without the
+    // route wrapper this would leave the response unwritten and the request
+    // would hang (the json() helper would await res.json() until the test
+    // timeout). The wrapper turns the throw into 500 {error}.
+    _setProjectFetcher(async () => { throw new Error('boom'); });
+    const { status, body } = await json('/api/board/demo/tasks');
+    assert.equal(status, 500);
+    assert.equal(body.error, 'boom');
+  });
+});

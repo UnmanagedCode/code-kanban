@@ -21,6 +21,21 @@ import { listProjects } from './projects.js';
 // passing it on every move only affects the move's log line (not a stuck owner).
 const GUI_ACTOR = 'gui';
 
+// Wrap an async board-route handler: the wrapped fn RETURNS the response body
+// (a {ok} envelope), and the wrapper sends it. board.js never throws for a
+// domain outcome (a refusal is a plain {ok:false} return), but an UNEXPECTED
+// throw (a corrupt task file failing JSON.parse in the store, a blown project
+// fetch) must still produce a written response. Express 4 does NOT forward a
+// rejected async handler to the error middleware — without this catch the
+// response would hang — so we turn any throw into 500 {error} here.
+const wrap = (fn) => async (req, res) => {
+  try {
+    res.json(await fn(req, res));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+};
+
 export function buildRoutes() {
   const r = express.Router();
   r.use(express.json({ limit: '256kb' }));
@@ -29,7 +44,7 @@ export function buildRoutes() {
 
   // MCP bridge for code-conductor: {tool, arguments, caller} in, {result}|{error}
   // out. Tool-level outcomes (unknown tool, refusals) are normal results, not
-  // transport failures — see docs/protocol.md.
+  // transport failures — see docs/protocol.md. mcp.handle catches its own throws.
   r.post('/mcp', async (req, res) => {
     const { status, body } = await mcp.handle(req.body);
     res.status(status).json(body);
@@ -38,7 +53,8 @@ export function buildRoutes() {
   // ---- web GUI routes ----
 
   // Project catalog for the selector. Same source validateProject uses; not
-  // board state, so it does not go through board.js.
+  // board state, so it does not go through board.js. A failed catalog fetch is a
+  // 502 (upstream/unavailable), distinct from a board-logic 500.
   r.get('/projects', async (req, res) => {
     try {
       res.json({ projects: await listProjects() });
@@ -56,59 +72,51 @@ export function buildRoutes() {
 
   // List a project's cards (optionally filtered). One call returns all; the GUI
   // groups by state client-side.
-  r.get('/board/:project/tasks', async (req, res) => {
+  r.get('/board/:project/tasks', wrap((req) => {
     const { state, epic } = req.query;
-    res.json(await board.listTasks({ project: req.params.project, state, epic }));
-  });
+    return board.listTasks({ project: req.params.project, state, epic });
+  }));
 
   // Full task incl. goal, acceptance, logbook (read-only in the GUI).
-  r.get('/board/:project/tasks/:id', async (req, res) => {
-    res.json(await board.readTask({ project: req.params.project, id: req.params.id }));
-  });
+  r.get('/board/:project/tasks/:id', wrap((req) =>
+    board.readTask({ project: req.params.project, id: req.params.id })));
 
   // File a new task into triage. acceptance is string[] -> checkboxes.
-  r.post('/board/:project/tasks', async (req, res) => {
+  r.post('/board/:project/tasks', wrap((req) => {
     const { title, goal, acceptance, epic, depends_on } = req.body ?? {};
-    res.json(await board.fileTask({
+    return board.fileTask({
       project: req.params.project, title, goal, acceptance, epic, depends_on,
       sessionId: GUI_ACTOR,
-    }));
-  });
+    });
+  }));
 
   // Patch updatable fields (title, goal, epic, priority, depends_on). The body
   // IS the fields object; acceptance is not updatable (read-only in the GUI).
-  r.patch('/board/:project/tasks/:id', async (req, res) => {
-    res.json(await board.updateTask({
-      project: req.params.project, id: req.params.id, fields: req.body ?? {},
-    }));
-  });
+  r.patch('/board/:project/tasks/:id', wrap((req) =>
+    board.updateTask({ project: req.params.project, id: req.params.id, fields: req.body ?? {} })));
 
   // Move a card between columns. board.js enforces ALLOWED_TRANSITIONS and
   // returns INVALID_STATE on an illegal move; the GUI surfaces that reason.
-  r.post('/board/:project/tasks/:id/move', async (req, res) => {
+  r.post('/board/:project/tasks/:id/move', wrap((req) => {
     const { to, owner } = req.body ?? {};
-    res.json(await board.moveTask({
+    return board.moveTask({
       project: req.params.project, id: req.params.id, to,
       owner: owner || GUI_ACTOR,
-    }));
-  });
+    });
+  }));
 
   // Epics with per-state rollups.
-  r.get('/board/:project/epics', async (req, res) => {
-    res.json(await board.listEpics({ project: req.params.project }));
-  });
+  r.get('/board/:project/epics', wrap((req) =>
+    board.listEpics({ project: req.params.project })));
 
-  r.get('/board/:project/epics/:slug', async (req, res) => {
-    res.json(await board.readEpic({ project: req.params.project, slug: req.params.slug }));
-  });
+  r.get('/board/:project/epics/:slug', wrap((req) =>
+    board.readEpic({ project: req.params.project, slug: req.params.slug })));
 
   // Create or refresh an epic (upsert: preserves `created`, refreshes title/goal).
-  r.post('/board/:project/epics', async (req, res) => {
+  r.post('/board/:project/epics', wrap((req) => {
     const { slug, title, goal } = req.body ?? {};
-    res.json(await board.createEpic({
-      project: req.params.project, slug, title, goal,
-    }));
-  });
+    return board.createEpic({ project: req.params.project, slug, title, goal });
+  }));
 
   // Malformed JSON body -> 400 {error}, not Express's default HTML page.
   r.use((err, req, res, next) => {

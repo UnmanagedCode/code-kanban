@@ -32,18 +32,39 @@ async function seed(base, projectsRoot) {
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   }).then((r) => r.json());
 
-  await api(`/api/board/${PROJECT}/epics`, { method: 'POST', body: { slug: 'auth', title: 'Auth flow', goal: 'Sign-in + sessions' } });
-  await api(`/api/board/${PROJECT}/epics`, { method: 'POST', body: { slug: 'search', title: 'Search', goal: 'Full-text search' } });
+  // Every seed step must succeed. A silently-refused step (illegal transition,
+  // a dropped field) is exactly what left the In Progress column empty and the
+  // priority/owner badges unrendered before — so fail loudly on any {ok:false}.
+  const call = async (p, opts, label) => {
+    const b = await api(p, opts);
+    if (!b || b.ok === false) {
+      throw new Error(`seed step "${label}" refused: ${JSON.stringify(b)}`);
+    }
+    return b;
+  };
 
-  const a = await api(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Design login screen', goal: 'Email + password form', acceptance: ['Matches design spec', 'Accessible labels'], epic: 'auth', priority: 2 } });
-  const b = await api(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Hash passwords with argon2', goal: 'No plaintext at rest', epic: 'auth', priority: 3 } });
-  const c = await api(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Build search index', goal: 'Inverted index over docs', epic: 'search', priority: 1 } });
-  const d = await api(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Triage: spike caching layer', goal: 'Decide redis vs in-memory' } });
+  await call(`/api/board/${PROJECT}/epics`, { method: 'POST', body: { slug: 'auth', title: 'Auth flow', goal: 'Sign-in + sessions' } }, 'epic auth');
+  await call(`/api/board/${PROJECT}/epics`, { method: 'POST', body: { slug: 'search', title: 'Search', goal: 'Full-text search' } }, 'epic search');
 
-  // Spread cards across columns via legal transitions.
-  await api(`/api/board/${PROJECT}/tasks/${a.id}/move`, { method: 'POST', body: { to: 'todo' } });
-  await api(`/api/board/${PROJECT}/tasks/${b.id}/move`, { method: 'POST', body: { to: 'in-progress' } });
-  await api(`/api/board/${PROJECT}/tasks/${c.id}/move`, { method: 'POST', body: { to: 'backlog' } });
+  // fileTask does NOT accept priority (it is 0 at filing by design); set it via
+  // updateTask below so the priority badge renders.
+  const a = await call(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Design login screen', goal: 'Email + password form', acceptance: ['Matches design spec', 'Accessible labels'], epic: 'auth' } }, 'file a');
+  const b = await call(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Hash passwords with argon2', goal: 'No plaintext at rest', epic: 'auth' } }, 'file b');
+  const c = await call(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Build search index', goal: 'Inverted index over docs', epic: 'search' } }, 'file c');
+  const d = await call(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Triage: spike caching layer', goal: 'Decide redis vs in-memory' } }, 'file d');
+
+  await call(`/api/board/${PROJECT}/tasks/${a.id}`, { method: 'PATCH', body: { priority: 2 } }, 'priority a');
+  await call(`/api/board/${PROJECT}/tasks/${b.id}`, { method: 'PATCH', body: { priority: 3 } }, 'priority b');
+  await call(`/api/board/${PROJECT}/tasks/${c.id}`, { method: 'PATCH', body: { priority: 1 } }, 'priority c');
+
+  // Spread cards across columns via LEGAL transitions. b reaches in-progress
+  // through triage→todo→in-progress (NOT triage→in-progress, which is illegal),
+  // so the In Progress column is populated and b carries an owner badge (owner
+  // is set only on entering in-progress). a→todo, c→backlog, d stays in triage.
+  await call(`/api/board/${PROJECT}/tasks/${a.id}/move`, { method: 'POST', body: { to: 'todo' } }, 'move a → todo');
+  await call(`/api/board/${PROJECT}/tasks/${b.id}/move`, { method: 'POST', body: { to: 'todo' } }, 'move b → todo');
+  await call(`/api/board/${PROJECT}/tasks/${b.id}/move`, { method: 'POST', body: { to: 'in-progress' } }, 'move b → in-progress');
+  await call(`/api/board/${PROJECT}/tasks/${c.id}/move`, { method: 'POST', body: { to: 'backlog' } }, 'move c → backlog');
   return { a, b, c, d };
 }
 
