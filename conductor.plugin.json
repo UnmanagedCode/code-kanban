@@ -9,7 +9,7 @@
   },
   "frontend": {
     "path": "/",
-    "navLabel": "Board"
+    "navLabel": "Code Kanban"
   },
   "mcp": {
     "endpoint": "/api/mcp",
