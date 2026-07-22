@@ -3,6 +3,22 @@
   "name": "Code Kanban",
   "version": "0.1.0",
   "pluginApi": 1,
+  "conventions": [
+    {
+      "slug": "board",
+      "name": "Kanban board",
+      "description": "Drive the conductor's private kanban board: when to file work, how card state maps to the canonical workflow, and how to read {ok:false} refusals.",
+      "file": "conventions/board.md",
+      "scope": "conductor"
+    },
+    {
+      "slug": "tracked",
+      "name": "Tracked on the conductor's board",
+      "description": "For a boarded project's workers: proactively file substantive discoveries and log progress, leaving epic and conductor-only moves to the conductor.",
+      "file": "conventions/tracked.md",
+      "scope": "project"
+    }
+  ],
   "backend": {
     "start": "npm start",
     "healthPath": "/api/health"
