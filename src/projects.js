@@ -48,3 +48,10 @@ export async function validateProject(project) {
   const names = await fetchProjectsImpl();
   return names.includes(project);
 }
+
+// The live project catalog for the web GUI's project selector. Same source
+// validateProject uses (the swappable fetcher) — the catalog is a host concern,
+// not board state, so it does not go through board.js / the per-project mutex.
+export async function listProjects() {
+  return fetchProjectsImpl();
+}

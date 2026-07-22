@@ -15,3 +15,4 @@ Durable, hard-to-re-derive knowledge for code-kanban. Read this before planning,
 ## Architecture / decisions
 - [architecture/service-layer-seam.md](architecture/service-layer-seam.md) — `board.js` is the single writer + GUI seam; why same-process.
 - [architecture/file-store-layout.md](architecture/file-store-layout.md) — store layout, id sequence, and the **no-git-writes** decision.
+- [architecture/gui-seam-contract.md](architecture/gui-seam-contract.md) — the web GUI's route→`board.js` map, envelope pass-through, `GUI_ACTOR`, read-only logbook/acceptance, the `meta` route.
