@@ -28,6 +28,15 @@ test('mcp block shape: endpoint + non-empty tools', () => {
   assert.ok(manifest.backend?.start);
 });
 
+// Mirrors code-conductor/src/plugins/manifest.js validateFrontend: path must
+// start with '/', navLabel must be a non-empty string.
+test('frontend block shape: path + navLabel', () => {
+  const f = manifest.frontend;
+  assert.ok(f && typeof f === 'object', 'frontend block present');
+  assert.ok(typeof f.path === 'string' && f.path.startsWith('/'), 'frontend.path starts with /');
+  assert.ok(typeof f.navLabel === 'string' && f.navLabel.trim() !== '', 'frontend.navLabel non-empty');
+});
+
 test('every tool inputSchema obeys the flat-schema subset', () => {
   for (const tool of manifest.mcp.tools) {
     assert.ok(tool.name && tool.description && tool.inputSchema, `tool ${tool.name} well-formed`);

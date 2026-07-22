@@ -13,6 +13,8 @@ team surface. Same extension pattern as the sibling plugins `code-hub` and `code
   `append_log`) that never handle a task id — `append_log` finds the card owned by the calling
   session server-side.
 - **Epics:** project-scoped, first-class, with per-state rollups computed on read.
+- **Web GUI:** a local zero-build board UI is served at `/` (manifest `frontend.path`), in-process
+  over the same `board.js` service layer.
 
 See [docs/features.md](docs/features.md) for the full tool table.
 
@@ -62,8 +64,8 @@ spawns `npm start` and forwards MCP calls to `/api/mcp`.
 
 ## Known limitations
 
-- The web GUI is **not built yet** (secondary, separate worker); the manifest omits `frontend`
-  until it exists. `board.js` is the ready seam.
+- The web GUI is served at the plugin root (`/`); the host-mounted / sub-path serving case is
+  reasoned but not harness-verified (see `docs/architecture.md`).
 - Single-writer design assumes the GUI runs **in this process**; a cross-process GUI would need
   an HTTP board API first (see `.wiki/architecture/service-layer-seam.md`).
 - No git writes to `.conduct` by design — board snapshotting is the conductor's job.

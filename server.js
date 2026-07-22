@@ -4,9 +4,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildRoutes } from './src/routes.js';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const frontendDir = path.join(__dirname, 'frontend');
+
 export function createServer() {
   const app = express();
+  // API first so /api/* is never shadowed by the static frontend.
   app.use('/api', buildRoutes());
+  // Serve the web GUI (zero-build vanilla ESM) at the manifest's frontend.path
+  // ("/"). express.static serves index.html for the directory root.
+  app.use(express.static(frontendDir));
   return http.createServer(app);
 }
 

@@ -21,7 +21,9 @@ function nowIso() { return new Date().toISOString(); }
 // Legal state transitions. The forward path is the intended lifecycle; the extra
 // entries are corrective moves the conductor (the sole trusted mutator) may need.
 // triage is an inbox: its only exits are backlog OR todo (both first-class).
-const ALLOWED_TRANSITIONS = new Set([
+// Exported read-only so the in-process web GUI can render legal move targets
+// from the single source of truth (no logic change — see docs/architecture.md).
+export const ALLOWED_TRANSITIONS = new Set([
   'triage>backlog', 'triage>todo',   // intake -> queue (both first-class)
   'backlog>todo',                    // promotion
   'todo>in-progress',                // pick up

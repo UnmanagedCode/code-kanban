@@ -7,6 +7,10 @@
     "start": "npm start",
     "healthPath": "/api/health"
   },
+  "frontend": {
+    "path": "/",
+    "navLabel": "Board"
+  },
   "mcp": {
     "endpoint": "/api/mcp",
     "tools": [

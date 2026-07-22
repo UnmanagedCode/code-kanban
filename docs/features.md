@@ -42,6 +42,22 @@ Every tool takes a required `project`, validated against the live project list.
 
 ## Web GUI
 
-A local web app to view + manage the board is planned as a **secondary** surface, built
-separately. It runs inside this plugin's process and consumes the same `board.js` service
-layer — see `docs/architecture.md` and `.wiki/architecture/service-layer-seam.md`.
+A local web app to view + manage the board is served at `/` (manifest `frontend.path`). It is a
+**secondary** surface: zero-build vanilla ESM (`frontend/`), served in-process by `express.static`
+so it shares the same `board.js` service layer and per-project mutex as the MCP tools — one writer.
+
+- **Project selector** — picks from the live project catalog (`GET /api/projects`); auto-selects
+  the first project on load.
+- **Board** — five columns rendered from `STATES`; cards show id, title, epic/priority/owner
+  badges. A card's legal move targets come from `GET /api/board/meta` (the single source
+  `ALLOWED_TRANSITIONS`), so the GUI never offers an illegal move.
+- **Card detail** — Goal, Acceptance checklist (read-only), and the append-only Logbook; a
+  Move control and an Edit form (title/goal/epic/priority/depends_on). Acceptance is not
+  editable in the GUI.
+- **Epics** — rollup table; "open" reads one epic (+ its tasks). New-epic form upserts by slug.
+- **New task** — files into `triage` (acceptance is one line per line → checkboxes).
+
+Domain refusals (illegal move, unknown project/epic) surface as a status-line message, not a
+transport error — see `docs/protocol.md`. GUI mutations are attributed to `gui` in the logbook
+(the GUI has no human identity); `board.js` clears `owner` on any non-`in-progress` move, so a GUI
+move never leaves a stuck owner.
