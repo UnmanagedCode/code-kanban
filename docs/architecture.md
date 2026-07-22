@@ -6,8 +6,9 @@ An out-of-process HTTP server the conductor spawns via `npm start` (`server.js`)
 the injected `PORT`. It reaches the host only through injected env vars and the per-call MCP
 envelope — it **never imports host modules** (they run in a different process).
 
-Injected env: `PORT`, `PROJECTS_ROOT`, `CONDUCTOR_URL`, `CONDUCTOR_PROJECT_DIR`,
-`CONDUCTOR_PLUGIN_ID`.
+Env this plugin reads: `PORT`, `HOST` (`server.js`), `PROJECTS_ROOT` (`src/paths.js`),
+`CONDUCTOR_URL` (project validation, `src/projects.js`). The host also injects
+`CONDUCTOR_PROJECT_DIR` and `CONDUCTOR_PLUGIN_ID`, which this plugin does not currently use.
 
 ## Components
 

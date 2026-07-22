@@ -4,21 +4,10 @@
 import { run } from 'node:test';
 import { spec } from 'node:test/reporters';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-function resolveConcurrency() {
-  const env = process.env.TEST_CONCURRENCY;
-  if (env !== undefined) {
-    const n = Number(env);
-    if (Number.isInteger(n) && n >= 1) return n;
-  }
-  const cores = os.availableParallelism ? os.availableParallelism() : os.cpus().length;
-  return Math.max(1, Math.min(4, Math.floor(cores / 2)));
-}
 
 async function discover() {
   const want = process.argv.slice(2);
@@ -38,7 +27,13 @@ if (files.length === 0) {
   process.exit(1);
 }
 
-const stream = run({ files, concurrency: resolveConcurrency(), timeout: 60_000 });
+// Serial (concurrency: 1). The board layer reads process-global PROJECTS_ROOT
+// and a module-global project fetcher (both set per test), matching how it runs
+// in production; running files/tests concurrently would let those globals race.
+// Node runs top-level tests within a file sequentially, so serial file
+// execution means no two tests ever touch the shared globals at once — each
+// resets them at its start, so any order passes. The suite is fast (<1s).
+const stream = run({ files, concurrency: 1, timeout: 60_000 });
 let failed = 0;
 stream.on('test:fail', (data) => {
   if (data.details?.type === 'suite') return;

@@ -116,6 +116,27 @@ test('epics: create, file under, rollup counts on read', async () => {
   } finally { await cleanup(root); }
 });
 
+test('read_task logTail keeps only the last N entries (0/1/2)', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    // Build a card with 4 logbook entries: filed + 3 moves.
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w' });
+    await board.moveTask({ project: 'demo', id, to: 'done' });
+    const full = (await board.readTask({ project: 'demo', id })).task.logbook;
+    assert.equal(full.length, 4);
+
+    // logTail:0 must yield zero entries (the slice(-0) trap).
+    assert.equal((await board.readTask({ project: 'demo', id, logTail: 0 })).task.logbook.length, 0);
+    const one = (await board.readTask({ project: 'demo', id, logTail: 1 })).task.logbook;
+    assert.deepEqual(one, full.slice(-1));
+    const two = (await board.readTask({ project: 'demo', id, logTail: 2 })).task.logbook;
+    assert.deepEqual(two, full.slice(-2));
+  } finally { await cleanup(root); }
+});
+
 test('update_task applies whitelisted fields and ignores others', async () => {
   const root = await freshRoot();
   useProjects(['demo']);

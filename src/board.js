@@ -124,7 +124,9 @@ export async function readTask({ project, id, logTail } = {}) {
   const task = store.readTaskById(project, id);
   if (!task) return fail('TASK_UNKNOWN', `unknown task: ${id}`);
   if (Number.isFinite(logTail) && logTail >= 0) {
-    task.logbook = task.logbook.slice(-logTail);
+    // slice(-0) === slice(0) returns everything, so compute the start index
+    // explicitly — logTail:0 must yield 0 entries (matches readLog limit:0).
+    task.logbook = task.logbook.slice(Math.max(0, task.logbook.length - logTail));
   }
   delete task._mtimeMs;
   return { ok: true, task };
