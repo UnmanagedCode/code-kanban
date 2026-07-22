@@ -1,0 +1,18 @@
+{
+  "name": "code-kanban",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Conductor's private, file-backed task board — a code-conductor MCP plugin",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node tests/run.mjs"
+  },
+  "dependencies": {
+    "express": "^4.22.2"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

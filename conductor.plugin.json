@@ -1,0 +1,146 @@
+{
+  "id": "code-kanban",
+  "name": "Code Kanban",
+  "version": "0.1.0",
+  "pluginApi": 1,
+  "backend": {
+    "start": "npm start",
+    "healthPath": "/api/health"
+  },
+  "mcp": {
+    "endpoint": "/api/mcp",
+    "tools": [
+      {
+        "name": "file_task",
+        "description": "File a new task into the board's triage inbox for a project. Worker + conductor. Returns the server-assigned id.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "project": { "type": "string", "minLength": 1, "description": "Target project (must be a live project)." },
+            "title": { "type": "string", "minLength": 1, "description": "Short task title." },
+            "goal": { "type": "string", "description": "What + why." },
+            "acceptance": { "type": "array", "items": { "type": "string" }, "description": "Acceptance criteria; each becomes an unchecked checkbox." },
+            "epic": { "type": "string", "description": "Epic slug to file under; the epic must already exist (create_epic)." },
+            "depends_on": { "type": "array", "items": { "type": "string" }, "description": "Task ids this task depends on." }
+          },
+          "required": ["project", "title"]
+        }
+      },
+      {
+        "name": "append_log",
+        "description": "Append a logbook entry to the in-progress card owned by the calling session (resolved server-side; workers never handle a task id). Worker + conductor.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "project": { "type": "string", "minLength": 1 },
+            "entry": { "type": "string", "minLength": 1, "description": "Log line text; the server stamps time + session attribution." }
+          },
+          "required": ["project", "entry"]
+        }
+      },
+      {
+        "name": "list_tasks",
+        "description": "List tasks on a project's board, optionally filtered by state and/or epic. Conductor.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "project": { "type": "string", "minLength": 1 },
+            "state": { "type": "string", "enum": ["triage", "backlog", "todo", "in-progress", "done"] },
+            "epic": { "type": "string" }
+          },
+          "required": ["project"]
+        }
+      },
+      {
+        "name": "read_task",
+        "description": "Read a single task including its logbook (optionally only the last logTail entries). Conductor.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "project": { "type": "string", "minLength": 1 },
+            "id": { "type": "string", "minLength": 1 },
+            "logTail": { "type": "integer", "minimum": 0, "description": "Keep only the last N logbook entries." }
+          },
+          "required": ["project", "id"]
+        }
+      },
+      {
+        "name": "read_log",
+        "description": "Read a task's logbook only, most-recent first, optionally capped at limit. Conductor.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "project": { "type": "string", "minLength": 1 },
+            "id": { "type": "string", "minLength": 1 },
+            "limit": { "type": "integer", "minimum": 0 }
+          },
+          "required": ["project", "id"]
+        }
+      },
+      {
+        "name": "move_task",
+        "description": "Move a task between board states. Legal: triage->backlog/todo, backlog->todo, todo->in-progress, in-progress->done, plus corrective todo->backlog, in-progress->todo, done->in-progress. Sets owner when entering in-progress. Conductor.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "project": { "type": "string", "minLength": 1 },
+            "id": { "type": "string", "minLength": 1 },
+            "to": { "type": "string", "enum": ["triage", "backlog", "todo", "in-progress", "done"] },
+            "owner": { "type": "string", "description": "Session id to attribute as owner when moving to in-progress." }
+          },
+          "required": ["project", "id", "to"]
+        }
+      },
+      {
+        "name": "update_task",
+        "description": "Update task fields. `fields` may contain any of: title, goal, epic, priority, depends_on (other keys ignored). Conductor.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "project": { "type": "string", "minLength": 1 },
+            "id": { "type": "string", "minLength": 1 },
+            "fields": { "type": "object", "description": "Subset of {title, goal, epic, priority, depends_on}. Advertised as an opaque object (flat-schema constraint); validated at runtime." }
+          },
+          "required": ["project", "id", "fields"]
+        }
+      },
+      {
+        "name": "create_epic",
+        "description": "Create (or refresh title/goal of) a project-scoped epic. Conductor.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "project": { "type": "string", "minLength": 1 },
+            "slug": { "type": "string", "minLength": 1, "pattern": "^[a-z0-9._-]+$" },
+            "title": { "type": "string", "minLength": 1 },
+            "goal": { "type": "string" }
+          },
+          "required": ["project", "slug", "title"]
+        }
+      },
+      {
+        "name": "list_epics",
+        "description": "List a project's epics with their computed per-state rollup. Conductor.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "project": { "type": "string", "minLength": 1 }
+          },
+          "required": ["project"]
+        }
+      },
+      {
+        "name": "read_epic",
+        "description": "Read an epic (goal + computed rollup) and its tasks. Conductor.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "project": { "type": "string", "minLength": 1 },
+            "slug": { "type": "string", "minLength": 1 }
+          },
+          "required": ["project", "slug"]
+        }
+      }
+    ]
+  }
+}
