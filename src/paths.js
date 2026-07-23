@@ -37,3 +37,10 @@ export function stateDir(project, state) {
 export function epicsDir(project) {
   return path.join(projectDir(project), 'epics');
 }
+
+// Cross-project epics live ABOVE the per-project layout: one <slug>.md per epic,
+// each naming its member projects in frontmatter. A per-project epic and a
+// cross-project epic never share a slug in the same project (board.js guards it).
+export function crossEpicsDir() {
+  return path.join(kanbanRoot(), 'epics');
+}

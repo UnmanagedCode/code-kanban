@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { STATES, projectDir, stateDir, epicsDir } from './paths.js';
+import { STATES, projectDir, stateDir, epicsDir, crossEpicsDir } from './paths.js';
 import * as taskfile from './taskfile.js';
 
 // File store for the board. Plain atomic filesystem operations only — the plugin
@@ -149,6 +149,73 @@ export function readEpic(project, slug) {
 export function listEpicSlugs(project) {
   let names;
   try { names = fs.readdirSync(epicsDir(project)); }
+  catch { return []; }
+  return names.filter((n) => n.endsWith('.md')).map((n) => n.replace(/\.md$/, ''));
+}
+
+// ---- cross-project epics ----
+// A top-level <slug>.md store. Same hand-rolled frontmatter as per-project
+// epics, but keyed by slug alone and carrying a `projects` list (serialized like
+// a task's depends_on: `[a, b]`) instead of a single `project`.
+
+function crossEpicPath(slug) {
+  return path.join(crossEpicsDir(), `${slug}.md`);
+}
+
+export function crossEpicExists(slug) {
+  return fs.existsSync(crossEpicPath(slug));
+}
+
+export function writeCrossEpic(epic) {
+  const parts = [
+    '---',
+    `slug: ${epic.slug}`,
+    `title: ${epic.title ?? ''}`,
+    `projects: [${(epic.projects ?? []).join(', ')}]`,
+    `created: ${epic.created}`,
+    '---',
+    '## Goal',
+    (epic.goal ?? '').trim(),
+    '',
+  ];
+  atomicWrite(crossEpicPath(epic.slug), parts.join('\n'));
+}
+
+export function readCrossEpic(slug) {
+  const file = crossEpicPath(slug);
+  if (!fs.existsSync(file)) return null;
+  const lines = fs.readFileSync(file, 'utf8').split('\n');
+  const epic = { slug, title: '', projects: [], created: null, goal: '' };
+  let i = 0;
+  if (lines[0]?.trim() === '---') {
+    i = 1;
+    for (; i < lines.length && lines[i].trim() !== '---'; i++) {
+      const idx = lines[i].indexOf(':');
+      if (idx === -1) continue;
+      const key = lines[i].slice(0, idx).trim();
+      const val = lines[i].slice(idx + 1).trim();
+      if (key === 'title' || key === 'created') epic[key] = val;
+      else if (key === 'projects') {
+        const inner = val.replace(/^\[/, '').replace(/\]$/, '').trim();
+        epic.projects = inner ? inner.split(',').map((s) => s.trim()).filter(Boolean) : [];
+      }
+    }
+    i++;
+  }
+  const goal = [];
+  let inGoal = false;
+  for (; i < lines.length; i++) {
+    if (/^##\s+Goal/i.test(lines[i])) { inGoal = true; continue; }
+    if (/^##\s+/.test(lines[i])) { inGoal = false; continue; }
+    if (inGoal) goal.push(lines[i]);
+  }
+  epic.goal = goal.join('\n').trim();
+  return epic;
+}
+
+export function listCrossEpicSlugs() {
+  let names;
+  try { names = fs.readdirSync(crossEpicsDir()); }
   catch { return []; }
   return names.filter((n) => n.endsWith('.md')).map((n) => n.replace(/\.md$/, ''));
 }

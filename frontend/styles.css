@@ -131,6 +131,7 @@ main { flex: 1; overflow: auto; padding: 12px 16px 32px; display: flex; flex-dir
 .badge.epic { color: var(--triage); border-color: var(--triage); }
 .badge.owner { color: var(--progress); border-color: var(--progress); }
 .badge.prio { color: var(--accent); border-color: var(--accent); }
+.badge.epic-cross { color: var(--progress); border-color: var(--progress); margin-left: 6px; }
 
 .epics { display: flex; flex-direction: column; gap: 8px; }
 .epics-head { display: flex; align-items: center; justify-content: space-between; }

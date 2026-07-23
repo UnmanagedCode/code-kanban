@@ -116,6 +116,87 @@ test('epics: create, file under, rollup counts on read', async () => {
   } finally { await cleanup(root); }
 });
 
+test('cross-project epic: aggregated rollup + tasks span all member projects', async () => {
+  const root = await freshRoot();
+  useProjects(['web', 'api']);
+  try {
+    assert.equal((await board.createEpic({ projects: ['web', 'api'], slug: 'platform', title: 'Platform' })).ok, true);
+    // File tasks under the same slug in BOTH member projects.
+    const w = (await board.fileTask({ project: 'web', title: 'web ui', epic: 'platform' })).id;
+    await board.fileTask({ project: 'api', title: 'api svc', epic: 'platform' });
+    await board.moveTask({ project: 'web', id: w, to: 'todo' });
+
+    // read_epic by slug alone aggregates across members; each task carries project.
+    const re = await board.readEpic({ slug: 'platform' });
+    assert.equal(re.ok, true);
+    assert.deepEqual(re.epic.projects, ['web', 'api']);
+    assert.equal(re.epic.rollup.triage, 1); // api task
+    assert.equal(re.epic.rollup.todo, 1);   // web task
+    assert.equal(re.tasks.length, 2);
+    assert.deepEqual(new Set(re.tasks.map((t) => t.project)), new Set(['web', 'api']));
+
+    // read_epic with a member project resolves the same cross-project epic.
+    const viaProject = await board.readEpic({ project: 'web', slug: 'platform' });
+    assert.equal(viaProject.tasks.length, 2);
+
+    // list_epics for a member surfaces it (flagged with projects) + aggregated rollup.
+    const list = await board.listEpics({ project: 'api' });
+    const pe = list.epics.find((e) => e.slug === 'platform');
+    assert.deepEqual(pe.projects, ['web', 'api']);
+    assert.equal(pe.rollup.triage, 1);
+    assert.equal(pe.rollup.todo, 1);
+  } finally { await cleanup(root); }
+});
+
+test('cross-project epic: fileTask allowed from a member, refused (EPIC_UNKNOWN) from a non-member', async () => {
+  const root = await freshRoot();
+  useProjects(['web', 'api', 'infra']);
+  try {
+    await board.createEpic({ projects: ['web', 'api'], slug: 'platform', title: 'Platform' });
+    assert.equal((await board.fileTask({ project: 'web', title: 't', epic: 'platform' })).ok, true);
+    // infra is not a member, so the epic is not visible there — neither to
+    // fileTask nor to a project-scoped read_epic.
+    assert.equal((await board.fileTask({ project: 'infra', title: 't', epic: 'platform' })).code, 'EPIC_UNKNOWN');
+    assert.equal((await board.readEpic({ project: 'infra', slug: 'platform' })).code, 'EPIC_UNKNOWN');
+    // But reading by slug (no project) still returns it.
+    assert.equal((await board.readEpic({ slug: 'platform' })).ok, true);
+  } finally { await cleanup(root); }
+});
+
+test('slug conflict guard refuses in BOTH orders (per-project↔cross-project)', async () => {
+  // Order 1: per-project epic exists first, then a cross-project epic over it.
+  let root = await freshRoot();
+  useProjects(['web', 'api']);
+  try {
+    assert.equal((await board.createEpic({ project: 'web', slug: 'auth', title: 'Auth' })).ok, true);
+    const clash = await board.createEpic({ projects: ['web', 'api'], slug: 'auth', title: 'Auth X' });
+    assert.equal(clash.code, 'EPIC_CONFLICT');
+  } finally { await cleanup(root); }
+
+  // Order 2: cross-project epic exists first, then a per-project epic in a member.
+  root = await freshRoot();
+  useProjects(['web', 'api']);
+  try {
+    assert.equal((await board.createEpic({ projects: ['web', 'api'], slug: 'auth', title: 'Auth X' })).ok, true);
+    const clash = await board.createEpic({ project: 'web', slug: 'auth', title: 'Auth' });
+    assert.equal(clash.code, 'EPIC_CONFLICT');
+    // A per-project epic with that slug in a NON-member project is fine.
+    useProjects(['web', 'api', 'other']);
+    assert.equal((await board.createEpic({ project: 'other', slug: 'auth', title: 'Auth' })).ok, true);
+  } finally { await cleanup(root); }
+});
+
+test('create_epic argument validation (project XOR projects; ≥2 members; live members)', async () => {
+  const root = await freshRoot();
+  useProjects(['web', 'api']);
+  try {
+    assert.equal((await board.createEpic({ slug: 's', title: 'T' })).code, 'INVALID_STATE'); // neither
+    assert.equal((await board.createEpic({ project: 'web', projects: ['web', 'api'], slug: 's', title: 'T' })).code, 'INVALID_STATE'); // both
+    assert.equal((await board.createEpic({ projects: ['web'], slug: 's', title: 'T' })).code, 'INVALID_STATE'); // <2
+    assert.equal((await board.createEpic({ projects: ['web', 'ghost'], slug: 's', title: 'T' })).code, 'PROJECT_UNKNOWN'); // non-live member
+  } finally { await cleanup(root); }
+});
+
 test('read_task logTail keeps only the last N entries (0/1/2)', async () => {
   const root = await freshRoot();
   useProjects(['demo']);

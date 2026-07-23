@@ -67,3 +67,18 @@ test('atomicWrite leaves no .tmp- residue', async () => {
     assert.equal(names.some((n) => n.includes('.tmp-')), false);
   } finally { await cleanup(root); }
 });
+
+test('writeCrossEpic/readCrossEpic round-trips title, goal, and the projects list', async () => {
+  const root = await freshRoot();
+  try {
+    store.writeCrossEpic({ slug: 'platform', title: 'Platform: v2', goal: 'Shared\ninfra work', projects: ['web', 'api'], created: '2026-07-22T00:00:00.000Z' });
+    assert.equal(store.crossEpicExists('platform'), true);
+    const x = store.readCrossEpic('platform');
+    assert.equal(x.title, 'Platform: v2');
+    assert.deepEqual(x.projects, ['web', 'api']);
+    assert.match(x.goal, /infra work/);
+    assert.equal(x.created, '2026-07-22T00:00:00.000Z');
+    assert.deepEqual(store.listCrossEpicSlugs(), ['platform']);
+    assert.equal(store.readCrossEpic('ghost'), null);
+  } finally { await cleanup(root); }
+});

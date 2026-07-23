@@ -32,9 +32,11 @@ and `listProjects` are read out; no service-layer logic changed.
 Board DATA lives in the conductor's tree, not this repo:
 
 ```
-<PROJECTS_ROOT>/.conduct/kanban/projects/<project>/
-  triage/ backlog/ todo/ in-progress/ done/   # one <id>.md per task
-  epics/<slug>.md                              # goal only; rollup computed on read
+<PROJECTS_ROOT>/.conduct/kanban/
+  epics/<slug>.md                              # CROSS-project epic: frontmatter projects:[…]
+  projects/<project>/
+    triage/ backlog/ todo/ in-progress/ done/  # one <id>.md per task
+    epics/<slug>.md                            # project-scoped epic; goal only
 ```
 
 - **No git writes from the plugin** (decision — see `.wiki/architecture/file-store-layout.md`).
@@ -42,7 +44,13 @@ Board DATA lives in the conductor's tree, not this repo:
   Per-card history lives in the Logbook; git snapshotting of `.conduct` is the conductor's job.
 - **IDs**: `${year}-${NNNN}`, where `NNNN` is a project-wide monotonic sequence
   (`max existing + 1`, does **not** reset on year rollover). Assigned inside the project mutex.
-- **Epic rollups** are never stored — recomputed by scanning tasks on each read.
+- **Epic rollups** are never stored — recomputed by scanning tasks on each read. A cross-project
+  epic aggregates the scan across every project in its frontmatter `projects:[…]` list.
+- **Cross-project epics** live in the top-level `epics/` dir (above `projects/`) and join tasks by
+  the same `epic:<slug>` field. A slug can't be both a cross-project epic and a per-project epic in
+  one of its members (`createEpic` refuses `EPIC_CONFLICT` in both orders), so a task's epic slug is
+  unambiguous. Their writes serialize on a dedicated `withLock(' cross-epics')` key — distinct from
+  every project name — so the per-project single-writer invariant is untouched.
 
 ## GUI integration seam
 
