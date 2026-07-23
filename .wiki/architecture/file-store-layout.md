@@ -36,9 +36,12 @@ epic iff one covers the task's project, else the project's own epic.
 
 **Slug guard.** `createEpic` refuses `EPIC_CONFLICT` if a slug would be *both* a cross-project epic
 and a per-project epic in one of its members — checked in **both** create orders (per-project→cross
-and cross→per-project). This keeps every task's `epic` slug unambiguous. (Gotcha: because the two
-create paths take **different** locks, a truly-simultaneous per-project + cross create of the same
-slug could both pass their guard; tolerable because the conductor is the sole, serial mutator.)
+and cross→per-project). This keeps every task's `epic` slug unambiguous. The guard is effectively
+global even though the two create paths take **different** locks (project mutex vs the cross key):
+each guard-check-then-write runs **synchronously inside its lock callback** — no `await` between the
+read and the write — so on Node's single thread the two can't interleave; whichever commits first,
+the other sees it and refuses. **Gotcha:** adding an `await` between the guard read and the write
+inside either lock callback would reopen this window — keep those critical sections synchronous.
 
 **Lock key.** Cross-epic writes serialize under `withLock(' cross-epics')` — a sentinel key with a
 leading space, which `projects.NAME_RE` forbids, so it can never collide with a project mutex. This

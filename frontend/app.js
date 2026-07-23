@@ -434,6 +434,12 @@ async function doCreateEpic(e) {
   const title = fd.get('title')?.toString().trim();
   const goal = fd.get('goal')?.toString();
   const members = fd.getAll('projects').map((p) => p.toString());
+  // Exactly one selected is ambiguous (cross-project needs ≥2) — reject rather
+  // than silently misroute it to a project-scoped create in state.current.
+  if (members.length === 1) {
+    form.querySelector('.form-error').textContent = 'A cross-project epic needs ≥2 projects; select more, or none for a project-scoped epic.';
+    return;
+  }
   // ≥2 members → cross-project epic at the top-level route; else project-scoped.
   const cross = members.length >= 2;
   const url = cross ? 'api/epics' : `api/board/${encodeURIComponent(state.current)}/epics`;

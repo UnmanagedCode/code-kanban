@@ -322,9 +322,13 @@ export async function readEpic({ project, slug } = {}) {
       return { ok: true, epic: { slug, title: e.title, goal: e.goal, rollup: rollup(project, slug) }, tasks };
     }
   }
-  // Cross-project epic (by slug; also the fall-through when project is a member).
+  // Cross-project epic: by slug when no project is given, or the fall-through
+  // when the given project is one of its members (else it is not this project's
+  // epic → EPIC_UNKNOWN).
   const x = store.readCrossEpic(slug);
-  if (!x) return fail('EPIC_UNKNOWN', `unknown epic: ${slug}`);
+  if (!x || (project !== undefined && !x.projects.includes(project))) {
+    return fail('EPIC_UNKNOWN', `unknown epic: ${slug}`);
+  }
   const tasks = sortTasks(
     x.projects.flatMap((p) => store.listTasks(p).filter((t) => t.epic === slug)),
   ).map(summary);

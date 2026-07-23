@@ -154,8 +154,12 @@ test('cross-project epic: fileTask allowed from a member, refused (EPIC_UNKNOWN)
   try {
     await board.createEpic({ projects: ['web', 'api'], slug: 'platform', title: 'Platform' });
     assert.equal((await board.fileTask({ project: 'web', title: 't', epic: 'platform' })).ok, true);
-    // infra is not a member, so the epic is not visible there.
+    // infra is not a member, so the epic is not visible there — neither to
+    // fileTask nor to a project-scoped read_epic.
     assert.equal((await board.fileTask({ project: 'infra', title: 't', epic: 'platform' })).code, 'EPIC_UNKNOWN');
+    assert.equal((await board.readEpic({ project: 'infra', slug: 'platform' })).code, 'EPIC_UNKNOWN');
+    // But reading by slug (no project) still returns it.
+    assert.equal((await board.readEpic({ slug: 'platform' })).ok, true);
   } finally { await cleanup(root); }
 });
 

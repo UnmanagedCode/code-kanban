@@ -126,7 +126,7 @@
       },
       {
         "name": "create_epic",
-        "description": "Create or refresh an epic (idempotent upsert). Pass `project` for a project-scoped epic, or `projects` (≥2 members) for a cross-project epic spanning them; exactly one. Conductor.",
+        "description": "Create or refresh an epic (idempotent upsert): `project` for a project-scoped epic, or `projects` for a cross-project epic. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -152,7 +152,7 @@
       },
       {
         "name": "read_epic",
-        "description": "Read an epic (goal + computed rollup) and its tasks; a cross-project epic aggregates across its member projects. Omit `project` to read a cross-project epic by slug. Conductor.",
+        "description": "Read an epic (goal + computed rollup) and its tasks; a cross-project epic aggregates across its member projects. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
