@@ -37,8 +37,10 @@ malformed envelope or an unexpected exception.
   and corrective `todo→backlog`, `in-progress→todo`, `done→in-progress`. Anything else
   (unknown state, same-state no-op, other pair) → `INVALID_STATE`. `owner` is stored only while
   in `in-progress` and cleared on leaving it. On landing (`→done`), `commit` is stamped if given,
-  else auto-captured from the project's HEAD sha; neither resolving is not an error — the move
-  still succeeds and the task's `commit` field is simply left unset.
+  else auto-captured as the owning worker's live worktree HEAD sha (resolved via the conductor's
+  `/api/instances`, using the prior `in-progress` owner's session id) — never the base project
+  checkout's HEAD, which won't contain a worktree'd worker's commits until a merge. Neither
+  resolving is not an error — the move still succeeds and `commit` is simply left unset.
 - `update_task({project, id, fields}) → {ok}` — `fields` ⊆ `{title, goal, epic, priority, depends_on}`; other keys ignored. `fields.epic` must exist → else `EPIC_UNKNOWN`.
 - `create_epic({project?, projects?, slug, title, goal?}) → {ok}` — `slug` matches `^[a-z0-9._-]+$`; idempotent upsert (re-creating refreshes title/goal, preserves `created`; for a cross-project epic it also **replaces the member `projects` list** — membership is mutable). Give **exactly one** of `project` (project-scoped) or `projects` (a cross-project epic spanning ≥2 members) → else `INVALID_STATE`. A slug may not be both a cross-project epic and a per-project epic in one of its members → `EPIC_CONFLICT` (guarded in both create orders).
 - `list_epics({project}) → {ok, epics:[{slug, title, rollup, projects}]}` — the project's own epics (`projects:null`) plus cross-project epics spanning it (`projects:[…]`, `rollup` aggregated over all members).

@@ -26,12 +26,6 @@ export function kanbanRoot() {
   return path.join(projectsRoot(), '.conduct', 'kanban');
 }
 
-// A project's own git checkout — a sibling of this plugin under PROJECTS_ROOT,
-// distinct from projectDir() (the board's .conduct/kanban DATA path above).
-export function repoDir(project) {
-  return path.join(projectsRoot(), project);
-}
-
 export function projectDir(project) {
   return path.join(kanbanRoot(), 'projects', project);
 }

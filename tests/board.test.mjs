@@ -1,23 +1,40 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { freshRoot, cleanup } from './_helpers.mjs';
 import * as board from '../src/board.js';
 import { _setProjectFetcher } from '../src/projects.js';
+import { _setInstanceFetcher } from '../src/ownerWorktree.js';
 
-// Creates a real git repo at <root>/<project> with one commit and returns its
+// Creates a real git repo at <root>/<name> with one commit and returns its
 // HEAD sha, so tests can assert the auto-captured value against ground truth.
-function initRepo(root, project) {
-  const dir = path.join(root, project);
+// The commit includes a file with content unique to `name` — otherwise two
+// repos created back-to-back with the same empty tree/message/author can
+// produce IDENTICAL commit shas (git hashes are pure content, and an
+// --allow-empty commit has nothing distinguishing it beyond the timestamp).
+function initRepo(root, name) {
+  const dir = path.join(root, name);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'marker.txt'), name);
   const git = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
   execFileSync('git', ['init', '-q', dir]);
-  git('-c', 'user.email=test@test.com', '-c', 'user.name=test', 'commit', '--allow-empty', '-q', '-m', 'init');
-  return git('rev-parse', 'HEAD').trim();
+  git('add', 'marker.txt');
+  git('-c', 'user.email=test@test.com', '-c', 'user.name=test', 'commit', '-q', '-m', `init ${name}`);
+  return { dir, sha: git('rev-parse', 'HEAD').trim() };
 }
 
 // Every test injects a fixed live-project list so validation never hits the net.
 function useProjects(names) { _setProjectFetcher(async () => names); }
+
+// Stubs the conductor's /api/instances lookup so a given owner sessionId
+// resolves to a fixed cwd, without touching the network (no CONDUCTOR_URL is
+// set in tests, so the real default already returns [] — this override is
+// only needed when a test wants ownerCwd() to resolve to something).
+function useOwnerCwd(sessionId, cwd) {
+  _setInstanceFetcher(async () => [{ sessionId, cwd }]);
+}
 
 test('file_task -> triage, then full lifecycle to done', async () => {
   const root = await freshRoot();
@@ -244,44 +261,51 @@ test('update_task applies whitelisted fields and ignores others', async () => {
   } finally { await cleanup(root); }
 });
 
-test('moveTask stamps the landing commit hash on in-progress -> done', async () => {
+test('moveTask auto-captures the OWNER WORKTREE HEAD sha, not the base checkout, on landing', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
-    const sha = initRepo(root, 'demo');
+    const base = initRepo(root, 'demo'); // base checkout — must NOT be read from
+    const worktree = initRepo(root, 'demo_worktree_deadbeef'); // the owner's actual worktree
+    assert.notEqual(base.sha, worktree.sha); // sanity: they really do differ
+    useOwnerCwd('w-1', worktree.dir);
+
     const { id } = await board.fileTask({ project: 'demo', title: 't' });
     await board.moveTask({ project: 'demo', id, to: 'todo' });
-    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w-1' });
     assert.equal((await board.moveTask({ project: 'demo', id, to: 'done' })).ok, true);
 
     const r = await board.readTask({ project: 'demo', id });
-    assert.equal(r.task.commit, sha);
-  } finally { await cleanup(root); }
+    assert.equal(r.task.commit, worktree.sha);
+    assert.notEqual(r.task.commit, base.sha);
+  } finally { _setInstanceFetcher(null); await cleanup(root); }
 });
 
 test('moveTask: an explicit commit param overrides auto-capture', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
-    initRepo(root, 'demo'); // present, but should be ignored in favor of the explicit sha
+    const worktree = initRepo(root, 'demo_worktree_deadbeef');
+    useOwnerCwd('w-1', worktree.dir); // resolvable, but should be ignored in favor of the explicit sha
     const { id } = await board.fileTask({ project: 'demo', title: 't' });
     await board.moveTask({ project: 'demo', id, to: 'todo' });
-    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w-1' });
     await board.moveTask({ project: 'demo', id, to: 'done', commit: 'deadbeefcafe' });
 
     const r = await board.readTask({ project: 'demo', id });
     assert.equal(r.task.commit, 'deadbeefcafe');
-  } finally { await cleanup(root); }
+  } finally { _setInstanceFetcher(null); await cleanup(root); }
 });
 
-test('moveTask: landing still succeeds with no commit when the project is not a git repo', async () => {
+test('moveTask: landing still succeeds with no commit when the owner\'s worktree cannot be resolved', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
-    // No repo created at <root>/demo — headSha resolves to null.
+    // No CONDUCTOR_URL is set and no instance fetcher is stubbed, so
+    // ownerCwd() resolves to null regardless of the owner sessionId.
     const { id } = await board.fileTask({ project: 'demo', title: 't' });
     await board.moveTask({ project: 'demo', id, to: 'todo' });
-    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w-1' });
     const mv = await board.moveTask({ project: 'demo', id, to: 'done' });
     assert.equal(mv.ok, true);
 
@@ -294,16 +318,17 @@ test('moveTask: reopening (done -> in-progress) does not clobber the stamped com
   const root = await freshRoot();
   useProjects(['demo']);
   try {
-    const sha = initRepo(root, 'demo');
+    const worktree = initRepo(root, 'demo_worktree_deadbeef');
+    useOwnerCwd('w-1', worktree.dir);
     const { id } = await board.fileTask({ project: 'demo', title: 't' });
     await board.moveTask({ project: 'demo', id, to: 'todo' });
-    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w-1' });
     await board.moveTask({ project: 'demo', id, to: 'done' });
-    assert.equal((await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w' })).ok, true); // reopen
+    assert.equal((await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w-1' })).ok, true); // reopen
 
     const r = await board.readTask({ project: 'demo', id });
-    assert.equal(r.task.commit, sha); // untouched by the reopen move
-  } finally { await cleanup(root); }
+    assert.equal(r.task.commit, worktree.sha); // untouched by the reopen move
+  } finally { _setInstanceFetcher(null); await cleanup(root); }
 });
 
 test('the per-project mutex serializes concurrent id assignment (no dupes)', async () => {

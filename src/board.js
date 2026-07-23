@@ -9,12 +9,13 @@
 // a domain outcome (unexpected exceptions are the caller's to catch). Every
 // mutator runs inside withLock(project, ...) so writes serialize on one path.
 
-import { STATES, repoDir } from './paths.js';
+import { STATES } from './paths.js';
 import { validateProject } from './projects.js';
 import { withLock } from './mutex.js';
 import * as store from './store.js';
 import { logLine } from './taskfile.js';
 import { headSha } from './git.js';
+import { ownerCwd } from './ownerWorktree.js';
 
 function fail(code, reason) { return { ok: false, code, reason }; }
 function nowIso() { return new Date().toISOString(); }
@@ -159,15 +160,27 @@ export async function moveTask({ project, id, to, owner, commit } = {}) {
     if (!ALLOWED_TRANSITIONS.has(`${from}>${to}`)) {
       return fail('INVALID_STATE', `illegal transition ${from} -> ${to}`);
     }
+    // Capture before the clear below — landing needs the PRIOR (in-progress)
+    // owner to know whose worktree to read.
+    const priorOwner = task.owner;
     // owner is set only while in-progress.
     task.owner = to === 'in-progress' ? (owner ?? null) : null;
     // Landing (only reachable from in-progress): stamp the merge/commit sha.
     // An explicit commit wins (the caller may know a squash-merge sha that
-    // differs from the base branch's HEAD at call time); otherwise fall back
-    // to the project's own HEAD. Never refuse the move if neither resolves.
+    // differs from the current branch HEAD at call time); otherwise resolve
+    // the prior owner's live working directory (a worktree cwd, typically —
+    // see ownerWorktree.js) and read ITS HEAD. The base project checkout's
+    // own HEAD is deliberately never used: a worker's commits live on its
+    // worktree branch and are absent from the base checkout until a merge.
+    // Never refuse the move if neither the explicit value nor the owner's
+    // worktree resolves.
     if (to === 'done') {
       const explicit = typeof commit === 'string' ? commit.trim() : '';
-      const sha = explicit || (await headSha(repoDir(project)));
+      let sha = explicit;
+      if (!sha && priorOwner) {
+        const cwd = await ownerCwd(priorOwner);
+        if (cwd) sha = await headSha(cwd);
+      }
       if (sha) task.commit = sha;
     }
     task.logbook.push(logLine(nowIso(), owner, `moved ${from} -> ${to}`));
