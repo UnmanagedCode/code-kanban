@@ -14,9 +14,22 @@ import { validateProject } from './projects.js';
 import { withLock } from './mutex.js';
 import * as store from './store.js';
 import { logLine } from './taskfile.js';
+import { headSha } from './git.js';
+import { ownerCwd } from './ownerWorktree.js';
 
 function fail(code, reason) { return { ok: false, code, reason }; }
 function nowIso() { return new Date().toISOString(); }
+
+// An explicit commit lands verbatim in frontmatter (taskfile.js's `commit:
+// <value>` line), so a value with an embedded newline or internal whitespace
+// could inject a spurious extra frontmatter line/key on write. Take only the
+// first line, trimmed; reject it (fall back to auto-capture) if that line
+// still contains whitespace — a real sha is a single clean token.
+function sanitizeCommit(commit) {
+  if (typeof commit !== 'string') return '';
+  const firstLine = commit.split('\n')[0].trim();
+  return /\s/.test(firstLine) ? '' : firstLine;
+}
 
 // Legal state transitions. The forward path is the intended lifecycle; the extra
 // entries are corrective moves the conductor (the sole trusted mutator) may need.
@@ -146,11 +159,11 @@ export async function readProgress({ project, id, limit } = {}) {
 
 // ---- conductor: mutations ----
 
-export async function moveTask({ project, id, to, owner } = {}) {
+export async function moveTask({ project, id, to, owner, commit } = {}) {
   const bad = await requireProject(project);
   if (bad) return bad;
   if (!STATES.includes(to)) return fail('INVALID_STATE', `unknown target state: ${to}`);
-  return withLock(project, () => {
+  return withLock(project, async () => {
     const task = store.readTaskById(project, id);
     if (!task) return fail('TASK_UNKNOWN', `unknown task: ${id}`);
     const from = task.state;
@@ -158,8 +171,29 @@ export async function moveTask({ project, id, to, owner } = {}) {
     if (!ALLOWED_TRANSITIONS.has(`${from}>${to}`)) {
       return fail('INVALID_STATE', `illegal transition ${from} -> ${to}`);
     }
+    // Capture before the clear below — landing needs the PRIOR (in-progress)
+    // owner to know whose worktree to read.
+    const priorOwner = task.owner;
     // owner is set only while in-progress.
     task.owner = to === 'in-progress' ? (owner ?? null) : null;
+    // Landing (only reachable from in-progress): stamp the merge/commit sha.
+    // An explicit commit wins (the caller may know a squash-merge sha that
+    // differs from the current branch HEAD at call time); otherwise resolve
+    // the prior owner's live working directory (a worktree cwd, typically —
+    // see ownerWorktree.js) and read ITS HEAD. The base project checkout's
+    // own HEAD is deliberately never used: a worker's commits live on its
+    // worktree branch and are absent from the base checkout until a merge.
+    // Never refuse the move if neither the explicit value nor the owner's
+    // worktree resolves.
+    if (to === 'done') {
+      const explicit = sanitizeCommit(commit);
+      let sha = explicit;
+      if (!sha && priorOwner) {
+        const cwd = await ownerCwd(priorOwner);
+        if (cwd) sha = await headSha(cwd);
+      }
+      if (sha) task.commit = sha;
+    }
     task.logbook.push(logLine(nowIso(), owner, `moved ${from} -> ${to}`));
     store.moveTask(project, id, from, to, task);
     return { ok: true, from, to };

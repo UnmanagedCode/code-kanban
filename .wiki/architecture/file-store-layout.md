@@ -15,7 +15,7 @@ Task files: minimal `---` frontmatter (`id, title, project, epic?, priority, cre
 depends_on`) + `## Goal`, `## Acceptance` (checkboxes), `## Logbook` (append-only). Parsed by
 `src/taskfile.js` (hand-rolled, no YAML dep).
 
-## Decision: the plugin does NOT write git
+## Decision: the plugin does NOT write git (but does one narrow read)
 
 Moves and edits are **plain atomic filesystem ops** (`store.js`): writes are tmp-file +
 `rename`; a move writes the card in the new state dir then unlinks the old. The plugin never
@@ -24,8 +24,24 @@ runs `git add`/`git mv`/`git commit` inside `.conduct`.
 **Why** (supersedes the earlier plan's `git mv` idea): `.conduct` is the conductor's own git
 repo. A second git writer would contend with the conductor's index/commits and risk sweeping
 half-staged board changes into unrelated commits. Per-card history already lives in the Logbook;
-any git snapshotting of the board is the conductor's concern at its own cadence. This also keeps
-git off the core store path (no `git.js` needed).
+any git snapshotting of the board is the conductor's concern at its own cadence.
+
+This decision is scoped to `.conduct`, not to git entirely: landing a task (`move_task` to
+`done`) does one narrow **read** — `git rev-parse HEAD` (`src/git.js:headSha`) — to stamp a
+`commit` field on the task. It never touches `.conduct` and never writes.
+
+**Crucially, that read targets the owning worker's live working directory, never the base
+project checkout.** A worker typically runs on a git *worktree* (its own branch, e.g.
+`code-conductor/<hash>`); its commits aren't in the base checkout's history until a merge, so
+reading the base checkout's HEAD would silently stamp the wrong sha. Instead, `moveTask` captures
+the task's prior (`in-progress`) `owner` sessionId *before* it's cleared, and resolves it to a
+live working directory via `src/ownerWorktree.js:ownerCwd` — which calls the conductor's
+`GET /api/instances` (the same `CONDUCTOR_URL` HTTP channel `projects.js` uses for `/api/projects`)
+and reads the matching instance's `cwd` (the worktree path, or the base checkout if the worker
+wasn't in a worktree). If the owner can't be resolved this way (no `CONDUCTOR_URL`, or the
+session has aged out of the conductor's in-memory instance registry — e.g. already torn down
+before landing), `commit` is simply left unset unless the caller passed one explicitly. Never a
+hard failure.
 
 ## Cross-project epics (slug guard + lock key)
 

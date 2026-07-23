@@ -8,6 +8,9 @@ workflow, not a replacement for it.
 - **Lifecycle.** `in-progress` = a worker spawned on it — `owner` is that worker's `sessionId`;
   `done` = **landed** (merged + signed off), not implementation-complete — a card stays
   `in-progress` through the review→refine loop and only reaches `done` on merge.
+- **Landing commit.** `move_task` to `done` stamps `commit`: pass it explicitly for a squash/merge
+  sha, otherwise the owning worker's live worktree HEAD is auto-captured (unset if that worktree
+  can't be resolved).
 - **Don't brief workers to mutate.** Never ask a worker to move or update a card.
 - **Epics.** `create_epic` when a thread will span more than one task; a standalone task needs
   none.

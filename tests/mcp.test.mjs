@@ -80,3 +80,19 @@ test('caller.sessionId is threaded into owner-scoped tools', async () => {
     assert.match(log.body.result.entries[0], /via-mcp/);
   } finally { await cleanup(root); }
 });
+
+test('move_task forwards an explicit commit arg through to the stamped task', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const f = await mcp.handle({ tool: 'file_task', arguments: { project: 'demo', title: 't' } });
+    const id = f.body.result.id;
+    await mcp.handle({ tool: 'move_task', arguments: { project: 'demo', id, to: 'todo' } });
+    await mcp.handle({ tool: 'move_task', arguments: { project: 'demo', id, to: 'in-progress', owner: 'w' } });
+    const mv = await mcp.handle({ tool: 'move_task', arguments: { project: 'demo', id, to: 'done', commit: 'abc123' } });
+    assert.equal(mv.body.result.ok, true);
+
+    const r = await mcp.handle({ tool: 'read_task', arguments: { project: 'demo', id } });
+    assert.equal(r.body.result.task.commit, 'abc123');
+  } finally { await cleanup(root); }
+});

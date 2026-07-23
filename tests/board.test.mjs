@@ -1,11 +1,40 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import { freshRoot, cleanup } from './_helpers.mjs';
 import * as board from '../src/board.js';
 import { _setProjectFetcher } from '../src/projects.js';
+import { _setInstanceFetcher } from '../src/ownerWorktree.js';
+
+// Creates a real git repo at <root>/<name> with one commit and returns its
+// HEAD sha, so tests can assert the auto-captured value against ground truth.
+// The commit includes a file with content unique to `name` — otherwise two
+// repos created back-to-back with the same empty tree/message/author can
+// produce IDENTICAL commit shas (git hashes are pure content, and an
+// --allow-empty commit has nothing distinguishing it beyond the timestamp).
+function initRepo(root, name) {
+  const dir = path.join(root, name);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'marker.txt'), name);
+  const git = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
+  execFileSync('git', ['init', '-q', dir]);
+  git('add', 'marker.txt');
+  git('-c', 'user.email=test@test.com', '-c', 'user.name=test', 'commit', '-q', '-m', `init ${name}`);
+  return { dir, sha: git('rev-parse', 'HEAD').trim() };
+}
 
 // Every test injects a fixed live-project list so validation never hits the net.
 function useProjects(names) { _setProjectFetcher(async () => names); }
+
+// Stubs the conductor's /api/instances lookup so a given owner sessionId
+// resolves to a fixed cwd, without touching the network (no CONDUCTOR_URL is
+// set in tests, so the real default already returns [] — this override is
+// only needed when a test wants ownerCwd() to resolve to something).
+function useOwnerCwd(sessionId, cwd) {
+  _setInstanceFetcher(async () => [{ sessionId, cwd }]);
+}
 
 test('file_task -> triage, then full lifecycle to done', async () => {
   const root = await freshRoot();
@@ -223,12 +252,186 @@ test('update_task applies whitelisted fields and ignores others', async () => {
   useProjects(['demo']);
   try {
     const { id } = await board.fileTask({ project: 'demo', title: 'orig' });
-    await board.updateTask({ project: 'demo', id, fields: { title: 'renamed', priority: 5, bogus: 'x' } });
+    await board.updateTask({ project: 'demo', id, fields: { title: 'renamed', priority: 5, bogus: 'x', commit: 'sneaky' } });
     const r = await board.readTask({ project: 'demo', id });
     assert.equal(r.task.title, 'renamed');
     assert.equal(r.task.priority, 5);
     assert.equal('bogus' in r.task, false);
+    assert.equal(r.task.commit, null); // commit is not in UPDATABLE — update_task can't set it
   } finally { await cleanup(root); }
+});
+
+test('moveTask auto-captures the OWNER WORKTREE HEAD sha, not the base checkout, on landing', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const base = initRepo(root, 'demo'); // base checkout — must NOT be read from
+    const worktree = initRepo(root, 'demo_worktree_deadbeef'); // the owner's actual worktree
+    assert.notEqual(base.sha, worktree.sha); // sanity: they really do differ
+    useOwnerCwd('w-1', worktree.dir);
+
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w-1' });
+    assert.equal((await board.moveTask({ project: 'demo', id, to: 'done' })).ok, true);
+
+    const r = await board.readTask({ project: 'demo', id });
+    assert.equal(r.task.commit, worktree.sha);
+    assert.notEqual(r.task.commit, base.sha);
+  } finally { _setInstanceFetcher(null); await cleanup(root); }
+});
+
+test('moveTask: an explicit commit param overrides auto-capture', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const worktree = initRepo(root, 'demo_worktree_deadbeef');
+    useOwnerCwd('w-1', worktree.dir); // resolvable, but should be ignored in favor of the explicit sha
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w-1' });
+    await board.moveTask({ project: 'demo', id, to: 'done', commit: 'deadbeefcafe' });
+
+    const r = await board.readTask({ project: 'demo', id });
+    assert.equal(r.task.commit, 'deadbeefcafe');
+  } finally { _setInstanceFetcher(null); await cleanup(root); }
+});
+
+test('moveTask: an explicit commit with an embedded newline is sanitized to its first line', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w-1' });
+    // A frontmatter-injection attempt: a second "line" that looks like another
+    // key. Only the clean first line may ever reach the task file.
+    await board.moveTask({ project: 'demo', id, to: 'done', commit: 'cafe1234\nowner: injected' });
+
+    const r = await board.readTask({ project: 'demo', id });
+    assert.equal(r.task.commit, 'cafe1234');
+    assert.equal(r.task.owner, null); // the injected second line never took effect
+  } finally { await cleanup(root); }
+});
+
+test('moveTask: an explicit commit with internal whitespace is rejected (falls back to auto-capture)', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const worktree = initRepo(root, 'demo_worktree_deadbeef');
+    useOwnerCwd('w-1', worktree.dir);
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w-1' });
+    await board.moveTask({ project: 'demo', id, to: 'done', commit: 'not a real sha' });
+
+    const r = await board.readTask({ project: 'demo', id });
+    assert.equal(r.task.commit, worktree.sha); // the dirty value was rejected, so auto-capture ran instead
+  } finally { _setInstanceFetcher(null); await cleanup(root); }
+});
+
+test('moveTask: landing still succeeds with no commit when the owner\'s worktree cannot be resolved', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    // No CONDUCTOR_URL is set and no instance fetcher is stubbed, so
+    // ownerCwd() resolves to null regardless of the owner sessionId.
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w-1' });
+    const mv = await board.moveTask({ project: 'demo', id, to: 'done' });
+    assert.equal(mv.ok, true);
+
+    const r = await board.readTask({ project: 'demo', id });
+    assert.equal(r.task.commit, null);
+  } finally { await cleanup(root); }
+});
+
+test('moveTask: an instance-lookup failure (e.g. a timed-out fetch) degrades gracefully, no hang', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    // Simulates what a timed-out/aborted fetch looks like to ownerCwd: the
+    // fetcher rejects. moveTask must still resolve promptly with the move
+    // applied and no commit stamped — never hang while holding the lock.
+    _setInstanceFetcher(async () => { throw new Error('simulated timeout/abort'); });
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w-1' });
+    const mv = await board.moveTask({ project: 'demo', id, to: 'done' });
+    assert.equal(mv.ok, true);
+
+    const r = await board.readTask({ project: 'demo', id });
+    assert.equal(r.task.commit, null);
+  } finally { _setInstanceFetcher(null); await cleanup(root); }
+});
+
+test('moveTask: reopening (done -> in-progress) does not clobber the stamped commit', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const worktree = initRepo(root, 'demo_worktree_deadbeef');
+    useOwnerCwd('w-1', worktree.dir);
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w-1' });
+    await board.moveTask({ project: 'demo', id, to: 'done' });
+    assert.equal((await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w-1' })).ok, true); // reopen
+
+    const r = await board.readTask({ project: 'demo', id });
+    assert.equal(r.task.commit, worktree.sha); // untouched by the reopen move
+  } finally { _setInstanceFetcher(null); await cleanup(root); }
+});
+
+test('moveTask: re-landing after reopen captures a FRESH sha, overwriting the prior one', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const worktree = initRepo(root, 'demo_worktree_deadbeef');
+    useOwnerCwd('w-1', worktree.dir);
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w-1' });
+    await board.moveTask({ project: 'demo', id, to: 'done' });
+    const firstCommit = (await board.readTask({ project: 'demo', id })).task.commit;
+    assert.equal(firstCommit, worktree.sha);
+
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w-1' }); // reopen
+
+    // A new commit lands on the same worktree branch before re-landing.
+    const git = (...args) => execFileSync('git', ['-C', worktree.dir, ...args], { encoding: 'utf8' });
+    fs.writeFileSync(path.join(worktree.dir, 'more.txt'), 'more work');
+    git('add', 'more.txt');
+    git('-c', 'user.email=test@test.com', '-c', 'user.name=test', 'commit', '-q', '-m', 'more work');
+    const freshSha = git('rev-parse', 'HEAD').trim();
+    assert.notEqual(freshSha, firstCommit);
+
+    assert.equal((await board.moveTask({ project: 'demo', id, to: 'done' })).ok, true); // re-land
+
+    const r = await board.readTask({ project: 'demo', id });
+    assert.equal(r.task.commit, freshSha); // overwritten with the fresh sha
+  } finally { _setInstanceFetcher(null); await cleanup(root); }
+});
+
+test('moveTask: re-landing preserves the prior commit when nothing resolves this time', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const worktree = initRepo(root, 'demo_worktree_deadbeef');
+    useOwnerCwd('w-1', worktree.dir);
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w-1' });
+    await board.moveTask({ project: 'demo', id, to: 'done' });
+    const firstCommit = (await board.readTask({ project: 'demo', id })).task.commit;
+
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w-1' }); // reopen
+    _setInstanceFetcher(async () => []); // the owner's worktree is no longer resolvable this time
+    assert.equal((await board.moveTask({ project: 'demo', id, to: 'done' })).ok, true); // re-land, unresolvable
+
+    const r = await board.readTask({ project: 'demo', id });
+    assert.equal(r.task.commit, firstCommit); // preserved, not cleared
+  } finally { _setInstanceFetcher(null); await cleanup(root); }
 });
 
 test('the per-project mutex serializes concurrent id assignment (no dupes)', async () => {

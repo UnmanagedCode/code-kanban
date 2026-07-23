@@ -14,7 +14,7 @@ GUI relies on — the things a reader can't quickly re-derive by skimming the ro
 | `GET /api/board/:project/tasks/:id` | `readTask` | Full task: goal, acceptance, logbook. |
 | `POST /api/board/:project/tasks` | `fileTask` | `sessionId: GUI_ACTOR`. Lands in `triage`. |
 | `PATCH /api/board/:project/tasks/:id` | `updateTask` | Body **is** the `fields` object. |
-| `POST /api/board/:project/tasks/:id/move` | `moveTask` | `owner: owner || GUI_ACTOR`. |
+| `POST /api/board/:project/tasks/:id/move` | `moveTask` | `owner: owner || GUI_ACTOR`; `commit` passed through as-is. |
 | `GET /api/board/:project/epics` | `listEpics` | With rollups. |
 | `GET /api/board/:project/epics/:slug` | `readEpic` | Epic + its tasks. |
 | `POST /api/board/:project/epics` | `createEpic` | **Upsert** — see below. |

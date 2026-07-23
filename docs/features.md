@@ -33,7 +33,7 @@ conductor's own tool — not a team/shared surface.
 | `list_tasks` | conductor | List tasks, optionally filtered by `state`/`epic`. |
 | `read_task` | conductor | Read one task (+ logbook, optionally last `logTail`). |
 | `read_progress` | conductor | Read a task's logbook only, most-recent first. |
-| `move_task` | conductor | Move between states; sets `owner` on entering `in-progress`. |
+| `move_task` | conductor | Move between states; sets `owner` on entering `in-progress`; on landing (`→done`), stamps `commit` (given, or auto-captured from the owning worker's live worktree HEAD). |
 | `update_task` | conductor | Update `title`/`goal`/`epic`/`priority`/`depends_on`. |
 | `create_epic` | conductor | Create/refresh an epic — `project` (project-scoped) or `projects` (cross-project). |
 | `list_epics` | conductor | A project's epics + cross-project epics spanning it, with computed rollups. |
@@ -53,9 +53,9 @@ so it shares the same `board.js` service layer and per-project mutex as the MCP 
 - **Board** — five columns rendered from `STATES`; cards show id, title, epic/priority/owner
   badges. A card's legal move targets come from `GET /api/board/meta` (the single source
   `ALLOWED_TRANSITIONS`), so the GUI never offers an illegal move.
-- **Card detail** — Goal, Acceptance checklist (read-only), and the append-only Logbook; a
-  Move control and an Edit form (title/goal/epic/priority/depends_on). Acceptance is not
-  editable in the GUI.
+- **Card detail** — Goal, Acceptance checklist (read-only), the append-only Logbook, and (once
+  landed) the Commit hash; a Move control and an Edit form (title/goal/epic/priority/depends_on).
+  Acceptance and Commit are not editable in the GUI.
 - **Epics** — rollup table; "open" reads one epic (+ its tasks). New-epic form upserts by slug; its
   "Span projects" multi-select makes a cross-project epic when ≥2 are picked (else project-scoped).
   Cross-project epics show a badge + member list; their detail lists each task's project.
