@@ -98,9 +98,9 @@ export function buildRoutes() {
   // Move a card between columns. board.js enforces ALLOWED_TRANSITIONS and
   // returns INVALID_STATE on an illegal move; the GUI surfaces that reason.
   r.post('/board/:project/tasks/:id/move', wrap((req) => {
-    const { to, owner } = req.body ?? {};
+    const { to, owner, commit } = req.body ?? {};
     return board.moveTask({
-      project: req.params.project, id: req.params.id, to,
+      project: req.params.project, id: req.params.id, to, commit,
       owner: owner || GUI_ACTOR,
     });
   }));

@@ -99,14 +99,15 @@
       },
       {
         "name": "move_task",
-        "description": "Move a task between board states. Legal: triage->backlog/todo, backlog->todo, todo->in-progress, in-progress->done, plus corrective todo->backlog, in-progress->todo, done->in-progress. Sets owner when entering in-progress. Conductor.",
+        "description": "Move a task between board states. Legal: triage->backlog/todo, backlog->todo, todo->in-progress, in-progress->done, plus corrective todo->backlog, in-progress->todo, done->in-progress. Sets owner when entering in-progress. On landing (->done), stamps commit if given, else the project's current HEAD sha. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
             "project": { "type": "string", "minLength": 1 },
             "id": { "type": "string", "minLength": 1 },
             "to": { "type": "string", "enum": ["triage", "backlog", "todo", "in-progress", "done"] },
-            "owner": { "type": "string", "description": "Session id to attribute as owner when moving to in-progress." }
+            "owner": { "type": "string", "description": "Session id to attribute as owner when moving to in-progress." },
+            "commit": { "type": "string", "description": "Landing commit sha to stamp when moving to done; omit to auto-capture the project's HEAD." }
           },
           "required": ["project", "id", "to"]
         }

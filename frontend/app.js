@@ -287,6 +287,7 @@ function openDetailNode(t) {
       t.logbook?.length
         ? el('ul', { class: 'logbook' }, (t.logbook || []).slice().reverse().map(renderLogLine))
         : el('p', { class: 'muted' }, '— empty —')),
+    t.commit ? detailSection('Commit', t.commit) : null,
     detailSection('Move', null, moveRow),
     detailSection('Edit', null, renderEditForm(t)),
   ]);

@@ -5,6 +5,7 @@
 //   1. the populated board (5 columns + epics rollup)
 //   2. a card's detail panel (Goal / Acceptance / Logbook + move + edit)
 //   3. the board after a legal move (status surfaces the move)
+//   4. a landed card's detail panel showing the stamped Commit field
 // Reuses withPage/waitForServer from the shared code-playwright harness — no
 // chromium/launch logic here. Run: node harness/playwright/snap-gui.mjs
 import path from 'node:path';
@@ -135,6 +136,25 @@ async function main() {
       } else {
         console.log('no legal move target on first card — skipping move screenshot');
       }
+
+      // 4. Land b (currently in-progress) with an explicit commit — the
+      //    sandboxed project isn't a real git repo, so auto-capture would
+      //    resolve to null; passing commit explicitly is what actually
+      //    exercises the rendered Commit field.
+      const landed = await fetch(`${srv.url}/api/board/${PROJECT}/tasks/${seeded.b.id}/move`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ to: 'done', commit: 'abc1234def5678' }),
+      }).then((r) => r.json());
+      if (!landed.ok) throw new Error(`landing seed step refused: ${JSON.stringify(landed)}`);
+
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('.card', { timeout: 10_000 });
+      await page.click(`.card:has(.card-id:text-is("${seeded.b.id}"))`);
+      await page.waitForSelector('#detail-overlay:not(.hidden) .detail-title', { timeout: 10_000 });
+      await page.waitForSelector('.detail-section:has-text("Commit")', { timeout: 10_000 });
+      await page.screenshot({ path: path.join(SHOTS, 'gui-4-detail-done-commit.png'), fullPage: true });
+      console.log('snapped done detail with commit');
     }, { headless: true, viewport: { width: 1440, height: 900 } });
   } finally {
     await srv.close();

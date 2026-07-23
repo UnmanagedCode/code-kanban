@@ -9,11 +9,12 @@
 // a domain outcome (unexpected exceptions are the caller's to catch). Every
 // mutator runs inside withLock(project, ...) so writes serialize on one path.
 
-import { STATES } from './paths.js';
+import { STATES, repoDir } from './paths.js';
 import { validateProject } from './projects.js';
 import { withLock } from './mutex.js';
 import * as store from './store.js';
 import { logLine } from './taskfile.js';
+import { headSha } from './git.js';
 
 function fail(code, reason) { return { ok: false, code, reason }; }
 function nowIso() { return new Date().toISOString(); }
@@ -146,11 +147,11 @@ export async function readProgress({ project, id, limit } = {}) {
 
 // ---- conductor: mutations ----
 
-export async function moveTask({ project, id, to, owner } = {}) {
+export async function moveTask({ project, id, to, owner, commit } = {}) {
   const bad = await requireProject(project);
   if (bad) return bad;
   if (!STATES.includes(to)) return fail('INVALID_STATE', `unknown target state: ${to}`);
-  return withLock(project, () => {
+  return withLock(project, async () => {
     const task = store.readTaskById(project, id);
     if (!task) return fail('TASK_UNKNOWN', `unknown task: ${id}`);
     const from = task.state;
@@ -160,6 +161,15 @@ export async function moveTask({ project, id, to, owner } = {}) {
     }
     // owner is set only while in-progress.
     task.owner = to === 'in-progress' ? (owner ?? null) : null;
+    // Landing (only reachable from in-progress): stamp the merge/commit sha.
+    // An explicit commit wins (the caller may know a squash-merge sha that
+    // differs from the base branch's HEAD at call time); otherwise fall back
+    // to the project's own HEAD. Never refuse the move if neither resolves.
+    if (to === 'done') {
+      const explicit = typeof commit === 'string' ? commit.trim() : '';
+      const sha = explicit || (await headSha(repoDir(project)));
+      if (sha) task.commit = sha;
+    }
     task.logbook.push(logLine(nowIso(), owner, `moved ${from} -> ${to}`));
     store.moveTask(project, id, from, to, task);
     return { ok: true, from, to };

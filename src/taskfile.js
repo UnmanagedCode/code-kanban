@@ -4,7 +4,7 @@
 // (append-only lines). The `state` field is NOT stored in the file — it is the
 // task's on-disk column dir, injected by the store on read.
 
-const SCALAR_KEYS = ['id', 'title', 'project', 'epic', 'priority', 'created', 'owner'];
+const SCALAR_KEYS = ['id', 'title', 'project', 'epic', 'priority', 'created', 'owner', 'commit'];
 
 function serializeDependsOn(deps) {
   return `[${(deps ?? []).join(', ')}]`;
@@ -16,7 +16,7 @@ function parseDependsOn(raw) {
   return inner.split(',').map((s) => s.trim()).filter(Boolean);
 }
 
-// task: {id,title,project,epic?,priority,created,owner?,depends_on[],
+// task: {id,title,project,epic?,priority,created,owner?,commit?,depends_on[],
 //        goal, acceptance:[{text,done}], logbook:[string]}
 export function serialize(task) {
   const fm = [];
@@ -27,6 +27,7 @@ export function serialize(task) {
   fm.push(`priority: ${Number.isFinite(task.priority) ? task.priority : 0}`);
   fm.push(`created: ${task.created}`);
   if (task.owner) fm.push(`owner: ${task.owner}`);
+  if (task.commit) fm.push(`commit: ${task.commit}`);
   fm.push(`depends_on: ${serializeDependsOn(task.depends_on)}`);
 
   const accLines = (task.acceptance ?? []).map(
@@ -53,7 +54,7 @@ export function parse(text, { state } = {}) {
   const lines = text.split('\n');
   const task = {
     id: null, title: '', project: '', epic: null, priority: 0,
-    created: null, owner: null, depends_on: [],
+    created: null, owner: null, commit: null, depends_on: [],
     goal: '', acceptance: [], logbook: [], state: state ?? null,
   };
 
@@ -69,7 +70,7 @@ export function parse(text, { state } = {}) {
       const val = line.slice(idx + 1).trim();
       if (key === 'depends_on') task.depends_on = parseDependsOn(val);
       else if (key === 'priority') task.priority = Number.parseInt(val, 10) || 0;
-      else if (SCALAR_KEYS.includes(key)) task[key] = val === '' ? (key === 'epic' || key === 'owner' ? null : val) : val;
+      else if (SCALAR_KEYS.includes(key)) task[key] = val === '' ? (key === 'epic' || key === 'owner' || key === 'commit' ? null : val) : val;
     }
     i++; // skip closing fence
   }

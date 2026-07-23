@@ -96,6 +96,19 @@ test('legal move returns {ok:true,from,to}; illegal move returns 200 INVALID_STA
   });
 });
 
+test('move to done forwards an explicit commit through to the stamped task', async () => {
+  await withServer(async ({ json }) => {
+    const id = (await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'c' } })).body.id;
+    await json(`/api/board/demo/tasks/${id}/move`, { method: 'POST', body: { to: 'todo' } });
+    await json(`/api/board/demo/tasks/${id}/move`, { method: 'POST', body: { to: 'in-progress' } });
+    const moved = await json(`/api/board/demo/tasks/${id}/move`, { method: 'POST', body: { to: 'done', commit: 'cafe1234' } });
+    assert.equal(moved.body.ok, true);
+
+    const read = await json(`/api/board/demo/tasks/${id}`);
+    assert.equal(read.body.task.commit, 'cafe1234');
+  });
+});
+
 test('move to a non-in-progress destination clears owner (no stuck gui owner)', async () => {
   await withServer(async ({ json }) => {
     const id = (await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'o' } })).body.id;

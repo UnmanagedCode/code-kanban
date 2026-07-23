@@ -1,8 +1,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import path from 'node:path';
 import { freshRoot, cleanup } from './_helpers.mjs';
 import * as board from '../src/board.js';
 import { _setProjectFetcher } from '../src/projects.js';
+
+// Creates a real git repo at <root>/<project> with one commit and returns its
+// HEAD sha, so tests can assert the auto-captured value against ground truth.
+function initRepo(root, project) {
+  const dir = path.join(root, project);
+  const git = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
+  execFileSync('git', ['init', '-q', dir]);
+  git('-c', 'user.email=test@test.com', '-c', 'user.name=test', 'commit', '--allow-empty', '-q', '-m', 'init');
+  return git('rev-parse', 'HEAD').trim();
+}
 
 // Every test injects a fixed live-project list so validation never hits the net.
 function useProjects(names) { _setProjectFetcher(async () => names); }
@@ -223,11 +235,74 @@ test('update_task applies whitelisted fields and ignores others', async () => {
   useProjects(['demo']);
   try {
     const { id } = await board.fileTask({ project: 'demo', title: 'orig' });
-    await board.updateTask({ project: 'demo', id, fields: { title: 'renamed', priority: 5, bogus: 'x' } });
+    await board.updateTask({ project: 'demo', id, fields: { title: 'renamed', priority: 5, bogus: 'x', commit: 'sneaky' } });
     const r = await board.readTask({ project: 'demo', id });
     assert.equal(r.task.title, 'renamed');
     assert.equal(r.task.priority, 5);
     assert.equal('bogus' in r.task, false);
+    assert.equal(r.task.commit, null); // commit is not in UPDATABLE — update_task can't set it
+  } finally { await cleanup(root); }
+});
+
+test('moveTask stamps the landing commit hash on in-progress -> done', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const sha = initRepo(root, 'demo');
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w' });
+    assert.equal((await board.moveTask({ project: 'demo', id, to: 'done' })).ok, true);
+
+    const r = await board.readTask({ project: 'demo', id });
+    assert.equal(r.task.commit, sha);
+  } finally { await cleanup(root); }
+});
+
+test('moveTask: an explicit commit param overrides auto-capture', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    initRepo(root, 'demo'); // present, but should be ignored in favor of the explicit sha
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w' });
+    await board.moveTask({ project: 'demo', id, to: 'done', commit: 'deadbeefcafe' });
+
+    const r = await board.readTask({ project: 'demo', id });
+    assert.equal(r.task.commit, 'deadbeefcafe');
+  } finally { await cleanup(root); }
+});
+
+test('moveTask: landing still succeeds with no commit when the project is not a git repo', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    // No repo created at <root>/demo — headSha resolves to null.
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w' });
+    const mv = await board.moveTask({ project: 'demo', id, to: 'done' });
+    assert.equal(mv.ok, true);
+
+    const r = await board.readTask({ project: 'demo', id });
+    assert.equal(r.task.commit, null);
+  } finally { await cleanup(root); }
+});
+
+test('moveTask: reopening (done -> in-progress) does not clobber the stamped commit', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const sha = initRepo(root, 'demo');
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w' });
+    await board.moveTask({ project: 'demo', id, to: 'done' });
+    assert.equal((await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w' })).ok, true); // reopen
+
+    const r = await board.readTask({ project: 'demo', id });
+    assert.equal(r.task.commit, sha); // untouched by the reopen move
   } finally { await cleanup(root); }
 });
 

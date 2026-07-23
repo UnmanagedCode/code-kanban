@@ -15,7 +15,7 @@ Task files: minimal `---` frontmatter (`id, title, project, epic?, priority, cre
 depends_on`) + `## Goal`, `## Acceptance` (checkboxes), `## Logbook` (append-only). Parsed by
 `src/taskfile.js` (hand-rolled, no YAML dep).
 
-## Decision: the plugin does NOT write git
+## Decision: the plugin does NOT write git (but does one narrow read)
 
 Moves and edits are **plain atomic filesystem ops** (`store.js`): writes are tmp-file +
 `rename`; a move writes the card in the new state dir then unlinks the old. The plugin never
@@ -24,8 +24,13 @@ runs `git add`/`git mv`/`git commit` inside `.conduct`.
 **Why** (supersedes the earlier plan's `git mv` idea): `.conduct` is the conductor's own git
 repo. A second git writer would contend with the conductor's index/commits and risk sweeping
 half-staged board changes into unrelated commits. Per-card history already lives in the Logbook;
-any git snapshotting of the board is the conductor's concern at its own cadence. This also keeps
-git off the core store path (no `git.js` needed).
+any git snapshotting of the board is the conductor's concern at its own cadence.
+
+This decision is scoped to `.conduct`, not to git entirely: landing a task (`move_task` to
+`done`) does one narrow **read** — `git rev-parse HEAD` (`src/git.js:headSha`) — against the
+*orchestrated project's own* checkout (`paths.js:repoDir`, a sibling of `.conduct` under
+`PROJECTS_ROOT`), to stamp a `commit` field on the task. It never touches `.conduct` and never
+writes; a missing/non-repo checkout resolves to `null` and the move still succeeds.
 
 ## Cross-project epics (slug guard + lock key)
 
