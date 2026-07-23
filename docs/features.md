@@ -19,8 +19,8 @@ conductor's own tool — not a team/shared surface.
 ## Duties (who may do what)
 
 - The **conductor** is the sole reader and sole mutator: all moves, updates, epics, and reads.
-- **Workers are pure emitters** — only `file_task` and `append_log`, no reads. A worker never
-  handles a task id: `append_log` resolves the target card **server-side from the caller's
+- **Workers are pure emitters** — only `file_task` and `log_progress`, no reads. A worker never
+  handles a task id: `log_progress` resolves the target card **server-side from the caller's
   session** (the card the conductor assigned it in `in-progress`).
 
 ## Tools
@@ -28,10 +28,10 @@ conductor's own tool — not a team/shared surface.
 | Tool | Who | Effect |
 |------|-----|--------|
 | `file_task` | worker + conductor | Create a task in `triage`; returns the new id. |
-| `append_log` | worker + conductor | Append a logbook line to the session's owned in-progress card. |
+| `log_progress` | worker + conductor | Append a logbook line to the session's owned in-progress card. |
 | `list_tasks` | conductor | List tasks, optionally filtered by `state`/`epic`. |
 | `read_task` | conductor | Read one task (+ logbook, optionally last `logTail`). |
-| `read_log` | conductor | Read a task's logbook only, most-recent first. |
+| `read_progress` | conductor | Read a task's logbook only, most-recent first. |
 | `move_task` | conductor | Move between states; sets `owner` on entering `in-progress`. |
 | `update_task` | conductor | Update `title`/`goal`/`epic`/`priority`/`depends_on`. |
 | `create_epic` | conductor | Create/refresh a project-scoped epic. |

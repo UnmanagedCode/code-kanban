@@ -60,7 +60,7 @@ test('corrective transitions are allowed (demote, abandon, reopen)', async () =>
   } finally { await cleanup(root); }
 });
 
-test('append_log resolves the in-progress card owned by the session', async () => {
+test('log_progress resolves the in-progress card owned by the session', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
@@ -69,17 +69,17 @@ test('append_log resolves the in-progress card owned by the session', async () =
     await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'worker-xyz' });
 
     // wrong / missing session -> refusal
-    assert.equal((await board.appendLog({ project: 'demo', entry: 'hi', sessionId: 'other' })).code, 'TASK_UNKNOWN');
-    assert.equal((await board.appendLog({ project: 'demo', entry: 'hi', sessionId: null })).code, 'TASK_UNKNOWN');
+    assert.equal((await board.logProgress({ project: 'demo', entry: 'hi', sessionId: 'other' })).code, 'TASK_UNKNOWN');
+    assert.equal((await board.logProgress({ project: 'demo', entry: 'hi', sessionId: null })).code, 'TASK_UNKNOWN');
 
-    const ok = await board.appendLog({ project: 'demo', entry: 'made progress', sessionId: 'worker-xyz' });
+    const ok = await board.logProgress({ project: 'demo', entry: 'made progress', sessionId: 'worker-xyz' });
     assert.equal(ok.ok, true);
-    const log = await board.readLog({ project: 'demo', id });
+    const log = await board.readProgress({ project: 'demo', id });
     assert.match(log.entries[0], /made progress/); // most-recent first
   } finally { await cleanup(root); }
 });
 
-test('append_log with two owned cards resolves to the most recently modified', async () => {
+test('log_progress with two owned cards resolves to the most recently modified', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
@@ -90,8 +90,8 @@ test('append_log with two owned cards resolves to the most recently modified', a
       await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w' });
     }
     // b was moved into in-progress last -> it is the most recently modified.
-    await board.appendLog({ project: 'demo', entry: 'target-b', sessionId: 'w' });
-    const logB = await board.readLog({ project: 'demo', id: b });
+    await board.logProgress({ project: 'demo', entry: 'target-b', sessionId: 'w' });
+    const logB = await board.readProgress({ project: 'demo', id: b });
     assert.match(logB.entries[0], /target-b/);
   } finally { await cleanup(root); }
 });

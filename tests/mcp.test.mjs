@@ -50,12 +50,12 @@ test('caller.sessionId is threaded into owner-scoped tools', async () => {
     await mcp.handle({ tool: 'move_task', arguments: { project: 'demo', id, to: 'todo' } });
     await mcp.handle({ tool: 'move_task', arguments: { project: 'demo', id, to: 'in-progress', owner: 'sid-123' } });
 
-    // append_log takes no id; the card is resolved from caller.sessionId.
+    // log_progress takes no id; the card is resolved from caller.sessionId.
     const res = await mcp.handle(
-      { tool: 'append_log', arguments: { project: 'demo', entry: 'via-mcp' }, caller: { sessionId: 'sid-123' } },
+      { tool: 'log_progress', arguments: { project: 'demo', entry: 'via-mcp' }, caller: { sessionId: 'sid-123' } },
     );
     assert.equal(res.body.result.ok, true);
-    const log = await mcp.handle({ tool: 'read_log', arguments: { project: 'demo', id } });
+    const log = await mcp.handle({ tool: 'read_progress', arguments: { project: 'demo', id } });
     assert.match(log.body.result.entries[0], /via-mcp/);
   } finally { await cleanup(root); }
 });

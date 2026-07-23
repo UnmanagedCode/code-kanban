@@ -10,7 +10,7 @@ team surface. Same extension pattern as the sibling plugins `code-hub` and `code
 - **Columns:** `triage → backlog → todo → in-progress → done` (`triage` is an intake inbox;
   no `review` column — review is a conductor process). One markdown file per task.
 - **Duties:** the conductor is the sole reader/mutator; workers are pure emitters (`file_task`,
-  `append_log`) that never handle a task id — `append_log` finds the card owned by the calling
+  `log_progress`) that never handle a task id — `log_progress` finds the card owned by the calling
   session server-side.
 - **Epics:** project-scoped, first-class, with per-state rollups computed on read.
 - **Web GUI:** a local zero-build board UI is served at `/` (manifest `frontend.path`), in-process

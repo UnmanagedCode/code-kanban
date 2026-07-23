@@ -7,10 +7,10 @@ import * as board from './board.js';
 // {error}. Owner-scoped tools receive the caller's server-resolved sessionId.
 const handlers = {
   file_task:   (a, sid) => board.fileTask({ ...a, sessionId: sid }),
-  append_log:  (a, sid) => board.appendLog({ project: a.project, entry: a.entry, sessionId: sid }),
+  log_progress: (a, sid) => board.logProgress({ project: a.project, entry: a.entry, sessionId: sid }),
   list_tasks:  (a) => board.listTasks(a),
   read_task:   (a) => board.readTask(a),
-  read_log:    (a) => board.readLog(a),
+  read_progress: (a) => board.readProgress(a),
   move_task:   (a) => board.moveTask(a),
   update_task: (a) => board.updateTask(a),
   create_epic: (a) => board.createEpic(a),
