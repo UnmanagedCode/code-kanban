@@ -144,6 +144,43 @@ test('epics: create (upsert) -> list -> read with rollup', async () => {
   });
 });
 
+test('cross-project epics: POST /api/epics -> GET /api/epics/:slug -> appears in member list', async () => {
+  const root = await freshRoot();
+  useProjects(['web', 'api']);
+  const srv = await boot();
+  try {
+    const created = await srv.json('/api/epics', { method: 'POST', body: { slug: 'platform', title: 'Platform', goal: 'shared', projects: ['web', 'api'] } });
+    assert.equal(created.status, 200);
+    assert.equal(created.body.ok, true);
+
+    // File under it in both members.
+    await srv.json('/api/board/web/tasks', { method: 'POST', body: { title: 'w', epic: 'platform' } });
+    await srv.json('/api/board/api/tasks', { method: 'POST', body: { title: 'a', epic: 'platform' } });
+
+    // Direct read by slug aggregates across members.
+    const read = await srv.json('/api/epics/platform');
+    assert.equal(read.body.ok, true);
+    assert.deepEqual(read.body.epic.projects, ['web', 'api']);
+    assert.equal(read.body.epic.rollup.triage, 2);
+    assert.equal(read.body.tasks.length, 2);
+
+    // It also shows up in a member project's epic list, flagged with projects.
+    const list = await srv.json('/api/board/web/epics');
+    const pe = list.body.epics.find((e) => e.slug === 'platform');
+    assert.deepEqual(pe.projects, ['web', 'api']);
+    assert.equal(pe.rollup.triage, 2);
+
+    // Slug conflict surfaces as a normal 200 refusal.
+    await srv.json('/api/board/web/epics', { method: 'POST', body: { slug: 'local', title: 'Local' } });
+    const clash = await srv.json('/api/epics', { method: 'POST', body: { slug: 'local', title: 'X', projects: ['web', 'api'] } });
+    assert.equal(clash.status, 200);
+    assert.equal(clash.body.code, 'EPIC_CONFLICT');
+  } finally {
+    await srv.close();
+    await cleanup(root);
+  }
+});
+
 test('unknown project -> 200 PROJECT_UNKNOWN (not a transport error)', async () => {
   await withServer(async ({ json }) => {
     const { status, body } = await json('/api/board/ghost/tasks');

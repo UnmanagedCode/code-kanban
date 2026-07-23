@@ -126,21 +126,22 @@
       },
       {
         "name": "create_epic",
-        "description": "Create (or refresh title/goal of) a project-scoped epic. Conductor.",
+        "description": "Create or refresh an epic (idempotent upsert). Pass `project` for a project-scoped epic, or `projects` (≥2 members) for a cross-project epic spanning them; exactly one. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
-            "project": { "type": "string", "minLength": 1 },
+            "project": { "type": "string", "minLength": 1, "description": "Owning project for a project-scoped epic; mutually exclusive with projects." },
+            "projects": { "type": "array", "items": { "type": "string" }, "description": "Member projects (≥2) for a cross-project epic; mutually exclusive with project." },
             "slug": { "type": "string", "minLength": 1, "pattern": "^[a-z0-9._-]+$" },
             "title": { "type": "string", "minLength": 1 },
             "goal": { "type": "string" }
           },
-          "required": ["project", "slug", "title"]
+          "required": ["slug", "title"]
         }
       },
       {
         "name": "list_epics",
-        "description": "List a project's epics with their computed per-state rollup. Conductor.",
+        "description": "List a project's epics with their computed per-state rollup, including cross-project epics that span it. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -151,14 +152,14 @@
       },
       {
         "name": "read_epic",
-        "description": "Read an epic (goal + computed rollup) and its tasks. Conductor.",
+        "description": "Read an epic (goal + computed rollup) and its tasks; a cross-project epic aggregates across its member projects. Omit `project` to read a cross-project epic by slug. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
-            "project": { "type": "string", "minLength": 1 },
+            "project": { "type": "string", "minLength": 1, "description": "Owning project for a project-scoped epic; omit for a cross-project epic." },
             "slug": { "type": "string", "minLength": 1 }
           },
-          "required": ["project", "slug"]
+          "required": ["slug"]
         }
       }
     ]

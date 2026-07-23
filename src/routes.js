@@ -118,6 +118,16 @@ export function buildRoutes() {
     return board.createEpic({ project: req.params.project, slug, title, goal });
   }));
 
+  // Cross-project epics: no owning :project. Create takes a `projects` member
+  // list; read resolves by slug and aggregates rollup/tasks across members. A
+  // cross-project epic also appears in each member's /board/:project/epics list.
+  r.post('/epics', wrap((req) => {
+    const { slug, title, goal, projects } = req.body ?? {};
+    return board.createEpic({ projects, slug, title, goal });
+  }));
+
+  r.get('/epics/:slug', wrap((req) => board.readEpic({ slug: req.params.slug })));
+
   // Malformed JSON body -> 400 {error}, not Express's default HTML page.
   r.use((err, req, res, next) => {
     if (err.type === 'entity.parse.failed' || err instanceof SyntaxError) {

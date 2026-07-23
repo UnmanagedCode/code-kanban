@@ -12,8 +12,11 @@ under `<.conduct>/kanban/`.
   reads, and it never handles a task id.
 - **owner** — the worker's `sessionId`, stamped on a card only while it is `in-progress`.
 - **triage** — the intake inbox column; its only exits are `backlog` or `todo`.
-- **epic** — a project-scoped grouping (`goal` + computed per-state rollup); tasks carry a slug.
-- **rollup** — per-state task counts for an epic, computed on read, never stored.
+- **epic** — a grouping (`goal` + computed per-state rollup); tasks carry a slug. Either
+  **project-scoped** (`projects/<p>/epics/`) or **cross-project** (top-level `epics/`, spanning ≥2
+  members). See [[file-store-layout]].
+- **rollup** — per-state task counts for an epic, computed on read, never stored; a cross-project
+  epic aggregates across its member projects.
 
 ## Two firm invariants (don't regress)
 

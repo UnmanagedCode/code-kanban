@@ -41,6 +41,27 @@ test('domain refusal rides in {result:{ok:false}}, not {error}', async () => {
   } finally { await cleanup(root); }
 });
 
+test('cross-project epic via mcp: create with projects, read without project', async () => {
+  const root = await freshRoot();
+  useProjects(['web', 'api']);
+  try {
+    const c = await mcp.handle({ tool: 'create_epic', arguments: { projects: ['web', 'api'], slug: 'platform', title: 'Platform' } });
+    assert.equal(c.body.result.ok, true);
+    await mcp.handle({ tool: 'file_task', arguments: { project: 'api', title: 't', epic: 'platform' } });
+
+    const re = await mcp.handle({ tool: 'read_epic', arguments: { slug: 'platform' } });
+    assert.equal(re.body.result.ok, true);
+    assert.deepEqual(re.body.result.epic.projects, ['web', 'api']);
+    assert.equal(re.body.result.tasks.length, 1);
+
+    // Conflict rides in {result:{ok:false}}, not {error}.
+    await mcp.handle({ tool: 'create_epic', arguments: { project: 'web', slug: 'auth', title: 'Auth' } });
+    const clash = await mcp.handle({ tool: 'create_epic', arguments: { projects: ['web', 'api'], slug: 'auth', title: 'Auth X' } });
+    assert.equal(clash.body.error, undefined);
+    assert.equal(clash.body.result.code, 'EPIC_CONFLICT');
+  } finally { await cleanup(root); }
+});
+
 test('caller.sessionId is threaded into owner-scoped tools', async () => {
   const root = await freshRoot();
   useProjects(['demo']);

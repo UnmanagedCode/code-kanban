@@ -41,7 +41,7 @@ async function requireProject(project) {
 
 function summary(t) {
   return {
-    id: t.id, title: t.title, state: t.state, epic: t.epic ?? null,
+    id: t.id, title: t.title, state: t.state, project: t.project, epic: t.epic ?? null,
     priority: t.priority, owner: t.owner ?? null, depends_on: t.depends_on,
     created: t.created,
   };
@@ -65,7 +65,7 @@ export async function fileTask({ project, title, goal, acceptance, epic, depends
   }
   return withLock(project, () => {
     store.ensureProjectDirs(project);
-    if (epic && !store.epicExists(project, epic)) {
+    if (epic && !epicVisibleIn(project, epic)) {
       return fail('EPIC_UNKNOWN', `unknown epic: ${epic} (create it first with create_epic)`);
     }
     const id = store.nextId(project);
@@ -175,7 +175,7 @@ export async function updateTask({ project, id, fields } = {}) {
   return withLock(project, () => {
     const task = store.readTaskById(project, id);
     if (!task) return fail('TASK_UNKNOWN', `unknown task: ${id}`);
-    if (fields.epic && !store.epicExists(project, fields.epic)) {
+    if (fields.epic && !epicVisibleIn(project, fields.epic)) {
       return fail('EPIC_UNKNOWN', `unknown epic: ${fields.epic}`);
     }
     for (const key of UPDATABLE) {
@@ -190,19 +190,55 @@ export async function updateTask({ project, id, fields } = {}) {
 }
 
 // ---- epics ----
+//
+// An epic is EITHER project-scoped (a <project>/epics/<slug>.md record) OR
+// cross-project (a top-level epics/<slug>.md record naming ≥2 member projects).
+// Tasks join either kind via the same `epic: <slug>` field. A slug is never both
+// at once for a given project: createEpic refuses the collision (EPIC_CONFLICT),
+// so a task's epic slug resolves unambiguously — to the cross-project epic if one
+// covers the task's project, else the project's own per-project epic.
 
 const SLUG_RE = /^[a-z0-9._-]+$/;
 
-export async function createEpic({ project, slug, title, goal } = {}) {
-  const bad = await requireProject(project);
-  if (bad) return bad;
+// Sole lock key for the top-level cross-project store. Distinct from every
+// project name (those match projects.NAME_RE, which forbids a leading space), so
+// cross-epic writes serialize among themselves without touching a project mutex —
+// the per-project single-writer invariant is preserved.
+const CROSS_LOCK = ' cross-epics';
+
+// Does slug `slug` name an epic visible to tasks in `project`? True if the
+// project has its own epic file, OR a cross-project epic covering the project.
+function epicVisibleIn(project, slug) {
+  if (store.epicExists(project, slug)) return true;
+  const x = store.readCrossEpic(slug);
+  return !!x && x.projects.includes(project);
+}
+
+export async function createEpic({ project, projects, slug, title, goal } = {}) {
   if (typeof slug !== 'string' || !SLUG_RE.test(slug)) {
     return fail('INVALID_STATE', 'slug must match ^[a-z0-9._-]+$');
   }
   if (typeof title !== 'string' || !title.trim()) {
     return fail('INVALID_STATE', 'title is required');
   }
+  const isCross = projects !== undefined;
+  if (isCross === (project !== undefined)) {
+    return fail('INVALID_STATE', 'give exactly one of project (project-scoped) or projects (cross-project)');
+  }
+  return isCross
+    ? createCrossEpic({ projects, slug, title, goal })
+    : createProjectEpic({ project, slug, title, goal });
+}
+
+async function createProjectEpic({ project, slug, title, goal }) {
+  const bad = await requireProject(project);
+  if (bad) return bad;
   return withLock(project, () => {
+    // Guard: a cross-project epic covering this project owns the slug.
+    const x = store.readCrossEpic(slug);
+    if (x && x.projects.includes(project)) {
+      return fail('EPIC_CONFLICT', `slug ${slug} is a cross-project epic covering ${project}`);
+    }
     store.ensureProjectDirs(project);
     // Upsert: create, or refresh title/goal of an existing epic (idempotent).
     const existing = store.readEpic(project, slug);
@@ -214,10 +250,46 @@ export async function createEpic({ project, slug, title, goal } = {}) {
   });
 }
 
+async function createCrossEpic({ projects, slug, title, goal }) {
+  if (!Array.isArray(projects)) return fail('INVALID_STATE', 'projects must be an array');
+  const members = [...new Set(projects)];
+  if (members.length < 2) {
+    return fail('INVALID_STATE', 'a cross-project epic must span at least 2 projects');
+  }
+  for (const p of members) {
+    if (!(await validateProject(p))) return fail('PROJECT_UNKNOWN', `unknown project: ${p}`);
+  }
+  return withLock(CROSS_LOCK, () => {
+    // Guard: any member already owns this slug as a per-project epic.
+    const clash = members.find((p) => store.epicExists(p, slug));
+    if (clash) {
+      return fail('EPIC_CONFLICT', `slug ${slug} is a per-project epic in ${clash}`);
+    }
+    const existing = store.readCrossEpic(slug);
+    store.writeCrossEpic({
+      slug, title: title.trim(), goal: goal ?? '', projects: members,
+      created: existing?.created ?? nowIso(),
+    });
+    return { ok: true };
+  });
+}
+
+// Per-state counts for a project-scoped epic (one project's tasks).
 function rollup(project, slug) {
   const counts = Object.fromEntries(STATES.map((s) => [s, 0]));
   for (const t of store.listTasks(project)) {
     if (t.epic === slug) counts[t.state] += 1;
+  }
+  return counts;
+}
+
+// Per-state counts for a cross-project epic, aggregated across all members.
+function crossRollup(slug, members) {
+  const counts = Object.fromEntries(STATES.map((s) => [s, 0]));
+  for (const p of members) {
+    for (const t of store.listTasks(p)) {
+      if (t.epic === slug) counts[t.state] += 1;
+    }
   }
   return counts;
 }
@@ -227,20 +299,38 @@ export async function listEpics({ project } = {}) {
   if (bad) return bad;
   const epics = store.listEpicSlugs(project).map((slug) => {
     const e = store.readEpic(project, slug);
-    return { slug, title: e?.title ?? '', rollup: rollup(project, slug) };
+    return { slug, title: e?.title ?? '', rollup: rollup(project, slug), projects: null };
   });
+  // Cross-project epics that span this project, with rollups over ALL members.
+  for (const slug of store.listCrossEpicSlugs()) {
+    const x = store.readCrossEpic(slug);
+    if (x && x.projects.includes(project)) {
+      epics.push({ slug, title: x.title, rollup: crossRollup(slug, x.projects), projects: x.projects });
+    }
+  }
   return { ok: true, epics };
 }
 
 export async function readEpic({ project, slug } = {}) {
-  const bad = await requireProject(project);
-  if (bad) return bad;
-  const e = store.readEpic(project, slug);
-  if (!e) return fail('EPIC_UNKNOWN', `unknown epic: ${slug}`);
-  const tasks = sortTasks(store.listTasks(project).filter((t) => t.epic === slug)).map(summary);
+  if (project !== undefined) {
+    const bad = await requireProject(project);
+    if (bad) return bad;
+    // Project-scoped epic wins (the conflict guard makes this unambiguous).
+    const e = store.readEpic(project, slug);
+    if (e) {
+      const tasks = sortTasks(store.listTasks(project).filter((t) => t.epic === slug)).map(summary);
+      return { ok: true, epic: { slug, title: e.title, goal: e.goal, rollup: rollup(project, slug) }, tasks };
+    }
+  }
+  // Cross-project epic (by slug; also the fall-through when project is a member).
+  const x = store.readCrossEpic(slug);
+  if (!x) return fail('EPIC_UNKNOWN', `unknown epic: ${slug}`);
+  const tasks = sortTasks(
+    x.projects.flatMap((p) => store.listTasks(p).filter((t) => t.epic === slug)),
+  ).map(summary);
   return {
     ok: true,
-    epic: { slug, title: e.title, goal: e.goal, rollup: rollup(project, slug) },
+    epic: { slug, title: x.title, goal: x.goal, rollup: crossRollup(slug, x.projects), projects: x.projects },
     tasks,
   };
 }

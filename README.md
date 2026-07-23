@@ -12,7 +12,8 @@ team surface. Same extension pattern as the sibling plugins `code-hub` and `code
 - **Duties:** the conductor is the sole reader/mutator; workers are pure emitters (`file_task`,
   `log_progress`) that never handle a task id — `log_progress` finds the card owned by the calling
   session server-side.
-- **Epics:** project-scoped, first-class, with per-state rollups computed on read.
+- **Epics:** first-class, per-state rollups computed on read; project-scoped **or** cross-project
+  (spanning several projects with an aggregated rollup).
 - **Web GUI:** a local zero-build board UI is served at `/` (manifest `frontend.path`), in-process
   over the same `board.js` service layer.
 

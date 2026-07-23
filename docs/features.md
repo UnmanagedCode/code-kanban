@@ -12,9 +12,10 @@ conductor's own tool — not a team/shared surface.
     in `in-progress` through review and only reaches `done` on landing.
 - **Tasks:** one markdown file per task, with a Goal, Acceptance checklist, and an append-only
   Logbook. IDs are server-assigned, per-project, sortable (`2026-0042`).
-- **Epics:** first-class, project-scoped (`goal` + a per-state rollup computed on read). A task
-  carries an optional `epic` slug. Splitting an epic needs no verb — file N tasks sharing the
-  same `epic`.
+- **Epics:** first-class (`goal` + a per-state rollup computed on read). A task carries an optional
+  `epic` slug. Splitting an epic needs no verb — file N tasks sharing the same `epic`. An epic is
+  either **project-scoped** or **cross-project** (spans ≥2 projects, rollup aggregated across all
+  members); a task's slug joins whichever kind covers its project.
 
 ## Duties (who may do what)
 
@@ -34,11 +35,12 @@ conductor's own tool — not a team/shared surface.
 | `read_progress` | conductor | Read a task's logbook only, most-recent first. |
 | `move_task` | conductor | Move between states; sets `owner` on entering `in-progress`. |
 | `update_task` | conductor | Update `title`/`goal`/`epic`/`priority`/`depends_on`. |
-| `create_epic` | conductor | Create/refresh a project-scoped epic. |
-| `list_epics` | conductor | Epics with computed rollups. |
-| `read_epic` | conductor | One epic (+ rollup) and its tasks. |
+| `create_epic` | conductor | Create/refresh an epic — `project` (project-scoped) or `projects` (cross-project). |
+| `list_epics` | conductor | A project's epics + cross-project epics spanning it, with computed rollups. |
+| `read_epic` | conductor | One epic (+ rollup) and its tasks; cross-project epics aggregate across members. |
 
-Every tool takes a required `project`, validated against the live project list.
+Every tool takes a `project` (validated against the live project list), except `create_epic`/
+`read_epic`, which instead accept a cross-project epic's `projects` list / a bare slug.
 
 ## Web GUI
 
@@ -54,7 +56,9 @@ so it shares the same `board.js` service layer and per-project mutex as the MCP 
 - **Card detail** — Goal, Acceptance checklist (read-only), and the append-only Logbook; a
   Move control and an Edit form (title/goal/epic/priority/depends_on). Acceptance is not
   editable in the GUI.
-- **Epics** — rollup table; "open" reads one epic (+ its tasks). New-epic form upserts by slug.
+- **Epics** — rollup table; "open" reads one epic (+ its tasks). New-epic form upserts by slug; its
+  "Span projects" multi-select makes a cross-project epic when ≥2 are picked (else project-scoped).
+  Cross-project epics show a badge + member list; their detail lists each task's project.
 - **New task** — files into `triage` (acceptance is one line per line → checkboxes).
 
 Domain refusals (illegal move, unknown project/epic) surface as a status-line message, not a

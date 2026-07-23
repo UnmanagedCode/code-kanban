@@ -23,7 +23,7 @@ So a refusal travels as `{ result: { ok:false, code, reason } }` at HTTP 200 —
 result the conductor relays to the model, **not** an `{error}`. `{error}` is reserved for a
 malformed envelope or an unexpected exception.
 
-**Refusal codes:** `PROJECT_UNKNOWN`, `TASK_UNKNOWN`, `EPIC_UNKNOWN`, `INVALID_STATE`.
+**Refusal codes:** `PROJECT_UNKNOWN`, `TASK_UNKNOWN`, `EPIC_UNKNOWN`, `EPIC_CONFLICT`, `INVALID_STATE`.
 
 ## Tool signatures
 
@@ -38,12 +38,14 @@ malformed envelope or an unexpected exception.
   (unknown state, same-state no-op, other pair) → `INVALID_STATE`. `owner` is stored only while
   in `in-progress` and cleared on leaving it.
 - `update_task({project, id, fields}) → {ok}` — `fields` ⊆ `{title, goal, epic, priority, depends_on}`; other keys ignored. `fields.epic` must exist → else `EPIC_UNKNOWN`.
-- `create_epic({project, slug, title, goal?}) → {ok}` — `slug` matches `^[a-z0-9._-]+$`; idempotent upsert.
-- `list_epics({project}) → {ok, epics:[{slug, title, rollup}]}`.
-- `read_epic({project, slug}) → {ok, epic:{slug,title,goal,rollup}, tasks:[summary]}`.
+- `create_epic({project?, projects?, slug, title, goal?}) → {ok}` — `slug` matches `^[a-z0-9._-]+$`; idempotent upsert. Give **exactly one** of `project` (project-scoped) or `projects` (a cross-project epic spanning ≥2 members) → else `INVALID_STATE`. A slug may not be both a cross-project epic and a per-project epic in one of its members → `EPIC_CONFLICT` (guarded in both create orders).
+- `list_epics({project}) → {ok, epics:[{slug, title, rollup, projects}]}` — the project's own epics (`projects:null`) plus cross-project epics spanning it (`projects:[…]`, `rollup` aggregated over all members).
+- `read_epic({project?, slug}) → {ok, epic:{slug,title,goal,rollup[,projects]}, tasks:[summary]}` — with `project`, a project-scoped epic resolves first, else a cross-project epic covering it. Omit `project` to read a cross-project epic by slug; its `rollup` and `tasks` aggregate across all member projects and `epic.projects` lists them.
 
-A `summary` is `{id, title, state, epic, priority, owner, depends_on, created}`. A `rollup` is a
-per-state count object over `triage/backlog/todo/in-progress/done`.
+A `summary` is `{id, title, state, project, epic, priority, owner, depends_on, created}`. A `rollup`
+is a per-state count object over `triage/backlog/todo/in-progress/done`. `file_task`/`update_task`
+accept an `epic` slug that resolves to a per-project epic in the task's project **or** a
+cross-project epic covering it → else `EPIC_UNKNOWN`.
 
 ## Manifest / schema constraints
 
@@ -74,9 +76,11 @@ through unchanged as the HTTP body.
 | `POST /api/board/:project/tasks` | `board.fileTask` | `{title, goal?, acceptance?, epic?, depends_on?}` | `{ok, id}` (lands in `triage`) |
 | `PATCH /api/board/:project/tasks/:id` | `board.updateTask` | body **is** `fields` ⊆ `{title, goal, epic, priority, depends_on}` | `{ok}` |
 | `POST /api/board/:project/tasks/:id/move` | `board.moveTask` | `{to, owner?}` | `{ok, from, to}` |
-| `GET /api/board/:project/epics` | `board.listEpics` | — | `{ok, epics:[{slug, title, rollup}]}` |
-| `GET /api/board/:project/epics/:slug` | `board.readEpic` | — | `{ok, epic, tasks:[summary]}` |
-| `POST /api/board/:project/epics` | `board.createEpic` | `{slug, title, goal?}` | `{ok}` |
+| `GET /api/board/:project/epics` | `board.listEpics` | — | `{ok, epics:[{slug, title, rollup, projects}]}` (incl. cross-project epics spanning the project) |
+| `GET /api/board/:project/epics/:slug` | `board.readEpic` | — | `{ok, epic, tasks:[summary]}` (resolves a cross-project epic the project belongs to) |
+| `POST /api/board/:project/epics` | `board.createEpic` | `{slug, title, goal?}` | `{ok}` (project-scoped) |
+| `GET /api/epics/:slug` | `board.readEpic` | — | `{ok, epic, tasks:[summary]}` (cross-project epic by slug) |
+| `POST /api/epics` | `board.createEpic` | `{slug, title, goal?, projects:[…]}` | `{ok}` (cross-project epic; `projects` has ≥2 members) |
 
 Notes:
 - The `POST /epics` route exposes `createEpic`'s **real behavior — an upsert**: an existing slug

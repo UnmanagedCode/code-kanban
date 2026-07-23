@@ -16,6 +16,7 @@ import { bootKanban } from './boot-kanban.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = path.join(__dirname, 'screenshots');
 const PROJECT = 'demo';
+const PROJECT2 = 'web'; // second project, for the cross-project epic
 
 async function ensureShotsDir() {
   await fs.mkdir(SHOTS, { recursive: true });
@@ -26,6 +27,7 @@ async function ensureShotsDir() {
 // top-level dirs under PROJECTS_ROOT, so create one so `demo` is selectable.
 async function seed(base, projectsRoot) {
   await fs.mkdir(path.join(projectsRoot, PROJECT), { recursive: true });
+  await fs.mkdir(path.join(projectsRoot, PROJECT2), { recursive: true });
   const api = (p, opts = {}) => fetch(base + p, {
     headers: { 'content-type': 'application/json' },
     ...opts,
@@ -65,6 +67,12 @@ async function seed(base, projectsRoot) {
   await call(`/api/board/${PROJECT}/tasks/${b.id}/move`, { method: 'POST', body: { to: 'todo' } }, 'move b → todo');
   await call(`/api/board/${PROJECT}/tasks/${b.id}/move`, { method: 'POST', body: { to: 'in-progress' } }, 'move b → in-progress');
   await call(`/api/board/${PROJECT}/tasks/${c.id}/move`, { method: 'POST', body: { to: 'backlog' } }, 'move c → backlog');
+
+  // Cross-project epic spanning demo + web, with a task under it in EACH project,
+  // so demo's board shows the cross-project epic row with an aggregated rollup.
+  await call('/api/epics', { method: 'POST', body: { slug: 'platform', title: 'Platform', goal: 'Shared infra across services', projects: [PROJECT, PROJECT2] } }, 'cross epic platform');
+  await call(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Shared logging', goal: 'One logger', epic: 'platform' } }, 'file demo platform task');
+  await call(`/api/board/${PROJECT2}/tasks`, { method: 'POST', body: { title: 'Config service', goal: 'Central config', epic: 'platform' } }, 'file web platform task');
   return { a, b, c, d };
 }
 
@@ -82,11 +90,26 @@ async function main() {
       //    "hidden" to Playwright, so wait on the rendered cards instead.)
       await page.goto(srv.url + '/', { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('#project-select', { timeout: 10_000 });
+      // Explicitly select demo (two projects now exist; auto-select order is not
+      // guaranteed by the filesystem scan).
+      await page.selectOption('#project-select', PROJECT);
       await page.waitForFunction(() => document.querySelector('#project-select')?.value === 'demo', { timeout: 10_000 });
       await page.waitForSelector('.card', { timeout: 10_000 });
       await page.waitForSelector('.epic-row', { timeout: 10_000 });
+      // The cross-project epic must render with its badge on demo's board.
+      await page.waitForSelector('.badge.epic-cross', { timeout: 10_000 });
       await page.screenshot({ path: path.join(SHOTS, 'gui-1-board.png'), fullPage: true });
       console.log('snapped board');
+
+      // 1b. Cross-project epic detail: open the row carrying the cross badge and
+      //     confirm it renders member projects + tasks from both projects.
+      await page.locator('.epic-row', { has: page.locator('.badge.epic-cross') }).getByRole('button', { name: 'open' }).click();
+      await page.waitForSelector('#detail-overlay:not(.hidden) .detail-title', { timeout: 10_000 });
+      await page.waitForFunction(() => [...document.querySelectorAll('#detail-overlay .detail-section h3')].some((h) => h.textContent === 'Projects'), { timeout: 10_000 });
+      await page.screenshot({ path: path.join(SHOTS, 'gui-1b-cross-epic.png'), fullPage: true });
+      console.log('snapped cross-epic detail');
+      await page.click('#detail-overlay .overlay-close');
+      await page.waitForSelector('#detail-overlay', { state: 'hidden', timeout: 10_000 });
 
       // 2. Card detail: click the first card, wait for the overlay.
       await page.click('.card');

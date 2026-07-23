@@ -188,9 +188,15 @@ function renderEpics() {
   const root = $('#epics');
   const list = state.epics.length
     ? state.epics.map((e) => el('div', { class: 'epic-row' }, [
-        el('div', {}, [el('div', { class: 'epic-title' }, e.title), el('div', { class: 'epic-slug' }, e.slug)]),
+        el('div', {}, [
+          el('div', { class: 'epic-title' }, [
+            e.title,
+            e.projects ? el('span', { class: 'badge epic-cross' }, 'cross-project') : null,
+          ]),
+          el('div', { class: 'epic-slug' }, e.projects ? `${e.slug} · ${e.projects.join(', ')}` : e.slug),
+        ]),
         renderRollup(e.rollup),
-        el('button', { class: 'ghost', type: 'button', onclick: () => openEpic(e.slug) }, 'open'),
+        el('button', { class: 'ghost', type: 'button', onclick: () => openEpic(e) }, 'open'),
       ]))
     : [el('div', { class: 'hint' }, 'No epics yet.')];
   root.replaceChildren(
@@ -206,20 +212,28 @@ function renderRollup(rollup) {
   }));
 }
 
-async function openEpic(slug) {
+async function openEpic(e) {
+  // A cross-project epic (e.projects present) has no owning project — read it by
+  // slug at the top-level route; a project-scoped one reads under its project.
+  const url = e.projects
+    ? `api/epics/${encodeURIComponent(e.slug)}`
+    : `api/board/${encodeURIComponent(state.current)}/epics/${encodeURIComponent(e.slug)}`;
   let data;
-  try { data = await api(`api/board/${encodeURIComponent(state.current)}/epics/${encodeURIComponent(slug)}`); }
-  catch (e) { return setStatus(`Read epic failed: ${e.message}`, 'err'); }
+  try { data = await api(url); }
+  catch (err) { return setStatus(`Read epic failed: ${err.message}`, 'err'); }
   const r = refusalReason(data);
   if (r) return setStatus(r, 'err');
+  const cross = data.epic.projects;
   const body = el('div', {}, [
     el('div', { class: 'detail-head' }, [el('span', { class: 'detail-state' }, `epic · ${data.epic.slug}`)]),
     el('div', { class: 'detail-title' }, data.epic.title),
+    cross ? detailSection('Projects', cross.join(', ')) : null,
     detailSection('Goal', data.epic.goal || '—'),
     detailSection('Rollup', null, renderRollup(data.epic.rollup)),
     detailSection('Tasks', data.tasks.length ? null : '— none —',
       el('ul', { class: 'acceptance' }, data.tasks.map((t) => el('li', {}, [
         el('span', { class: 'card-id' }, t.id), ' ', t.title, ' · ', el('span', { class: 'badge' }, t.state),
+        cross ? el('span', { class: 'badge' }, t.project) : null,
       ]))),
     ),
   ]);
@@ -390,17 +404,21 @@ async function doFileTask(e) {
 // ---- new epic form --------------------------------------------------------
 
 function renderEpicForm() {
+  // Multi-select of member projects. Selecting ≥2 makes a cross-project epic;
+  // leaving it empty makes a project-scoped epic in the current project.
+  const memberOpts = state.projects.map((p) => el('option', { value: p }, p));
   const form = el('form', { class: 'form-grid', onsubmit: doCreateEpic }, [
     el('h2', {}, 'New epic'),
     el('label', { class: 'field' }, ['Slug', el('input', { name: 'slug', required: '', pattern: '^[a-z0-9._-]+$', placeholder: 'lowercase, e.g. auth-flow' })]),
     el('label', { class: 'field' }, ['Title', el('input', { name: 'title', required: '' })]),
     el('label', { class: 'field' }, ['Goal', el('textarea', { name: 'goal', rows: '3' })]),
+    el('label', { class: 'field' }, ['Span projects (≥2 → cross-project)', el('select', { name: 'projects', multiple: '', size: String(Math.min(4, Math.max(2, state.projects.length))) }, memberOpts)]),
     el('div', { class: 'form-error' }, ''),
     el('div', { class: 'form-actions' }, [
       el('button', { type: 'button', class: 'ghost', onclick: closeOverlay }, 'Cancel'),
       el('button', { type: 'submit', class: 'primary' }, 'Create / refresh'),
     ]),
-    el('p', { class: 'hint' }, 'Creating an existing slug refreshes its title/goal (upsert).'),
+    el('p', { class: 'hint' }, 'Creating an existing slug refreshes its title/goal (upsert). Leave Span empty for a project-scoped epic.'),
   ]);
   openOverlay(el('div', { class: 'overlay-card' }, [
     el('button', { class: 'overlay-close', type: 'button', 'aria-label': 'Close', onclick: closeOverlay }, '✕'),
@@ -412,17 +430,20 @@ async function doCreateEpic(e) {
   e.preventDefault();
   const form = e.target;
   const fd = new FormData(form);
-  const body = {
-    slug: fd.get('slug')?.toString().trim(),
-    title: fd.get('title')?.toString().trim(),
-    goal: fd.get('goal')?.toString(),
-  };
+  const slug = fd.get('slug')?.toString().trim();
+  const title = fd.get('title')?.toString().trim();
+  const goal = fd.get('goal')?.toString();
+  const members = fd.getAll('projects').map((p) => p.toString());
+  // ≥2 members → cross-project epic at the top-level route; else project-scoped.
+  const cross = members.length >= 2;
+  const url = cross ? 'api/epics' : `api/board/${encodeURIComponent(state.current)}/epics`;
+  const body = cross ? { slug, title, goal, projects: members } : { slug, title, goal };
   let data;
-  try { data = await api(`api/board/${encodeURIComponent(state.current)}/epics`, { method: 'POST', body }); }
+  try { data = await api(url, { method: 'POST', body }); }
   catch (e2) { form.querySelector('.form-error').textContent = e2.message; return; }
   const r = refusalReason(data);
   if (r) { form.querySelector('.form-error').textContent = r; return; }
-  setStatus(`Epic ${body.slug} saved.`, 'ok');
+  setStatus(`Epic ${slug} saved.`, 'ok');
   closeOverlay();
   await loadBoard();
 }
