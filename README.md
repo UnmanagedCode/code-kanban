@@ -70,3 +70,8 @@ spawns `npm start` and forwards MCP calls to `/api/mcp`.
 - Single-writer design assumes the GUI runs **in this process**; a cross-process GUI would need
   an HTTP board API first (see `.wiki/architecture/service-layer-seam.md`).
 - No git writes to `.conduct` by design — board snapshotting is the conductor's job.
+
+## License
+
+This project is licensed under the GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later).
+© 2026 UnmanagedCode. See [LICENSE](LICENSE) for details.
