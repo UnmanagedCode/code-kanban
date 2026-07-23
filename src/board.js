@@ -20,6 +20,17 @@ import { ownerCwd } from './ownerWorktree.js';
 function fail(code, reason) { return { ok: false, code, reason }; }
 function nowIso() { return new Date().toISOString(); }
 
+// An explicit commit lands verbatim in frontmatter (taskfile.js's `commit:
+// <value>` line), so a value with an embedded newline or internal whitespace
+// could inject a spurious extra frontmatter line/key on write. Take only the
+// first line, trimmed; reject it (fall back to auto-capture) if that line
+// still contains whitespace — a real sha is a single clean token.
+function sanitizeCommit(commit) {
+  if (typeof commit !== 'string') return '';
+  const firstLine = commit.split('\n')[0].trim();
+  return /\s/.test(firstLine) ? '' : firstLine;
+}
+
 // Legal state transitions. The forward path is the intended lifecycle; the extra
 // entries are corrective moves the conductor (the sole trusted mutator) may need.
 // triage is an inbox: its only exits are backlog OR todo (both first-class).
@@ -175,7 +186,7 @@ export async function moveTask({ project, id, to, owner, commit } = {}) {
     // Never refuse the move if neither the explicit value nor the owner's
     // worktree resolves.
     if (to === 'done') {
-      const explicit = typeof commit === 'string' ? commit.trim() : '';
+      const explicit = sanitizeCommit(commit);
       let sha = explicit;
       if (!sha && priorOwner) {
         const cwd = await ownerCwd(priorOwner);

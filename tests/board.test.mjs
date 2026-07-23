@@ -297,6 +297,39 @@ test('moveTask: an explicit commit param overrides auto-capture', async () => {
   } finally { _setInstanceFetcher(null); await cleanup(root); }
 });
 
+test('moveTask: an explicit commit with an embedded newline is sanitized to its first line', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w-1' });
+    // A frontmatter-injection attempt: a second "line" that looks like another
+    // key. Only the clean first line may ever reach the task file.
+    await board.moveTask({ project: 'demo', id, to: 'done', commit: 'cafe1234\nowner: injected' });
+
+    const r = await board.readTask({ project: 'demo', id });
+    assert.equal(r.task.commit, 'cafe1234');
+    assert.equal(r.task.owner, null); // the injected second line never took effect
+  } finally { await cleanup(root); }
+});
+
+test('moveTask: an explicit commit with internal whitespace is rejected (falls back to auto-capture)', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const worktree = initRepo(root, 'demo_worktree_deadbeef');
+    useOwnerCwd('w-1', worktree.dir);
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w-1' });
+    await board.moveTask({ project: 'demo', id, to: 'done', commit: 'not a real sha' });
+
+    const r = await board.readTask({ project: 'demo', id });
+    assert.equal(r.task.commit, worktree.sha); // the dirty value was rejected, so auto-capture ran instead
+  } finally { _setInstanceFetcher(null); await cleanup(root); }
+});
+
 test('moveTask: landing still succeeds with no commit when the owner\'s worktree cannot be resolved', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
@@ -314,6 +347,25 @@ test('moveTask: landing still succeeds with no commit when the owner\'s worktree
   } finally { await cleanup(root); }
 });
 
+test('moveTask: an instance-lookup failure (e.g. a timed-out fetch) degrades gracefully, no hang', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    // Simulates what a timed-out/aborted fetch looks like to ownerCwd: the
+    // fetcher rejects. moveTask must still resolve promptly with the move
+    // applied and no commit stamped — never hang while holding the lock.
+    _setInstanceFetcher(async () => { throw new Error('simulated timeout/abort'); });
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w-1' });
+    const mv = await board.moveTask({ project: 'demo', id, to: 'done' });
+    assert.equal(mv.ok, true);
+
+    const r = await board.readTask({ project: 'demo', id });
+    assert.equal(r.task.commit, null);
+  } finally { _setInstanceFetcher(null); await cleanup(root); }
+});
+
 test('moveTask: reopening (done -> in-progress) does not clobber the stamped commit', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
@@ -328,6 +380,57 @@ test('moveTask: reopening (done -> in-progress) does not clobber the stamped com
 
     const r = await board.readTask({ project: 'demo', id });
     assert.equal(r.task.commit, worktree.sha); // untouched by the reopen move
+  } finally { _setInstanceFetcher(null); await cleanup(root); }
+});
+
+test('moveTask: re-landing after reopen captures a FRESH sha, overwriting the prior one', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const worktree = initRepo(root, 'demo_worktree_deadbeef');
+    useOwnerCwd('w-1', worktree.dir);
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w-1' });
+    await board.moveTask({ project: 'demo', id, to: 'done' });
+    const firstCommit = (await board.readTask({ project: 'demo', id })).task.commit;
+    assert.equal(firstCommit, worktree.sha);
+
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w-1' }); // reopen
+
+    // A new commit lands on the same worktree branch before re-landing.
+    const git = (...args) => execFileSync('git', ['-C', worktree.dir, ...args], { encoding: 'utf8' });
+    fs.writeFileSync(path.join(worktree.dir, 'more.txt'), 'more work');
+    git('add', 'more.txt');
+    git('-c', 'user.email=test@test.com', '-c', 'user.name=test', 'commit', '-q', '-m', 'more work');
+    const freshSha = git('rev-parse', 'HEAD').trim();
+    assert.notEqual(freshSha, firstCommit);
+
+    assert.equal((await board.moveTask({ project: 'demo', id, to: 'done' })).ok, true); // re-land
+
+    const r = await board.readTask({ project: 'demo', id });
+    assert.equal(r.task.commit, freshSha); // overwritten with the fresh sha
+  } finally { _setInstanceFetcher(null); await cleanup(root); }
+});
+
+test('moveTask: re-landing preserves the prior commit when nothing resolves this time', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const worktree = initRepo(root, 'demo_worktree_deadbeef');
+    useOwnerCwd('w-1', worktree.dir);
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w-1' });
+    await board.moveTask({ project: 'demo', id, to: 'done' });
+    const firstCommit = (await board.readTask({ project: 'demo', id })).task.commit;
+
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w-1' }); // reopen
+    _setInstanceFetcher(async () => []); // the owner's worktree is no longer resolvable this time
+    assert.equal((await board.moveTask({ project: 'demo', id, to: 'done' })).ok, true); // re-land, unresolvable
+
+    const r = await board.readTask({ project: 'demo', id });
+    assert.equal(r.task.commit, firstCommit); // preserved, not cleared
   } finally { _setInstanceFetcher(null); await cleanup(root); }
 });
 

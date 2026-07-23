@@ -14,10 +14,17 @@ export function _setInstanceFetcher(fn) {
   fetchInstancesImpl = fn ?? defaultFetchInstances;
 }
 
+// This call runs inside moveTask's per-project lock (withLock) — an
+// unresponsive conductor endpoint must not be able to hang and stall every
+// other mutation for the project, so it's bounded with a timeout. A timed-out
+// or aborted fetch rejects, which ownerCwd's try/catch turns into null (the
+// same graceful-degradation path as any other resolution failure).
+const FETCH_TIMEOUT_MS = 3000;
+
 async function defaultFetchInstances() {
   const base = process.env.CONDUCTOR_URL;
   if (!base) return [];
-  const res = await fetch(`${base}/api/instances`);
+  const res = await fetch(`${base}/api/instances`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   if (!res.ok) return [];
   const data = await res.json();
   return Array.isArray(data) ? data : [];
