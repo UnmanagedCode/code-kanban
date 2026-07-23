@@ -1,11 +1,11 @@
-# Gotcha: `append_log` resolves the card from the session, not an id
+# Gotcha: `log_progress` resolves the card from the session, not an id
 
-Workers are pure emitters and never handle a task id. `append_log({project, entry})` finds its
+Workers are pure emitters and never handle a task id. `log_progress({project, entry})` finds its
 target **server-side**: the `in-progress` card in `project` whose `owner === caller.sessionId`.
 The `owner` is stamped by `move_task(..., to:"in-progress", owner:<sessionId>)` — the conductor
 sets it when it hands the card to the worker.
 
-Resolution rules (`board.appendLog`):
+Resolution rules (`board.logProgress`):
 - No `sessionId` (host couldn't resolve the caller) → `{ok:false, code:"TASK_UNKNOWN"}`.
 - No `in-progress` card owned by that session → `TASK_UNKNOWN`.
 - **More than one** owned `in-progress` card → resolve to the **most recently modified** one

@@ -50,7 +50,7 @@ target is `in-progress` — it can never leave a stuck `gui` owner on a non-`in-
 ## Read-only logbook / acceptance
 
 The GUI renders the Logbook and the Acceptance checklist as **read-only** — there is no route to
-append a log line or toggle an acceptance item. `append_log` stays worker/conductor-only (it
+append a log line or toggle an acceptance item. `log_progress` stays worker/conductor-only (it
 resolves the card from `caller.sessionId`, which the GUI cannot supply). Acceptance is set at
 `file_task` time and not in `update_task`'s `UPDATABLE` set, so the PATCH route silently ignores
 any `acceptance` key — the GUI doesn't send one.

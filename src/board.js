@@ -86,7 +86,7 @@ export async function fileTask({ project, title, goal, acceptance, epic, depends
 // card in this project owned by sessionId. Workers never handle a task id.
 // If a session owns MORE THAN ONE in-progress card, resolve to the most recently
 // modified one (see .wiki/gotchas/owner-from-caller-sessionid.md).
-export async function appendLog({ project, entry, sessionId } = {}) {
+export async function logProgress({ project, entry, sessionId } = {}) {
   const bad = await requireProject(project);
   if (bad) return bad;
   if (typeof entry !== 'string' || !entry.trim()) {
@@ -127,14 +127,14 @@ export async function readTask({ project, id, logTail } = {}) {
   if (!task) return fail('TASK_UNKNOWN', `unknown task: ${id}`);
   if (Number.isFinite(logTail) && logTail >= 0) {
     // slice(-0) === slice(0) returns everything, so compute the start index
-    // explicitly — logTail:0 must yield 0 entries (matches readLog limit:0).
+    // explicitly — logTail:0 must yield 0 entries (matches read_progress limit:0).
     task.logbook = task.logbook.slice(Math.max(0, task.logbook.length - logTail));
   }
   delete task._mtimeMs;
   return { ok: true, task };
 }
 
-export async function readLog({ project, id, limit } = {}) {
+export async function readProgress({ project, id, limit } = {}) {
   const bad = await requireProject(project);
   if (bad) return bad;
   const task = store.readTaskById(project, id);

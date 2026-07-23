@@ -8,7 +8,7 @@ under `<.conduct>/kanban/`.
 ## Glossary
 
 - **conductor** — the orchestrating session. The board's **sole reader and sole mutator**.
-- **worker** — a spawned session. A **pure emitter**: only `file_task` and `append_log`, no
+- **worker** — a spawned session. A **pure emitter**: only `file_task` and `log_progress`, no
   reads, and it never handles a task id.
 - **owner** — the worker's `sessionId`, stamped on a card only while it is `in-progress`.
 - **triage** — the intake inbox column; its only exits are `backlog` or `todo`.

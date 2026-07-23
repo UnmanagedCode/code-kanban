@@ -28,10 +28,10 @@ malformed envelope or an unexpected exception.
 ## Tool signatures
 
 - `file_task({project, title, goal?, acceptance?, epic?, depends_on?}) → {ok, id}` — task lands in `triage`. `epic` must already exist → else `EPIC_UNKNOWN`.
-- `append_log({project, entry}) → {ok}` — target card resolved server-side from `caller.sessionId` (the owned `in-progress` card; ties broken by most-recently-modified). No owned card / no session → `TASK_UNKNOWN`.
+- `log_progress({project, entry}) → {ok}` — target card resolved server-side from `caller.sessionId` (the owned `in-progress` card; ties broken by most-recently-modified). No owned card / no session → `TASK_UNKNOWN`.
 - `list_tasks({project, state?, epic?}) → {ok, tasks:[summary]}`.
 - `read_task({project, id, logTail?}) → {ok, task}`.
-- `read_log({project, id, limit?}) → {ok, entries:[…], total}` — most-recent first.
+- `read_progress({project, id, limit?}) → {ok, entries:[…], total}` — most-recent first.
 - `move_task({project, id, to, owner?}) → {ok, from, to}`. Legal transitions:
   `triage→backlog`, `triage→todo`, `backlog→todo`, `todo→in-progress`, `in-progress→done`,
   and corrective `todo→backlog`, `in-progress→todo`, `done→in-progress`. Anything else
