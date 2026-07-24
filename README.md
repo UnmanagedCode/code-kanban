@@ -11,7 +11,9 @@ team surface. Same extension pattern as the sibling plugins `code-hub` and `code
   no `review` column — review is a conductor process). One markdown file per task.
 - **Duties:** the conductor is the sole reader/mutator; workers are pure emitters (`file_task`,
   `log_progress`) that never handle a task id — `log_progress` finds the card owned by the calling
-  session server-side.
+  session server-side; `project` is optional on `log_progress` and, if omitted, every project is
+  scanned for the owned card. The conductor, which owns no card, may instead pass `log_progress`
+  an explicit `id` (+ required `project`) to target a specific in-progress card directly.
 - **Epics:** first-class, per-state rollups computed on read; project-scoped **or** cross-project
   (spanning several projects with an aggregated rollup).
 - **Web GUI:** a local zero-build board UI is served at `/` (manifest `frontend.path`), in-process

@@ -48,14 +48,15 @@
       },
       {
         "name": "log_progress",
-        "description": "Log a progress line (a logbook entry) on the in-progress card owned by the calling session (resolved server-side; workers never handle a task id). Worker + conductor.",
+        "description": "Log a progress line (a logbook entry) on an in-progress card. Workers omit id: the card owned by the calling session is resolved server-side (project optional — omit to scan all projects). The conductor may pass id to target a specific card directly, bypassing ownership (project required with id). Worker + conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
-            "project": { "type": "string", "minLength": 1 },
+            "project": { "type": "string", "minLength": 1, "description": "Optional when id is omitted (scans all projects for the session's owned in-progress card). Required when id is given." },
+            "id": { "type": "string", "minLength": 1, "description": "Optional, conductor-only path: target this exact in-progress card directly, bypassing the owner check. Requires project." },
             "entry": { "type": "string", "minLength": 1, "description": "Log line text; the server stamps time + session attribution." }
           },
-          "required": ["project", "entry"]
+          "required": ["entry"]
         }
       },
       {

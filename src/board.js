@@ -10,7 +10,7 @@
 // mutator runs inside withLock(project, ...) so writes serialize on one path.
 
 import { STATES } from './paths.js';
-import { validateProject } from './projects.js';
+import { validateProject, listProjects } from './projects.js';
 import { withLock } from './mutex.js';
 import * as store from './store.js';
 import { logLine } from './taskfile.js';
@@ -50,6 +50,31 @@ async function requireProject(project) {
   return (await validateProject(project))
     ? null
     : fail('PROJECT_UNKNOWN', `unknown project: ${project}`);
+}
+
+// The owned in-progress card in one project, or null. Read-only (no lock) — same as
+// every other read in this file (listTasks/readTask/etc).
+function findOwnedInProgressCard(project, sessionId) {
+  return store.listTasks(project, { state: 'in-progress' })
+    .filter((t) => t.owner === sessionId)
+    .sort((a, b) => b._mtimeMs - a._mtimeMs)[0] ?? null;
+}
+
+// Scans every project for the session's owned in-progress card when logProgress isn't
+// given one, picking the most-recently-modified across all of them. Unlocked best-effort
+// snapshot — the caller re-verifies under the winning project's lock before writing (see
+// .wiki/gotchas/owner-from-caller-sessionid.md).
+async function resolveOwningProject(sessionId) {
+  let bestProject = null;
+  let bestMtime = -Infinity;
+  for (const project of await listProjects()) {
+    const candidate = findOwnedInProgressCard(project, sessionId);
+    if (candidate && candidate._mtimeMs > bestMtime) {
+      bestProject = project;
+      bestMtime = candidate._mtimeMs;
+    }
+  }
+  return bestProject;
 }
 
 function summary(t) {
@@ -95,29 +120,65 @@ export async function fileTask({ project, title, goal, acceptance, epic, depends
   });
 }
 
-// Resolves the target card server-side from the caller's session: the in-progress
-// card in this project owned by sessionId. Workers never handle a task id.
-// If a session owns MORE THAN ONE in-progress card, resolve to the most recently
-// modified one (see .wiki/gotchas/owner-from-caller-sessionid.md).
-export async function logProgress({ project, entry, sessionId } = {}) {
-  const bad = await requireProject(project);
-  if (bad) return bad;
+// Two resolution paths, chosen by whether `id` is given:
+// - `id` given (conductor path): targets that exact card directly, BYPASSING the
+//   owner check — the conductor owns no card. `project` is required alongside `id`
+//   (ids are per-project, not globally unique). The card must be `in-progress` or
+//   this returns TASK_UNKNOWN. Logged with conductor attribution (logLine's
+//   sessionId ?? 'conductor' convention — see taskfile.js), matching how moveTask
+//   attributes its own logbook lines.
+// - `id` omitted (worker path, unchanged): resolves the in-progress card owned by
+//   sessionId server-side. Workers never handle a task id. `project`, if given,
+//   scopes the lookup directly (fast path); if omitted, every project is scanned for
+//   the owned card. If a session owns MORE THAN ONE in-progress card, resolve to the
+//   most recently modified one, across projects when scanning.
+// (see .wiki/gotchas/owner-from-caller-sessionid.md)
+export async function logProgress({ project, id, entry, sessionId } = {}) {
+  if (id !== undefined) {
+    if (project === undefined) {
+      return fail('INVALID_STATE', 'project is required when id is given (ids are per-project)');
+    }
+    const bad = await requireProject(project);
+    if (bad) return bad;
+    if (typeof entry !== 'string' || !entry.trim()) {
+      return fail('INVALID_STATE', 'entry is required and must be a non-empty string');
+    }
+    return withLock(project, () => {
+      const task = store.readTaskById(project, id);
+      if (!task || task.state !== 'in-progress') {
+        return fail('TASK_UNKNOWN', `no in-progress card: ${id}`);
+      }
+      task.logbook.push(logLine(nowIso(), null, entry.trim()));
+      store.writeTask(project, 'in-progress', task);
+      return { ok: true };
+    });
+  }
+
+  if (project !== undefined) {
+    const bad = await requireProject(project);
+    if (bad) return bad;
+  }
   if (typeof entry !== 'string' || !entry.trim()) {
     return fail('INVALID_STATE', 'entry is required and must be a non-empty string');
   }
   if (!sessionId) {
     return fail('TASK_UNKNOWN', 'no session id — cannot resolve an owned in-progress card');
   }
-  return withLock(project, () => {
-    const owned = store.listTasks(project, { state: 'in-progress' })
-      .filter((t) => t.owner === sessionId)
-      .sort((a, b) => b._mtimeMs - a._mtimeMs);
-    if (owned.length === 0) {
+  const targetProject = project !== undefined ? project : await resolveOwningProject(sessionId);
+  if (targetProject === null) {
+    return fail('TASK_UNKNOWN', 'no in-progress card owned by this session');
+  }
+  return withLock(targetProject, () => {
+    // Re-verify under the lock: if the card lost ownership or left in-progress
+    // between the unlocked scan above and here, this returns TASK_UNKNOWN rather
+    // than falling back to re-scan other projects (untested — see
+    // .wiki/gotchas/owner-from-caller-sessionid.md).
+    const task = findOwnedInProgressCard(targetProject, sessionId);
+    if (!task) {
       return fail('TASK_UNKNOWN', 'no in-progress card owned by this session');
     }
-    const task = owned[0];
     task.logbook.push(logLine(nowIso(), sessionId, entry.trim()));
-    store.writeTask(project, 'in-progress', task);
+    store.writeTask(targetProject, 'in-progress', task);
     return { ok: true };
   });
 }
