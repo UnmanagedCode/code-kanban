@@ -7,6 +7,7 @@ import { freshRoot, cleanup } from './_helpers.mjs';
 import * as board from '../src/board.js';
 import { _setProjectFetcher } from '../src/projects.js';
 import { _setInstanceFetcher } from '../src/ownerWorktree.js';
+import { stateDir } from '../src/paths.js';
 
 // Creates a real git repo at <root>/<name> with one commit and returns its
 // HEAD sha, so tests can assert the auto-captured value against ground truth.
@@ -34,6 +35,13 @@ function useProjects(names) { _setProjectFetcher(async () => names); }
 // only needed when a test wants ownerCwd() to resolve to something).
 function useOwnerCwd(sessionId, cwd) {
   _setInstanceFetcher(async () => [{ sessionId, cwd }]);
+}
+
+// Pins a card file's mtime to a synthetic instant so _mtimeMs-based tie-break tests
+// don't depend on how far apart two writes land on a coarse-mtime filesystem.
+function stampMtime(project, state, id, msEpoch) {
+  const file = path.join(stateDir(project, state), `${id}.md`);
+  fs.utimesSync(file, new Date(msEpoch), new Date(msEpoch));
 }
 
 test('file_task -> triage, then full lifecycle to done', async () => {
@@ -118,10 +126,194 @@ test('log_progress with two owned cards resolves to the most recently modified',
       await board.moveTask({ project: 'demo', id, to: 'todo' });
       await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w' });
     }
-    // b was moved into in-progress last -> it is the most recently modified.
+    // Pin mtimes so b is deterministically the most-recently-modified, regardless
+    // of how close together the moves above land on a coarse-mtime filesystem.
+    stampMtime('demo', 'in-progress', a, 1_000_000);
+    stampMtime('demo', 'in-progress', b, 2_000_000);
     await board.logProgress({ project: 'demo', entry: 'target-b', sessionId: 'w' });
     const logB = await board.readProgress({ project: 'demo', id: b });
     assert.match(logB.entries[0], /target-b/);
+  } finally { await cleanup(root); }
+});
+
+test('log_progress with id (conductor path) logs to the specified card, bypassing ownership', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 'not owned by caller' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'worker-xyz' });
+
+    // No sessionId at all, and it doesn't match the card's owner -- id bypasses that check.
+    const ok = await board.logProgress({ project: 'demo', id, entry: 'checked in', sessionId: null });
+    assert.equal(ok.ok, true);
+    const log = await board.readProgress({ project: 'demo', id });
+    // logLine's null-sessionId -> 'conductor' convention (same one move_task uses).
+    assert.match(log.entries[0], /· conductor · checked in/);
+  } finally { await cleanup(root); }
+});
+
+test('log_progress with id but no project -> INVALID_STATE (ids are per-project)', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w' });
+
+    assert.equal(
+      (await board.logProgress({ id, entry: 'hi' })).code,
+      'INVALID_STATE',
+    );
+  } finally { await cleanup(root); }
+});
+
+test('log_progress with id targeting a non-existent card -> TASK_UNKNOWN', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    assert.equal(
+      (await board.logProgress({ project: 'demo', id: 'ghost-0001', entry: 'hi' })).code,
+      'TASK_UNKNOWN',
+    );
+  } finally { await cleanup(root); }
+});
+
+test('log_progress with id targeting a card that is not in-progress -> TASK_UNKNOWN', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    // filed into triage, never moved -> not in-progress
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    assert.equal(
+      (await board.logProgress({ project: 'demo', id, entry: 'hi' })).code,
+      'TASK_UNKNOWN',
+    );
+  } finally { await cleanup(root); }
+});
+
+test('log_progress with no id (worker path) is unaffected by the id path', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 'owned' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'worker-xyz' });
+
+    // Same session/ownership resolution as before -- explicitly passing id:undefined
+    // (as a naive spread of {..., id: a.id} would when id is omitted) must not change behavior.
+    const ok = await board.logProgress({ project: 'demo', id: undefined, entry: 'still owner-based', sessionId: 'worker-xyz' });
+    assert.equal(ok.ok, true);
+    const log = await board.readProgress({ project: 'demo', id });
+    assert.match(log.entries[0], /still owner-based/);
+  } finally { await cleanup(root); }
+});
+
+test('log_progress with no project resolves the owned card in the only project', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 'owned' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'worker-xyz' });
+
+    const ok = await board.logProgress({ entry: 'no project needed', sessionId: 'worker-xyz' });
+    assert.equal(ok.ok, true);
+    const log = await board.readProgress({ project: 'demo', id });
+    assert.match(log.entries[0], /no project needed/);
+  } finally { await cleanup(root); }
+});
+
+test('log_progress with no project scans across projects for the owned card', async () => {
+  const root = await freshRoot();
+  useProjects(['demo', 'other']);
+  try {
+    const { id } = await board.fileTask({ project: 'other', title: 'owned elsewhere' });
+    await board.moveTask({ project: 'other', id, to: 'todo' });
+    await board.moveTask({ project: 'other', id, to: 'in-progress', owner: 'worker-xyz' });
+
+    const ok = await board.logProgress({ entry: 'found in other', sessionId: 'worker-xyz' });
+    assert.equal(ok.ok, true);
+    const log = await board.readProgress({ project: 'other', id });
+    assert.match(log.entries[0], /found in other/);
+  } finally { await cleanup(root); }
+});
+
+test('log_progress with no project ties-break by most-recently-modified across projects', async () => {
+  const root = await freshRoot();
+  useProjects(['demo', 'other']);
+  try {
+    const a = (await board.fileTask({ project: 'demo', title: 'A' })).id;
+    await board.moveTask({ project: 'demo', id: a, to: 'todo' });
+    await board.moveTask({ project: 'demo', id: a, to: 'in-progress', owner: 'w' });
+
+    const b = (await board.fileTask({ project: 'other', title: 'B' })).id;
+    await board.moveTask({ project: 'other', id: b, to: 'todo' });
+    await board.moveTask({ project: 'other', id: b, to: 'in-progress', owner: 'w' });
+
+    // Pin mtimes so b is deterministically the most-recently-modified across
+    // projects, regardless of real timing.
+    stampMtime('demo', 'in-progress', a, 1_000_000);
+    stampMtime('other', 'in-progress', b, 2_000_000);
+
+    await board.logProgress({ entry: 'target-b', sessionId: 'w' });
+    const logB = await board.readProgress({ project: 'other', id: b });
+    assert.match(logB.entries[0], /target-b/);
+    // a is untouched: still just its baseline filed + 2 moves, nothing appended.
+    const logA = await board.readProgress({ project: 'demo', id: a });
+    assert.equal(logA.entries.length, 3);
+    assert.doesNotMatch(logA.entries[0], /target-b/);
+  } finally { await cleanup(root); }
+});
+
+test('log_progress with an explicit project stays scoped to it (fast path unaffected by scan)', async () => {
+  const root = await freshRoot();
+  useProjects(['demo', 'other']);
+  try {
+    const a = (await board.fileTask({ project: 'demo', title: 'A' })).id;
+    await board.moveTask({ project: 'demo', id: a, to: 'todo' });
+    await board.moveTask({ project: 'demo', id: a, to: 'in-progress', owner: 'w' });
+
+    const b = (await board.fileTask({ project: 'other', title: 'B' })).id;
+    await board.moveTask({ project: 'other', id: b, to: 'todo' });
+    await board.moveTask({ project: 'other', id: b, to: 'in-progress', owner: 'w' });
+    // b is the most-recently-modified overall, but an explicit project: 'demo' must target a.
+
+    const ok = await board.logProgress({ project: 'demo', entry: 'target-a', sessionId: 'w' });
+    assert.equal(ok.ok, true);
+    const logA = await board.readProgress({ project: 'demo', id: a });
+    assert.match(logA.entries[0], /target-a/);
+    // b is untouched: still just its baseline filed + 2 moves, nothing appended.
+    const logB = await board.readProgress({ project: 'other', id: b });
+    assert.equal(logB.entries.length, 3);
+    assert.doesNotMatch(logB.entries[0], /target-a/);
+  } finally { await cleanup(root); }
+});
+
+test('log_progress with no project -> TASK_UNKNOWN when nothing is owned anywhere', async () => {
+  const root = await freshRoot();
+  useProjects(['demo', 'other']);
+  try {
+    await board.fileTask({ project: 'demo', title: 'untouched' });
+    assert.equal(
+      (await board.logProgress({ entry: 'hi', sessionId: 'nobody' })).code,
+      'TASK_UNKNOWN',
+    );
+  } finally { await cleanup(root); }
+});
+
+test('log_progress with no project and no sessionId -> TASK_UNKNOWN before any scan', async () => {
+  const root = await freshRoot();
+  let calls = 0;
+  _setProjectFetcher(async () => { calls += 1; return ['demo', 'other']; });
+  try {
+    assert.equal(
+      (await board.logProgress({ entry: 'hi', sessionId: null })).code,
+      'TASK_UNKNOWN',
+    );
+    // The no-sessionId refusal must short-circuit before resolveOwningProject
+    // ever calls listProjects() (which is backed by this fetcher).
+    assert.equal(calls, 0);
   } finally { await cleanup(root); }
 });
 

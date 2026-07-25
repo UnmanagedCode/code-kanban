@@ -28,7 +28,15 @@ malformed envelope or an unexpected exception.
 ## Tool signatures
 
 - `file_task({project, title, goal?, acceptance?, epic?, depends_on?}) → {ok, id}` — task lands in `triage`. `epic` must already exist → else `EPIC_UNKNOWN`.
-- `log_progress({project, entry}) → {ok}` — target card resolved server-side from `caller.sessionId` (the owned `in-progress` card; ties broken by most-recently-modified). No owned card / no session → `TASK_UNKNOWN`.
+- `log_progress({project?, id?, entry}) → {ok}` — two paths, chosen by `id`:
+  - **`id` omitted (worker path):** target card resolved server-side from `caller.sessionId`
+    (the owned `in-progress` card; ties broken by most-recently-modified). `project` is
+    optional: if omitted, every project is scanned for the owned card (same tie-break, across
+    projects). No owned card / no session → `TASK_UNKNOWN`.
+  - **`id` given (conductor path):** targets that exact card directly, bypassing the owner
+    check. `project` is then **required** (ids are per-project, not globally unique) — missing
+    → `INVALID_STATE`. Card must be `in-progress`; nonexistent or not `in-progress` →
+    `TASK_UNKNOWN`. Logged with `conductor` attribution.
 - `list_tasks({project, state?, epic?}) → {ok, tasks:[summary]}`.
 - `read_task({project, id, logTail?}) → {ok, task}`.
 - `read_progress({project, id, limit?}) → {ok, entries:[…], total}` — most-recent first.

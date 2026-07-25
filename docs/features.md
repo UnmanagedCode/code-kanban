@@ -23,13 +23,16 @@ conductor's own tool — not a team/shared surface.
 - **Workers are pure emitters** — only `file_task` and `log_progress`, no reads. A worker never
   handles a task id: `log_progress` resolves the target card **server-side from the caller's
   session** (the card the conductor assigned it in `in-progress`).
+- The conductor owns no card, so it can't use the session path. Instead it may pass `log_progress`
+  an explicit `id` (+ required `project`) to log against that exact `in-progress` card directly,
+  bypassing the owner check. Workers never pass `id`.
 
 ## Tools
 
 | Tool | Who | Effect |
 |------|-----|--------|
 | `file_task` | worker + conductor | Create a task in `triage`; returns the new id. |
-| `log_progress` | worker + conductor | Append a logbook line to the session's owned in-progress card. |
+| `log_progress` | worker + conductor | Append a logbook line: worker's owned in-progress card (no `id`), or conductor's target card (`id` + `project`). |
 | `list_tasks` | conductor | List tasks, optionally filtered by `state`/`epic`. |
 | `read_task` | conductor | Read one task (+ logbook, optionally last `logTail`). |
 | `read_progress` | conductor | Read a task's logbook only, most-recent first. |
@@ -39,8 +42,11 @@ conductor's own tool — not a team/shared surface.
 | `list_epics` | conductor | A project's epics + cross-project epics spanning it, with computed rollups. |
 | `read_epic` | conductor | One epic (+ rollup) and its tasks; cross-project epics aggregate across members. |
 
-Every tool takes a `project` (validated against the live project list), except `create_epic`/
-`read_epic`, which instead accept a cross-project epic's `projects` list / a bare slug.
+Every tool takes a `project` (validated against the live project list), except:
+- `create_epic`/`read_epic`, which instead accept a cross-project epic's `projects` list / a bare slug.
+- `log_progress`'s worker path (no `id`), where `project` is optional: if omitted, the server
+  scans every project for the caller's owned in-progress card. `log_progress`'s conductor path
+  (`id` given) requires `project` (see `.wiki/gotchas/owner-from-caller-sessionid.md`).
 
 ## Web GUI
 
