@@ -292,7 +292,11 @@ test('malformed remote cards (bad/missing id or state) are skipped, not written'
 
 test('peerUrl to a loopback/private host is blocked (SSRF guard)', async () => {
   await withRoot(async () => {
-    for (const host of ['http://127.0.0.1:7100', 'http://localhost:9', 'http://169.254.169.254/latest', 'http://10.0.0.5', 'http://[::1]:8080']) {
+    for (const host of [
+      'http://127.0.0.1:7100', 'http://localhost:9', 'http://localhost./', // trailing-dot nit
+      'http://169.254.169.254/latest', 'http://10.0.0.5', 'http://[::1]:8080',
+      'http://[::ffff:127.0.0.1]', 'http://[::ffff:169.254.169.254]', 'http://[::ffff:10.0.0.5]', // IPv4-mapped IPv6
+    ]) {
       const r = await board.syncPull({ peerUrl: host, scope: 'project', project: 'alpha' });
       assert.equal(r.ok, false, `expected block for ${host}`);
       assert.equal(r.code, 'INVALID_STATE');
@@ -312,20 +316,26 @@ test('peerUrl to a loopback/private host is blocked (SSRF guard)', async () => {
   });
 });
 
-// Two boards each with a distinct card that COLLIDES on display id; pull A->B
-// then B->A and assert both converge to the same card set (matched by uid +
-// content). Display ids may legitimately differ per machine.
-test('bidirectional pull converges both boards (union by uid + content)', async () => {
+// Two boards; pull A->B then B->A and assert both converge to the SAME card set
+// (matched by uid + content; display ids may legitimately differ per machine).
+// Covers three cases at once: a display-id collision of DIFFERENT cards (union),
+// and two SAME-uid conflicts resolved by LWW — newer `updated` wins, and on an
+// exact `updated` tie the higher `node` wins — proving the tiebreak converges
+// end-to-end, not just in reasoning.
+test('bidirectional pull converges both boards (union + LWW + tiebreak)', async () => {
   const rootA = await freshRoot();
   const rootB = await freshRoot(); // freshRoot leaves PROJECTS_ROOT = rootB
   useProjects(['alpha']);
   const setRoot = (d) => { process.env.PROJECTS_ROOT = d; };
   try {
-    // Same display id 2026-0001 on both, different cards.
     setRoot(rootA);
-    seedLocal('alpha', { id: '2026-0001', uid: 'uX', title: 'X', updated: '2026-03-01T00:00:00.000Z', node: 'nA', state: 'todo' });
+    seedLocal('alpha', { id: '2026-0001', uid: 'uX', title: 'X', updated: '2026-03-01T00:00:00.000Z', node: 'nA', state: 'todo' });     // A-only
+    seedLocal('alpha', { id: '2026-0002', uid: 'uZ', title: 'Z-A', updated: '2026-05-02T00:00:00.000Z', node: 'nA', state: 'todo' });    // LWW: A newer
+    seedLocal('alpha', { id: '2026-0003', uid: 'uT', title: 'T-A', updated: '2026-06-01T00:00:00.000Z', node: 'zzz', state: 'done' });   // tie: A higher node
     setRoot(rootB);
-    seedLocal('alpha', { id: '2026-0001', uid: 'uY', title: 'Y', updated: '2026-03-02T00:00:00.000Z', node: 'nB', state: 'backlog' });
+    seedLocal('alpha', { id: '2026-0001', uid: 'uY', title: 'Y', updated: '2026-03-02T00:00:00.000Z', node: 'nB', state: 'backlog' });   // B-only (collides on 0001)
+    seedLocal('alpha', { id: '2026-0002', uid: 'uZ', title: 'Z-B', updated: '2026-05-01T00:00:00.000Z', node: 'nB', state: 'backlog' }); // LWW: B older -> loses
+    seedLocal('alpha', { id: '2026-0003', uid: 'uT', title: 'T-B', updated: '2026-06-01T00:00:00.000Z', node: 'aaa', state: 'todo' });   // tie: B lower node -> loses
 
     // Pull A -> B.
     setRoot(rootA);
@@ -344,15 +354,21 @@ test('bidirectional pull converges both boards (union by uid + content)', async 
     // Compare by uid + content (NOT display id, which may differ per machine).
     const fingerprint = (root) => {
       setRoot(root);
-      return store.exportTasks('alpha')
-        .map((c) => ({ uid: c.uid, title: c.title, state: c.state, updated: c.updated, node: c.node }))
-        .sort((a, b) => a.uid.localeCompare(b.uid));
+      const byUid = {};
+      for (const c of store.exportTasks('alpha')) {
+        byUid[c.uid] = { title: c.title, state: c.state, updated: c.updated, node: c.node };
+      }
+      return byUid;
     };
     const fpA = fingerprint(rootA);
     const fpB = fingerprint(rootB);
-    assert.equal(fpA.length, 2);
-    assert.deepEqual(fpA, fpB); // converged
-    assert.deepEqual(fpA.map((c) => c.uid), ['uX', 'uY']);
+    assert.deepEqual(Object.keys(fpA).sort(), ['uT', 'uX', 'uY', 'uZ']);
+    assert.deepEqual(fpA, fpB); // both boards converged
+    // The LWW winners are the A versions (newer / higher node), on BOTH boards.
+    assert.equal(fpA.uZ.title, 'Z-A');
+    assert.equal(fpA.uT.title, 'T-A');
+    assert.equal(fpB.uZ.title, 'Z-A');
+    assert.equal(fpB.uT.title, 'T-A');
   } finally {
     board._setSyncFetcher(null);
     await cleanup(rootA);

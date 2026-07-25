@@ -10,6 +10,7 @@
 // mutator runs inside withLock(project, ...) so writes serialize on one path.
 
 import crypto from 'node:crypto';
+import net from 'node:net';
 import { STATES } from './paths.js';
 import { validateProject, listProjects } from './projects.js';
 import { withLock } from './mutex.js';
@@ -432,27 +433,52 @@ async function defaultSyncFetch(url) {
 let syncFetch = defaultSyncFetch;
 export function _setSyncFetcher(fn) { syncFetch = fn ?? defaultSyncFetch; }
 
+// Loopback / private / link-local ranges the pull must never fetch. net.BlockList
+// handles v4 and v6 uniformly; IPv4-mapped IPv6 is normalised to its v4 below so
+// e.g. ::ffff:127.0.0.1 is caught by the v4 rules.
+const SYNC_BLOCKLIST = new net.BlockList();
+SYNC_BLOCKLIST.addSubnet('0.0.0.0', 8, 'ipv4');      // unspecified / "this host"
+SYNC_BLOCKLIST.addSubnet('127.0.0.0', 8, 'ipv4');    // loopback
+SYNC_BLOCKLIST.addSubnet('10.0.0.0', 8, 'ipv4');     // private
+SYNC_BLOCKLIST.addSubnet('172.16.0.0', 12, 'ipv4');  // private
+SYNC_BLOCKLIST.addSubnet('192.168.0.0', 16, 'ipv4'); // private
+SYNC_BLOCKLIST.addSubnet('169.254.0.0', 16, 'ipv4'); // link-local incl. 169.254.169.254
+SYNC_BLOCKLIST.addAddress('::1', 'ipv6');            // loopback
+SYNC_BLOCKLIST.addAddress('::', 'ipv6');             // unspecified
+SYNC_BLOCKLIST.addSubnet('fc00::', 7, 'ipv6');       // unique-local
+SYNC_BLOCKLIST.addSubnet('fe80::', 10, 'ipv6');      // link-local
+
+// Extract the embedded IPv4 of an IPv4-mapped IPv6 literal, in either the dotted
+// (`::ffff:127.0.0.1`) or the hex form node's URL parser normalises to
+// (`::ffff:7f00:1`). Returns null if `h` isn't a mapped address.
+function mappedV4(h) {
+  let m = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i.exec(h);
+  if (m) return m[1];
+  m = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(h);
+  if (m) {
+    const hi = Number.parseInt(m[1], 16); const lo = Number.parseInt(m[2], 16);
+    return `${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`;
+  }
+  return null;
+}
+
 // SSRF guard: the pull fetches a user-supplied URL server-side, so refuse
 // loopback / private / link-local IP LITERALS (incl. the cloud metadata IP
-// 169.254.169.254). Kept lightweight — hostnames are NOT DNS-resolved (a
-// code-hub-forwarded peer is a public host); set CODE_KANBAN_SYNC_ALLOW_PRIVATE=1
-// to allow private targets for local dev / the visual harness.
+// 169.254.169.254 and its IPv4-mapped form). Kept lightweight — hostnames are
+// NOT DNS-resolved (a code-hub-forwarded peer is a public host); set
+// CODE_KANBAN_SYNC_ALLOW_PRIVATE=1 to allow private targets for local dev / the
+// visual harness.
 function isBlockedSyncHost(hostname) {
-  const h = hostname.toLowerCase().replace(/^\[|\]$/g, ''); // strip IPv6 brackets
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, ''); // strip v6 brackets + a trailing dot
   if (h === '' || h === 'localhost' || h.endsWith('.localhost')) return true;
-  if (h.includes(':')) { // IPv6 literal: loopback / unspecified / link-local / ULA
-    return h === '::1' || h === '::' || h.startsWith('fe80:') || h.startsWith('fc') || h.startsWith('fd');
+  const fam = net.isIP(h);
+  if (!fam) return false; // a hostname, not an IP literal — not resolved here
+  if (fam === 6) {
+    const v4 = mappedV4(h);
+    if (v4 && SYNC_BLOCKLIST.check(v4, 'ipv4')) return true;
+    return SYNC_BLOCKLIST.check(h, 'ipv6');
   }
-  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h)
-    || /:(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h); // incl. IPv4-mapped ::ffff:a.b.c.d
-  if (v4) {
-    const a = Number(v4[1]); const b = Number(v4[2]);
-    if (a === 0 || a === 127 || a === 10) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 169 && b === 254) return true; // link-local incl. 169.254.169.254
-  }
-  return false;
+  return SYNC_BLOCKLIST.check(h, 'ipv4');
 }
 
 // Backfill the hidden version stamp on a legacy card (one that predates sync).
