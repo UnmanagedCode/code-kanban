@@ -48,13 +48,13 @@
       },
       {
         "name": "log_progress",
-        "description": "Log a progress line (a logbook entry) on an in-progress card. Workers omit id: the card owned by the calling session is resolved server-side (project optional — omit to scan all projects). The conductor may pass id to target a specific card directly, bypassing ownership (project required with id). Worker + conductor.",
+        "description": "Log a progress line (a logbook entry) on an in-progress card. Worker + conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
-            "project": { "type": "string", "minLength": 1, "description": "Optional when id is omitted (scans all projects for the session's owned in-progress card). Required when id is given." },
-            "id": { "type": "string", "minLength": 1, "description": "Optional, conductor-only path: target this exact in-progress card directly, bypassing the owner check. Requires project." },
-            "entry": { "type": "string", "minLength": 1, "description": "Log line text; the server stamps time + session attribution." }
+            "project": { "type": "string", "minLength": 1, "description": "Optional when id is omitted; required when id is given." },
+            "id": { "type": "string", "minLength": 1, "description": "Optional, conductor-only: target a specific in-progress card. Requires project." },
+            "entry": { "type": "string", "minLength": 1, "description": "Log line text." }
           },
           "required": ["entry"]
         }
@@ -100,7 +100,7 @@
       },
       {
         "name": "move_task",
-        "description": "Move a task between board states. Legal: triage->backlog/todo, backlog->todo, todo->in-progress, in-progress->done, plus corrective todo->backlog, in-progress->todo, done->in-progress. Sets owner when entering in-progress. On landing (->done), stamps commit if given, else auto-captures HEAD from the owning worker's live worktree. Conductor.",
+        "description": "Move a task between board states. Legal: triage->backlog/todo, backlog->todo, todo->in-progress, in-progress->done, plus corrective todo->backlog, in-progress->todo, done->in-progress. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -108,7 +108,7 @@
             "id": { "type": "string", "minLength": 1 },
             "to": { "type": "string", "enum": ["triage", "backlog", "todo", "in-progress", "done"] },
             "owner": { "type": "string", "description": "Session id to attribute as owner when moving to in-progress." },
-            "commit": { "type": "string", "description": "Landing commit sha to stamp when moving to done; omit to auto-capture HEAD from the owning worker's live worktree." }
+            "commit": { "type": "string", "description": "Commit sha to stamp when moving to done; omit to auto-capture." }
           },
           "required": ["project", "id", "to"]
         }
