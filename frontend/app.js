@@ -515,6 +515,7 @@ async function doSyncPull(e) {
   const bits = [`${s.added || 0} added`, `${s.updated || 0} updated`];
   if (s.reassigned?.length) bits.push(`${s.reassigned.length} re-id’d`);
   if (s.droppedDeps?.length) bits.push(`${s.droppedDeps.length} dep${s.droppedDeps.length === 1 ? '' : 's'} dropped`);
+  if (s.skippedCards?.length) bits.push(`${s.skippedCards.length} malformed skipped`);
   if (s.skippedProjects?.length) bits.push(`${s.skippedProjects.length} project${s.skippedProjects.length === 1 ? '' : 's'} skipped`);
   setStatus(`Sync: ${bits.join(', ')}.`, 'ok');
   closeOverlay();

@@ -32,8 +32,11 @@ async function seed(base, root, titles) {
 
 async function main() {
   await fs.mkdir(SHOTS, { recursive: true });
-  const peer = await bootKanban({ sandbox: { dirs: { PROJECTS_ROOT: 'peer' } }, silent: true });
-  const local = await bootKanban({ sandbox: { dirs: { PROJECTS_ROOT: 'local' } }, silent: true });
+  // The SSRF guard blocks loopback by default; these instances live on
+  // 127.0.0.1, so allow private targets for the harness only.
+  const allowPrivate = { CODE_KANBAN_SYNC_ALLOW_PRIVATE: '1' };
+  const peer = await bootKanban({ sandbox: { dirs: { PROJECTS_ROOT: 'peer' }, env: allowPrivate }, silent: true });
+  const local = await bootKanban({ sandbox: { dirs: { PROJECTS_ROOT: 'local' }, env: allowPrivate }, silent: true });
   try {
     await waitForServer(peer.url);
     await waitForServer(local.url);

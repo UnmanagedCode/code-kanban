@@ -405,13 +405,55 @@ async function createCrossEpic({ projects, slug, title, goal }) {
 
 // Network seam (mirrors projects._setProjectFetcher): tests inject a canned peer
 // export instead of hitting a real instance.
+const SYNC_FETCH_TIMEOUT_MS = 15_000;
+const SYNC_MAX_BYTES = 25 * 1024 * 1024; // hard ceiling on a peer dump (~25 MB)
 async function defaultSyncFetch(url) {
-  const res = await fetch(url, { headers: { accept: 'application/json' } });
+  const res = await fetch(url, {
+    headers: { accept: 'application/json' },
+    redirect: 'error', // never chase a redirect off the vetted host (SSRF)
+    signal: AbortSignal.timeout(SYNC_FETCH_TIMEOUT_MS), // no unbounded hang
+  });
   if (!res.ok) throw new Error(`peer export HTTP ${res.status}`);
-  return res.json();
+  // Stream with a size cap so a huge (or content-length-lying) peer can't OOM
+  // the handler.
+  const reader = res.body?.getReader();
+  if (!reader) return res.json();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > SYNC_MAX_BYTES) { await reader.cancel(); throw new Error('peer export exceeds size limit'); }
+    chunks.push(value);
+  }
+  return JSON.parse(Buffer.concat(chunks, total).toString('utf8'));
 }
 let syncFetch = defaultSyncFetch;
 export function _setSyncFetcher(fn) { syncFetch = fn ?? defaultSyncFetch; }
+
+// SSRF guard: the pull fetches a user-supplied URL server-side, so refuse
+// loopback / private / link-local IP LITERALS (incl. the cloud metadata IP
+// 169.254.169.254). Kept lightweight — hostnames are NOT DNS-resolved (a
+// code-hub-forwarded peer is a public host); set CODE_KANBAN_SYNC_ALLOW_PRIVATE=1
+// to allow private targets for local dev / the visual harness.
+function isBlockedSyncHost(hostname) {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, ''); // strip IPv6 brackets
+  if (h === '' || h === 'localhost' || h.endsWith('.localhost')) return true;
+  if (h.includes(':')) { // IPv6 literal: loopback / unspecified / link-local / ULA
+    return h === '::1' || h === '::' || h.startsWith('fe80:') || h.startsWith('fc') || h.startsWith('fd');
+  }
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h)
+    || /:(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h); // incl. IPv4-mapped ::ffff:a.b.c.d
+  if (v4) {
+    const a = Number(v4[1]); const b = Number(v4[2]);
+    if (a === 0 || a === 127 || a === 10) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 169 && b === 254) return true; // link-local incl. 169.254.169.254
+  }
+  return false;
+}
 
 // Backfill the hidden version stamp on a legacy card (one that predates sync).
 // `uid` is DETERMINISTIC from (project,id,created) so two machines holding the
@@ -469,12 +511,17 @@ export async function syncPull({ peerUrl, scope, project } = {}) {
     return fail('INVALID_STATE', "scope must be 'project' or 'all'");
   }
   let base;
+  let host;
   try {
     const u = new URL(peerUrl);
     if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('protocol');
+    host = u.hostname;
     base = `${u.origin}${u.pathname}`.replace(/\/+$/, '');
   } catch {
     return fail('INVALID_STATE', 'peerUrl must be an absolute http(s) URL');
+  }
+  if (process.env.CODE_KANBAN_SYNC_ALLOW_PRIVATE !== '1' && isBlockedSyncHost(host)) {
+    return fail('INVALID_STATE', 'peerUrl host is a loopback/private/link-local address (blocked)');
   }
   if (scope === 'project') {
     const bad = await requireProject(project);
@@ -494,7 +541,9 @@ export async function syncPull({ peerUrl, scope, project } = {}) {
   }
 
   const localProjects = new Set(await listProjects());
-  const summary = { added: 0, updated: 0, reassigned: [], droppedDeps: [], skippedProjects: [], perProject: {} };
+  // NB: this summary reaches the GUI (routes.js -> app.js), so it must carry NO
+  // hidden uid/node — only display ids. See stripHidden's invariant.
+  const summary = { added: 0, updated: 0, reassigned: [], droppedDeps: [], skippedProjects: [], skippedCards: [], perProject: {} };
 
   const toMerge = scope === 'project' ? [project] : Object.keys(dump.projects);
   for (const p of toMerge) {
@@ -530,10 +579,22 @@ function mergeProject(project, remoteCards, summary) {
     return cand;
   };
 
+  // Validate incoming shape before it can reach deriveUid/writeTask: a card
+  // without a usable display id or a known column would write a garbage file.
+  // Skip (and report) rather than corrupt the store.
+  const valid = [];
+  for (const rc of remoteCards) {
+    if (!rc || typeof rc.id !== 'string' || !rc.id.trim() || !STATES.includes(rc.state)) {
+      summary.skippedCards.push({ project, id: (rc && typeof rc.id === 'string') ? rc.id : null });
+      continue;
+    }
+    valid.push(rc);
+  }
+
   // Remote lookups (ensure remote identity in-memory in case a peer served a
   // card without a uid — deterministic derivation keeps matching stable).
   const remoteIdToUid = new Map();
-  for (const rc of remoteCards) {
+  for (const rc of valid) {
     ensureIdentity(rc, project);
     remoteIdToUid.set(rc.id, rc.uid);
   }
@@ -547,7 +608,7 @@ function mergeProject(project, remoteCards, summary) {
   const replaces = []; // {rc, localId, fromState}
   const inserts = [];  // {rc, localId}
   const newUid = [];
-  for (const rc of remoteCards) {
+  for (const rc of valid) {
     const local = localByUid.get(rc.uid);
     if (local) {
       if (remoteWins(rc, local)) replaces.push({ rc, localId: local.id, fromState: local.state });
@@ -567,20 +628,22 @@ function mergeProject(project, remoteCards, summary) {
   for (const rc of pending) {
     const localId = allocId();
     uidToLocalId.set(rc.uid, localId);
-    summary.reassigned.push({ project, uid: rc.uid, from: rc.id, to: localId });
+    // Display ids only (from = peer's id, to = local id) — no uid in the summary.
+    summary.reassigned.push({ project, from: rc.id, to: localId });
     inserts.push({ rc, localId });
   }
 
   // Translate a card's depends_on: remote display id -> remote uid -> local id.
   // Unresolvable entries (dangling on the peer, or pointing outside the pulled
-  // set) are dropped and reported.
-  const translateDeps = (rc) => {
+  // set) are dropped and reported by DISPLAY id (never uid).
+  const translateDeps = (rc, remoteId) => {
+    const deps = Array.isArray(rc.depends_on) ? rc.depends_on : [];
     const out = [];
-    for (const dep of rc.depends_on ?? []) {
+    for (const dep of deps) {
       const uid = remoteIdToUid.get(dep);
       const localId = uid ? uidToLocalId.get(uid) : undefined;
       if (localId) out.push(localId);
-      else summary.droppedDeps.push({ project, card: rc.uid, dep });
+      else summary.droppedDeps.push({ project, card: remoteId, dep });
     }
     return out;
   };
@@ -588,9 +651,12 @@ function mergeProject(project, remoteCards, summary) {
   // Pass B: write winners wholesale (fields, goal, acceptance, logbook, uid,
   // updated, node all from the incoming card).
   const write = (rc, localId, fromState) => {
+    const remoteId = rc.id; // the peer's display id for THIS card (for reporting)
     rc.id = localId;
     rc.project = project;
-    rc.depends_on = translateDeps(rc);
+    rc.depends_on = translateDeps(rc, remoteId);
+    rc.acceptance = Array.isArray(rc.acceptance) ? rc.acceptance : [];
+    rc.logbook = Array.isArray(rc.logbook) ? rc.logbook : [];
     if (fromState !== undefined && fromState !== rc.state) {
       store.moveTask(project, localId, fromState, rc.state, rc);
     } else {

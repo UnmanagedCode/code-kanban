@@ -57,6 +57,21 @@ dep drops.
   URL, so the dialog reads `window.location` for the copyable "this board's URL".
 - **Pull is backend-to-backend.** `POST /api/sync/pull` fetches `<peerUrl>/api/sync/export` from the
   server, not the browser — a browser cross-origin fetch would hit CORS.
+- **SSRF guard.** Because the server fetches a user-supplied URL, `peerUrl` pointing at a
+  loopback/private/link-local IP literal (incl. the `169.254.169.254` metadata IP) is refused, the
+  fetch does not follow redirects, and it is bounded by a timeout + size cap (`board.js`
+  `isBlockedSyncHost`, `defaultSyncFetch`). Lightweight only — hostnames are NOT DNS-resolved (a
+  code-hub peer is public), so DNS-rebinding-style targets aren't caught; hardening the whole plugin
+  is the separate future task. `CODE_KANBAN_SYNC_ALLOW_PRIVATE=1` bypasses the host block for local
+  dev / the visual harness (both instances run on 127.0.0.1).
+
+## The pull summary is GUI-facing — display ids only
+`syncPull` returns a `summary` that `routes.js` passes to `app.js`. It must carry **no `uid`/`node`**
+(same invariant as reads). So `reassigned` uses `{from,to}` display ids, `droppedDeps` reports the
+dependent card by its remote **display** id, and malformed peer cards (missing/non-string `id` or an
+unknown column) are skipped into `skippedCards` by display id. GOTCHA: if you add a field to the
+summary, don't put a card's `uid` in it. `tests/sync.test.mjs` scans the whole serialized summary
+for any uid to enforce this.
 
 ## Scope & limitations
 - `project` = the current project; `all` = every live project (`listProjects`). A peer project

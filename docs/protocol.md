@@ -98,7 +98,7 @@ through unchanged as the HTTP body.
 | `GET /api/epics/:slug` | `board.readEpic` | — | `{ok, epic, tasks:[summary]}` (cross-project epic by slug) |
 | `POST /api/epics` | `board.createEpic` | `{slug, title, goal?, projects:[…]}` | `{ok}` (cross-project epic; `projects` has ≥2 members) |
 | `GET /api/sync/export` | `board.exportBoard` | `?scope=project\|all`, `?project` (required for `project`) | `{ok, nodeId, scope, projects:{<project>:[fullCard]}}` |
-| `POST /api/sync/pull` | `board.syncPull` | `{peerUrl, scope, project?}` | `{ok, summary:{added, updated, reassigned[], droppedDeps[], skippedProjects[], perProject}}` |
+| `POST /api/sync/pull` | `board.syncPull` | `{peerUrl, scope, project?}` | `{ok, summary:{added, updated, reassigned[], droppedDeps[], skippedProjects[], skippedCards[], perProject}}` |
 
 Notes:
 - The `POST /epics` route exposes `createEpic`'s **real behavior — an upsert**: an existing slug
@@ -114,7 +114,15 @@ Notes:
   them. It is read-only from the caller's view but lazily backfills the version stamp on any
   legacy card it serves. No auth: possession of the code-hub-forwarded URL is the capability.
   `POST /api/sync/pull` fetches the peer's export (`<peerUrl>/api/sync/export`) **backend-to-backend**
-  (avoids browser CORS) and merges by `uid` (union + card-level last-edit-wins). Malformed
-  `peerUrl` → 200 `{ok:false, INVALID_STATE}`; an unreachable/garbage peer → 200
-  `{ok:false, SYNC_UNREACHABLE}`. See `docs/architecture.md` and
+  (avoids browser CORS) and merges by `uid` (union + card-level last-edit-wins). The pull summary
+  contains **display ids only** — never `uid`/`node` (it reaches the GUI). Malformed peer cards
+  (missing/non-string `id`, or an unknown column) are skipped and listed in `skippedCards`.
+  Refusals: malformed `peerUrl` or a blocked host → 200 `{ok:false, INVALID_STATE}`; an
+  unreachable/garbage/oversized peer → 200 `{ok:false, SYNC_UNREACHABLE}`.
+  **SSRF guard**: `peerUrl` pointing at a loopback / private / link-local IP literal
+  (`127.0.0.0/8`, `10/8`, `172.16/12`, `192.168/16`, `169.254/16` incl. `169.254.169.254`, `::1`,
+  `fc00::/7`, `fe80::/10`, `localhost`) is refused; the peer fetch does not follow redirects and is
+  bounded by a 15 s timeout + 25 MB size cap. Hostnames are not DNS-resolved (lightweight guard —
+  a code-hub peer is a public host); set `CODE_KANBAN_SYNC_ALLOW_PRIVATE=1` to permit private
+  targets for local dev / the visual harness. See `docs/architecture.md` and
   `.wiki/architecture/cross-instance-sync.md`.
