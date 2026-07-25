@@ -97,8 +97,8 @@ through unchanged as the HTTP body.
 | `POST /api/board/:project/epics` | `board.createEpic` | `{slug, title, goal?}` | `{ok}` (project-scoped) |
 | `GET /api/epics/:slug` | `board.readEpic` | — | `{ok, epic, tasks:[summary]}` (cross-project epic by slug) |
 | `POST /api/epics` | `board.createEpic` | `{slug, title, goal?, projects:[…]}` | `{ok}` (cross-project epic; `projects` has ≥2 members) |
-| `GET /api/sync/export` | `board.exportBoard` | `?scope=project\|all`, `?project` (required for `project`) | `{ok, nodeId, scope, projects:{<project>:[fullCard]}}` |
-| `POST /api/sync/pull` | `board.syncPull` | `{peerUrl, scope, project?}` | `{ok, summary:{added, updated, reassigned[], droppedDeps[], skippedProjects[], skippedCards[], perProject}}` |
+| `GET /api/sync/export` | `board.exportBoard` | `?scope=project\|all`, `?project` (required for `project`) | `{ok, nodeId, scope, projects:{<project>:[fullCard]}, projectEpics:{<project>:[epic]}, crossEpics:[epic]}` |
+| `POST /api/sync/pull` | `board.syncPull` | `{peerUrl, scope, project?}` | `{ok, summary:{added, updated, reassigned[], droppedDeps[], skippedProjects[], skippedCards[], epicsAdded, epicsUpdated, epicConflicts[], skippedEpics[], perProject}}` |
 
 Notes:
 - The `POST /epics` route exposes `createEpic`'s **real behavior — an upsert**: an existing slug
@@ -115,8 +115,13 @@ Notes:
   legacy card it serves. No auth: possession of the code-hub-forwarded URL is the capability.
   `POST /api/sync/pull` fetches the peer's export (`<peerUrl>/api/sync/export`) **backend-to-backend**
   (avoids browser CORS) and merges by `uid` (union + card-level last-edit-wins). The pull summary
-  contains **display ids only** — never `uid`/`node` (it reaches the GUI). Malformed peer cards
-  (missing/non-string `id`, or an unknown column) are skipped and listed in `skippedCards`.
+  contains **display ids/slugs/counts only** — never `uid`/`node` (it reaches the GUI). Malformed peer
+  cards (missing/non-string `id`, or an unknown column) are skipped and listed in `skippedCards`.
+  **Epics** are exported (`projectEpics`/`crossEpics`) and merged BEFORE cards, matched by **slug**
+  (whole-epic last-edit-wins; hidden `updated`/`node` exposed only by export, never by `read_epic`/
+  `list_epics`). A slug that is a project epic on one side and cross-project on the other is skipped +
+  reported in `epicConflicts` (never merged/deleted — grow-only); malformed epics (bad slug / cross
+  epic with <2 members) go to `skippedEpics`.
   Refusals: malformed `peerUrl` or a blocked host → 200 `{ok:false, INVALID_STATE}`; an
   unreachable/garbage/oversized peer → 200 `{ok:false, SYNC_UNREACHABLE}`.
   **SSRF guard**: `peerUrl` pointing at a loopback / private / link-local IP literal

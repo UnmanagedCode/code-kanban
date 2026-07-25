@@ -71,9 +71,11 @@ so it shares the same `board.js` service layer and per-project mutex as the MCP 
   selector (this project / all projects). Clicking **Pull from peer** does a **one-way pull**: it
   fetches the peer's full board for the scope and merges it in, newer-edit-wins per card (union,
   never deletes). Sync is two-click — click it on the peer too to make both machines converge. The
-  status line reports what changed (added / updated / re-id'd / dropped deps / skipped projects).
-  Epics themselves are not synced in v1 (a synced card keeps its epic slug; if no matching epic
-  exists locally it just isn't counted in rollups). See `docs/architecture.md` "Cross-instance sync".
+  status line reports what changed (cards added / updated / re-id'd, epics added / updated /
+  conflicts, dropped deps / skipped). **Epics sync too**: a synced card's `epic:` slug resolves to a
+  real epic on the other machine and its rollup counts it. Epics union by slug with whole-epic
+  last-edit-wins (project epics and cross-project epics both). See `docs/architecture.md`
+  "Cross-instance sync".
 
 Domain refusals (illegal move, unknown project/epic) surface as a status-line message, not a
 transport error — see `docs/protocol.md`. GUI mutations are attributed to `gui` in the logbook

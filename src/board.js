@@ -364,6 +364,7 @@ async function createProjectEpic({ project, slug, title, goal }) {
     store.writeEpic(project, {
       slug, title: title.trim(), goal: goal ?? '',
       created: existing?.created ?? nowIso(),
+      updated: nowIso(), node: localNodeId(), // sync version stamp (see writeEpic)
     });
     return { ok: true };
   });
@@ -388,6 +389,7 @@ async function createCrossEpic({ projects, slug, title, goal }) {
     store.writeCrossEpic({
       slug, title: title.trim(), goal: goal ?? '', projects: members,
       created: existing?.created ?? nowIso(),
+      updated: nowIso(), node: localNodeId(), // sync version stamp (see writeEpic)
     });
     return { ok: true };
   });
@@ -513,6 +515,92 @@ function remoteWins(remote, local) {
   return (remote.node ?? '') > (local.node ?? '');
 }
 
+// ---- epic sync ----
+// Epics match by SLUG (not uid): the slug is human-chosen, addressable identity
+// that cards reference via `epic:`, so it is never reassigned and card refs need
+// no translation. Union by slug + whole-epic LWW (updated, tiebreak node). A
+// legacy epic (no stamp) gets updated = created deterministically so shared
+// slugs match; node is only the tiebreak.
+function ensureEpicIdentity(epic) {
+  let changed = false;
+  if (!epic.updated) { epic.updated = epic.created ?? nowIso(); changed = true; }
+  if (!epic.node) { epic.node = localNodeId(); changed = true; }
+  return changed;
+}
+
+// Read + persist-backfill a project's epics. MUST run inside withLock(project).
+function backfillProjectEpics(project) {
+  const out = [];
+  for (const slug of store.listEpicSlugs(project)) {
+    const e = store.readEpic(project, slug);
+    if (!e) continue;
+    if (ensureEpicIdentity(e)) store.writeEpic(project, e);
+    out.push(e);
+  }
+  return out;
+}
+
+// Read + persist-backfill all cross-project epics. MUST run inside withLock(CROSS_LOCK).
+function backfillCrossEpics() {
+  const out = [];
+  for (const slug of store.listCrossEpicSlugs()) {
+    const e = store.readCrossEpic(slug);
+    if (!e) continue;
+    if (ensureEpicIdentity(e)) store.writeCrossEpic(e);
+    out.push(e);
+  }
+  return out;
+}
+
+// Merge incoming cross-project epics. MUST run inside withLock(CROSS_LOCK), and
+// runs BEFORE the per-project card/epic merge. Kind conflict (a member already
+// owns the slug as a per-project epic) -> skip + log, mirroring createEpic's
+// EPIC_CONFLICT guard (no deletion). This phase also resolves an intra-dump
+// kind flip deterministically: a slug that is cross here is written first, so the
+// later project-epic merge for that slug hits the guard and is skipped+logged.
+function mergeCrossEpics(remoteCross, localProjects, summary) {
+  const localBySlug = new Map();
+  for (const e of backfillCrossEpics()) localBySlug.set(e.slug, e);
+  for (const re of remoteCross) {
+    if (typeof re?.slug !== 'string' || !SLUG_RE.test(re.slug)) {
+      summary.skippedEpics.push({ slug: (re && typeof re.slug === 'string') ? re.slug : null, kind: 'cross' });
+      continue;
+    }
+    const members = Array.isArray(re.projects) ? [...new Set(re.projects)] : [];
+    if (members.length < 2) { summary.skippedEpics.push({ slug: re.slug, kind: 'cross' }); continue; }
+    if (!members.some((p) => localProjects.has(p))) continue; // covers no local project — irrelevant
+    const clash = members.find((p) => store.epicExists(p, re.slug));
+    if (clash) { summary.epicConflicts.push({ slug: re.slug, kind: 'cross-vs-project', project: clash }); continue; }
+    ensureEpicIdentity(re);
+    const local = localBySlug.get(re.slug);
+    if (!local) { store.writeCrossEpic({ ...re, projects: members }); summary.epicsAdded += 1; }
+    else if (remoteWins(re, local)) { store.writeCrossEpic({ ...re, projects: members }); summary.epicsUpdated += 1; }
+  }
+}
+
+// Merge a project's incoming project-scoped epics. MUST run inside
+// withLock(project), BEFORE cards. Kind conflict (slug is a local cross epic
+// covering this project) -> skip + log.
+function mergeProjectEpics(project, remoteEpics, summary) {
+  const localBySlug = new Map();
+  for (const e of backfillProjectEpics(project)) localBySlug.set(e.slug, e);
+  for (const re of remoteEpics) {
+    if (typeof re?.slug !== 'string' || !SLUG_RE.test(re.slug)) {
+      summary.skippedEpics.push({ slug: (re && typeof re.slug === 'string') ? re.slug : null, kind: 'project' });
+      continue;
+    }
+    const x = store.readCrossEpic(re.slug);
+    if (x && x.projects.includes(project)) {
+      summary.epicConflicts.push({ slug: re.slug, kind: 'project-vs-cross', project });
+      continue;
+    }
+    ensureEpicIdentity(re);
+    const local = localBySlug.get(re.slug);
+    if (!local) { store.writeEpic(project, re); summary.epicsAdded += 1; }
+    else if (remoteWins(re, local)) { store.writeEpic(project, re); summary.epicsUpdated += 1; }
+  }
+}
+
 export async function exportBoard({ scope, project } = {}) {
   if (scope !== 'all' && scope !== 'project') {
     return fail('INVALID_STATE', "scope must be 'project' or 'all'");
@@ -526,10 +614,20 @@ export async function exportBoard({ scope, project } = {}) {
     targets = await listProjects();
   }
   const projects = {};
+  const projectEpics = {};
   for (const p of targets) {
-    projects[p] = await withLock(p, () => backfillProject(p));
+    const r = await withLock(p, () => ({ cards: backfillProject(p), epics: backfillProjectEpics(p) }));
+    projects[p] = r.cards;
+    projectEpics[p] = r.epics;
   }
-  return { ok: true, nodeId: localNodeId(), scope, projects };
+  // Cross epics: for a single-project export, only those covering the project (=
+  // exactly the cross epics a card in that project can reference); for all, every
+  // cross epic. Under CROSS_LOCK, separate from the per-project locks.
+  const crossEpics = await withLock(CROSS_LOCK, () => {
+    const all = backfillCrossEpics();
+    return scope === 'project' ? all.filter((e) => e.projects.includes(project)) : all;
+  });
+  return { ok: true, nodeId: localNodeId(), scope, projects, projectEpics, crossEpics };
 }
 
 export async function syncPull({ peerUrl, scope, project } = {}) {
@@ -568,24 +666,38 @@ export async function syncPull({ peerUrl, scope, project } = {}) {
 
   const localProjects = new Set(await listProjects());
   // NB: this summary reaches the GUI (routes.js -> app.js), so it must carry NO
-  // hidden uid/node — only display ids. See stripHidden's invariant.
-  const summary = { added: 0, updated: 0, reassigned: [], droppedDeps: [], skippedProjects: [], skippedCards: [], perProject: {} };
+  // hidden uid/node — only display ids, slugs, project names, and counts. See
+  // stripHidden's invariant.
+  const summary = {
+    added: 0, updated: 0, reassigned: [], droppedDeps: [], skippedProjects: [], skippedCards: [],
+    epicsAdded: 0, epicsUpdated: 0, epicConflicts: [], skippedEpics: [], perProject: {},
+  };
+
+  // Epics merge BEFORE cards so a card's `epic:` resolves against fresh epics.
+  // Cross-project epics first, under CROSS_LOCK (a peer with no epics — an older
+  // card-only build — simply supplies empty sets).
+  const remoteCross = Array.isArray(dump.crossEpics) ? dump.crossEpics : [];
+  await withLock(CROSS_LOCK, () => mergeCrossEpics(remoteCross, localProjects, summary));
+  const remoteProjectEpics = (dump.projectEpics && typeof dump.projectEpics === 'object') ? dump.projectEpics : {};
 
   const toMerge = scope === 'project' ? [project] : Object.keys(dump.projects);
   for (const p of toMerge) {
     const remoteCards = dump.projects[p];
     if (!Array.isArray(remoteCards)) continue;
     if (!localProjects.has(p)) { summary.skippedProjects.push(p); continue; }
-    const pr = await withLock(p, () => mergeProject(p, remoteCards, summary));
+    const epics = Array.isArray(remoteProjectEpics[p]) ? remoteProjectEpics[p] : [];
+    const pr = await withLock(p, () => mergeProject(p, remoteCards, epics, summary));
     summary.perProject[p] = pr;
   }
   return { ok: true, summary };
 }
 
-// Merge one project's incoming cards into the local board. MUST run inside
-// withLock(project, ...).
-function mergeProject(project, remoteCards, summary) {
+// Merge one project's incoming project-epics then cards into the local board.
+// MUST run inside withLock(project, ...). Epics first so a card's `epic:` (kept
+// verbatim — slugs are stable, never translated) resolves against fresh epics.
+function mergeProject(project, remoteCards, remoteEpics, summary) {
   store.ensureProjectDirs(project);
+  mergeProjectEpics(project, remoteEpics, summary);
   const localCards = backfillProject(project);
 
   const localByUid = new Map();

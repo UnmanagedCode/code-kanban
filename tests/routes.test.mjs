@@ -242,6 +242,19 @@ test('GET /api/sync/export returns the full card set incl. the hidden uid stamp'
   });
 });
 
+test('GET /api/sync/export includes project + cross epics with the hidden stamp', async () => {
+  await withServer(async ({ json }) => {
+    await json('/api/board/demo/epics', { method: 'POST', body: { slug: 'auth', title: 'Auth' } });
+    const { status, body } = await json('/api/sync/export?scope=project&project=demo');
+    assert.equal(status, 200);
+    assert.ok(Array.isArray(body.projectEpics.demo));
+    assert.ok(Array.isArray(body.crossEpics));
+    const auth = body.projectEpics.demo.find((e) => e.slug === 'auth');
+    assert.equal(auth.title, 'Auth');
+    assert.ok(auth.updated && auth.node); // export exposes the epic stamp
+  });
+});
+
 test('POST /api/sync/pull merges a stubbed peer dump and returns a summary', async () => {
   await withServer(async ({ json }) => {
     board._setSyncFetcher(async () => ({

@@ -514,8 +514,11 @@ async function doSyncPull(e) {
   const s = data.summary || {};
   const bits = [`${s.added || 0} added`, `${s.updated || 0} updated`];
   if (s.reassigned?.length) bits.push(`${s.reassigned.length} re-id’d`);
+  if (s.epicsAdded || s.epicsUpdated) bits.push(`epics +${s.epicsAdded || 0}/~${s.epicsUpdated || 0}`);
+  if (s.epicConflicts?.length) bits.push(`${s.epicConflicts.length} epic conflict${s.epicConflicts.length === 1 ? '' : 's'}`);
   if (s.droppedDeps?.length) bits.push(`${s.droppedDeps.length} dep${s.droppedDeps.length === 1 ? '' : 's'} dropped`);
   if (s.skippedCards?.length) bits.push(`${s.skippedCards.length} malformed skipped`);
+  if (s.skippedEpics?.length) bits.push(`${s.skippedEpics.length} epic${s.skippedEpics.length === 1 ? '' : 's'} skipped`);
   if (s.skippedProjects?.length) bits.push(`${s.skippedProjects.length} project${s.skippedProjects.length === 1 ? '' : 's'} skipped`);
   setStatus(`Sync: ${bits.join(', ')}.`, 'ok');
   closeOverlay();

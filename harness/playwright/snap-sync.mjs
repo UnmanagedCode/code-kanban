@@ -15,7 +15,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = path.join(__dirname, 'screenshots');
 const PROJECT = 'demo';
 
-async function seed(base, root, titles) {
+async function seed(base, root, { epics = [], cards = [] } = {}) {
   await fs.mkdir(path.join(root, PROJECT), { recursive: true });
   const call = async (p, opts, label) => {
     const b = await fetch(base + p, {
@@ -25,9 +25,8 @@ async function seed(base, root, titles) {
     if (!b || b.ok === false) throw new Error(`seed "${label}" refused: ${JSON.stringify(b)}`);
     return b;
   };
-  for (const t of titles) {
-    await call(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: t } }, t);
-  }
+  for (const e of epics) await call(`/api/board/${PROJECT}/epics`, { method: 'POST', body: e }, `epic ${e.slug}`);
+  for (const c of cards) await call(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: c }, `card ${c.title}`);
 }
 
 async function main() {
@@ -40,8 +39,13 @@ async function main() {
   try {
     await waitForServer(peer.url);
     await waitForServer(local.url);
-    await seed(peer.url, peer.sandbox.dirs.PROJECTS_ROOT, ['Peer card one', 'Peer card two']);
-    await seed(local.url, local.sandbox.dirs.PROJECTS_ROOT, ['Local card']);
+    // Peer has an epic + a card under it, so the pull must carry the epic for the
+    // card's `epic:` to resolve and its rollup to count on the local board.
+    await seed(peer.url, peer.sandbox.dirs.PROJECTS_ROOT, {
+      epics: [{ slug: 'auth', title: 'Auth flow', goal: 'Sign-in + sessions' }],
+      cards: [{ title: 'Peer card one' }, { title: 'Peer card two' }, { title: 'Peer card three', epic: 'auth' }],
+    });
+    await seed(local.url, local.sandbox.dirs.PROJECTS_ROOT, { cards: [{ title: 'Local card' }] });
 
     await withPage(async (page) => {
       await page.goto(local.url + '/', { waitUntil: 'domcontentloaded' });
@@ -59,11 +63,15 @@ async function main() {
       await page.selectOption('select[name="scope"]', 'project');
       await page.click('#form-overlay button[type="submit"]');
       await page.waitForSelector('#form-overlay', { state: 'hidden', timeout: 10_000 });
-      // Merged board: 1 local + 2 peer cards = 3.
-      await page.waitForFunction(() => document.querySelectorAll('.card').length === 3, { timeout: 10_000 });
+      // Merged board: 1 local + 3 peer cards = 4, and the peer's 'auth' epic now
+      // renders in the epics rollup (proving the epic synced with the cards).
+      await page.waitForFunction(() => document.querySelectorAll('.card').length === 4, { timeout: 10_000 });
+      await page.waitForSelector('.epic-row', { timeout: 10_000 });
+      const epicSynced = await page.evaluate(() => document.querySelector('#epics')?.textContent?.includes('auth'));
+      if (!epicSynced) throw new Error('synced epic "auth" did not render in the epics rollup');
       await page.screenshot({ path: path.join(SHOTS, 'sync-2-merged.png'), fullPage: true });
       const status = await page.textContent('#status');
-      console.log(`snapped merged board — status: ${status}`);
+      console.log(`snapped merged board (epic synced) — status: ${status}`);
     }, { headless: true, viewport: { width: 1440, height: 900 } });
   } finally {
     await local.close();

@@ -75,6 +75,19 @@ for a scope and merges it in; converging both machines means clicking Sync on ea
 - **Migration**: legacy cards (no `uid`) are backfilled lazily at export/pull time under the lock.
   `uid` is **deterministic** — `deriveUid(project, id, created)` — so two machines holding the
   same shared-lineage legacy card derive the identical uid and union instead of duplicating.
+- **Epics sync too** (`exportBoard` carries `projectEpics`/`crossEpics`; `syncPull` merges them
+  BEFORE cards, so a card's `epic:` resolves against fresh epics). Epics match by **slug** (project
+  epic keyed by `(project,slug)`, cross by `slug`) — NOT uid: the slug is human-chosen, addressable
+  identity that cards reference, so it is never reassigned and `card.epic` is kept verbatim (never
+  translated, and can never mispoint). Union by slug + whole-epic last-edit-wins (`updated`, tiebreak
+  `node`; no uid). Legacy epics get `updated = created` backfilled so shared slugs match. A
+  **kind conflict** (a slug that is a project epic on one side, cross-project on the other — the
+  state `createEpic`'s `EPIC_CONFLICT` guard forbids) is **skipped and logged** in
+  `summary.epicConflicts`, never merged and never deleted (grow-only). Cross epics merge under
+  `CROSS_LOCK`, project epics under the project lock. A single-project export carries the project's
+  own epics plus every cross epic covering it — exactly the set its cards can reference. `updated`/
+  `node` are hidden from `read_epic`/`list_epics` (their responses are built from a field whitelist);
+  `/api/sync/export` is the sole exposure.
 - **Scope**: `project` (the current project) or `all` (every live project from `listProjects`).
   A peer project not present locally is skipped and reported (never auto-created).
 - **Trust**: no auth — possession of the code-hub URL is the capability (the whole board API is

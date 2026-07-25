@@ -29,6 +29,41 @@ function serveDump(projects) {
   board._setSyncFetcher(async () => ({ ok: true, nodeId: 'peer-node', projects }));
 }
 
+// Full dump incl. epics (the shape exportBoard now returns).
+function serveFull({ projects = {}, projectEpics = {}, crossEpics = [] }) {
+  board._setSyncFetcher(async () => ({ ok: true, nodeId: 'peer-node', projects, projectEpics, crossEpics }));
+}
+
+function pEpic(o) {
+  return {
+    slug: o.slug, title: o.title ?? o.slug, goal: o.goal ?? '', project: o.project ?? 'alpha',
+    created: o.created ?? '2026-01-01T00:00:00.000Z',
+    updated: o.updated ?? o.created ?? '2026-01-01T00:00:00.000Z',
+    node: o.node ?? 'peer-node',
+  };
+}
+function xEpic(o) {
+  return {
+    slug: o.slug, title: o.title ?? o.slug, goal: o.goal ?? '',
+    projects: o.projects ?? ['alpha', 'beta'],
+    created: o.created ?? '2026-01-01T00:00:00.000Z',
+    updated: o.updated ?? o.created ?? '2026-01-01T00:00:00.000Z',
+    node: o.node ?? 'peer-node',
+  };
+}
+
+function seedProjectEpic(project, o) {
+  store.ensureProjectDirs(project);
+  const e = pEpic({ ...o, project });
+  store.writeEpic(project, e);
+  return e;
+}
+function seedCrossEpic(o) {
+  const e = xEpic(o);
+  store.writeCrossEpic(e);
+  return e;
+}
+
 async function withRoot(fn) {
   const root = await freshRoot();
   useProjects(['alpha', 'beta']);
@@ -316,6 +351,154 @@ test('peerUrl to a loopback/private host is blocked (SSRF guard)', async () => {
   });
 });
 
+// ---- epic sync ----
+
+test('epic union: a peer project epic is copied in and its card resolves', async () => {
+  await withRoot(async () => {
+    serveFull({
+      projects: { alpha: [card({ id: '2026-0001', uid: 'u-P', title: 'T', epic: 'auth' })] },
+      projectEpics: { alpha: [pEpic({ slug: 'auth', title: 'Auth flow' })] },
+    });
+    const r = await pull('project', 'alpha');
+    assert.equal(r.summary.epicsAdded, 1);
+    assert.equal(r.summary.added, 1);
+    const e = await board.readEpic({ project: 'alpha', slug: 'auth' });
+    assert.equal(e.ok, true);
+    assert.equal(e.epic.title, 'Auth flow');
+    // The synced card's epic resolves — the rollup counts it.
+    const listed = await board.listEpics({ project: 'alpha' });
+    assert.equal(listed.epics.find((x) => x.slug === 'auth').rollup.triage, 1);
+  });
+});
+
+test('epic LWW: newer peer wins, older loses, tie -> higher node', async () => {
+  await withRoot(async () => {
+    seedProjectEpic('alpha', { slug: 'auth', title: 'Local', updated: '2026-05-01T00:00:00.000Z', node: 'nL' });
+    serveFull({ projects: { alpha: [] }, projectEpics: { alpha: [pEpic({ slug: 'auth', title: 'PeerNew', updated: '2030-01-01T00:00:00.000Z' })] } });
+    let r = await pull('project', 'alpha');
+    assert.equal(r.summary.epicsUpdated, 1);
+    assert.equal((await board.readEpic({ project: 'alpha', slug: 'auth' })).epic.title, 'PeerNew');
+
+    serveFull({ projects: { alpha: [] }, projectEpics: { alpha: [pEpic({ slug: 'auth', title: 'PeerOld', updated: '2000-01-01T00:00:00.000Z' })] } });
+    r = await pull('project', 'alpha');
+    assert.equal(r.summary.epicsUpdated, 0);
+    assert.equal((await board.readEpic({ project: 'alpha', slug: 'auth' })).epic.title, 'PeerNew');
+
+    const cur = store.readEpic('alpha', 'auth'); // equal updated, higher node wins
+    serveFull({ projects: { alpha: [] }, projectEpics: { alpha: [pEpic({ slug: 'auth', title: 'PeerTie', updated: cur.updated, node: cur.node + '~' })] } });
+    r = await pull('project', 'alpha');
+    assert.equal(r.summary.epicsUpdated, 1);
+    assert.equal((await board.readEpic({ project: 'alpha', slug: 'auth' })).epic.title, 'PeerTie');
+  });
+});
+
+test('legacy epic (no stamp) matches by slug; updated backfilled to created; no dup', async () => {
+  await withRoot(async () => {
+    store.ensureProjectDirs('alpha');
+    store.writeEpic('alpha', { slug: 'auth', title: 'Legacy', goal: '', created: '2026-01-01T00:00:00.000Z' });
+    serveFull({ projects: { alpha: [] }, projectEpics: { alpha: [pEpic({ slug: 'auth', title: 'Legacy', created: '2026-01-01T00:00:00.000Z', updated: '2026-01-01T00:00:00.000Z', node: 'peer' })] } });
+    const r = await pull('project', 'alpha');
+    assert.equal(r.summary.epicsAdded, 0); // matched by slug, not new
+    assert.equal(store.listEpicSlugs('alpha').length, 1); // no duplicate
+    assert.equal(store.readEpic('alpha', 'auth').updated, '2026-01-01T00:00:00.000Z'); // backfilled = created
+  });
+});
+
+test('card.epic slug is kept verbatim (never reassigned/translated)', async () => {
+  await withRoot(async () => {
+    serveFull({
+      projects: { alpha: [card({ id: '2026-0001', uid: 'u-P', title: 'T', epic: 'auth' })] },
+      projectEpics: { alpha: [pEpic({ slug: 'auth', title: 'Auth' })] },
+    });
+    await pull('project', 'alpha');
+    assert.equal(byTitle('alpha', 'T').epic, 'auth');
+  });
+});
+
+test('kind conflict: local cross epic vs incoming project epic -> skip + log', async () => {
+  await withRoot(async () => {
+    seedCrossEpic({ slug: 'plat', projects: ['alpha', 'beta'], title: 'CrossPlat' });
+    serveFull({ projects: { alpha: [] }, projectEpics: { alpha: [pEpic({ slug: 'plat', title: 'ProjPlat' })] } });
+    const r = await pull('project', 'alpha');
+    assert.equal(r.summary.epicConflicts.length, 1);
+    assert.equal(r.summary.epicConflicts[0].slug, 'plat');
+    assert.equal(store.epicExists('alpha', 'plat'), false); // no second representation
+    assert.equal(store.crossEpicExists('plat'), true);
+  });
+});
+
+test('kind conflict: local project epic vs incoming cross epic -> skip + log', async () => {
+  await withRoot(async () => {
+    seedProjectEpic('alpha', { slug: 'plat', title: 'ProjPlat' });
+    serveFull({ projects: { alpha: [] }, crossEpics: [xEpic({ slug: 'plat', projects: ['alpha', 'beta'], title: 'CrossPlat' })] });
+    const r = await pull('all');
+    assert.equal(r.summary.epicConflicts.length, 1);
+    assert.equal(store.crossEpicExists('plat'), false);
+    assert.equal(store.epicExists('alpha', 'plat'), true);
+  });
+});
+
+test('single-project scope carries cross epics covering the project; card resolves', async () => {
+  await withRoot(async () => {
+    serveFull({
+      projects: { alpha: [card({ id: '2026-0001', uid: 'u-P', title: 'T', epic: 'plat' })] },
+      crossEpics: [xEpic({ slug: 'plat', projects: ['alpha', 'beta'], title: 'Platform' })],
+    });
+    const r = await pull('project', 'alpha');
+    assert.equal(r.summary.epicsAdded, 1);
+    assert.equal(store.crossEpicExists('plat'), true);
+    const e = await board.readEpic({ project: 'alpha', slug: 'plat' });
+    assert.equal(e.ok, true);
+    assert.equal(e.epic.rollup.triage, 1); // the synced card counts under the cross epic
+  });
+});
+
+test('dangling card.epic (no such epic) is kept verbatim, card uncounted', async () => {
+  await withRoot(async () => {
+    serveFull({ projects: { alpha: [card({ id: '2026-0001', uid: 'u-P', title: 'T', epic: 'ghost' })] } });
+    const r = await pull('project', 'alpha');
+    assert.equal(r.summary.added, 1);
+    assert.equal(byTitle('alpha', 'T').epic, 'ghost'); // kept, not dropped
+    assert.equal((await board.readEpic({ project: 'alpha', slug: 'ghost' })).ok, false);
+  });
+});
+
+test('epic hidden fields: absent from readEpic/listEpics + summary; present only in export', async () => {
+  await withRoot(async () => {
+    seedProjectEpic('alpha', { slug: 'auth', title: 'A' });
+    seedCrossEpic({ slug: 'plat', projects: ['alpha', 'beta'], title: 'P' });
+    const re = await board.readEpic({ project: 'alpha', slug: 'auth' });
+    assert.ok(!('updated' in re.epic) && !('node' in re.epic));
+    for (const e of (await board.listEpics({ project: 'alpha' })).epics) {
+      assert.ok(!('updated' in e) && !('node' in e));
+    }
+    const exp = await board.exportBoard({ scope: 'all' });
+    assert.ok(exp.projectEpics.alpha[0].updated && exp.projectEpics.alpha[0].node);
+    assert.ok(exp.crossEpics[0].updated && exp.crossEpics[0].node);
+    // The pull summary (GUI-facing) must carry no hidden VALUES — no node id and
+    // no `updated` timestamp. (Note `perProject.updated` is a legit COUNT key, so
+    // we assert on the values that would leak, not the substring "updated".)
+    serveFull({ projects: { alpha: [] }, projectEpics: { alpha: [pEpic({ slug: 'auth', title: 'A2', updated: '2030-01-01T00:00:00.000Z', node: 'secret-node' })] } });
+    const blob = JSON.stringify((await pull('project', 'alpha')).summary);
+    assert.ok(!blob.includes('secret-node'), 'summary leaked a node id');
+    assert.ok(!blob.includes('2030-01-01'), 'summary leaked an updated timestamp');
+  });
+});
+
+test('malformed epics (bad slug / cross <2 members) are skipped', async () => {
+  await withRoot(async () => {
+    serveFull({
+      projects: { alpha: [] },
+      projectEpics: { alpha: [pEpic({ slug: 'ok', title: 'OK' }), pEpic({ slug: 'Bad Slug!', title: 'x' })] },
+      crossEpics: [xEpic({ slug: 'lonely', projects: ['alpha'], title: 'x' })],
+    });
+    const r = await pull('all');
+    assert.equal(r.summary.epicsAdded, 1); // only 'ok'
+    assert.equal(r.summary.skippedEpics.length, 2);
+    assert.equal(store.epicExists('alpha', 'ok'), true);
+  });
+});
+
 // Two boards; pull A->B then B->A and assert both converge to the SAME card set
 // (matched by uid + content; display ids may legitimately differ per machine).
 // Covers three cases at once: a display-id collision of DIFFERENT cards (union),
@@ -332,10 +515,12 @@ test('bidirectional pull converges both boards (union + LWW + tiebreak)', async 
     seedLocal('alpha', { id: '2026-0001', uid: 'uX', title: 'X', updated: '2026-03-01T00:00:00.000Z', node: 'nA', state: 'todo' });     // A-only
     seedLocal('alpha', { id: '2026-0002', uid: 'uZ', title: 'Z-A', updated: '2026-05-02T00:00:00.000Z', node: 'nA', state: 'todo' });    // LWW: A newer
     seedLocal('alpha', { id: '2026-0003', uid: 'uT', title: 'T-A', updated: '2026-06-01T00:00:00.000Z', node: 'zzz', state: 'done' });   // tie: A higher node
+    seedProjectEpic('alpha', { slug: 'auth', title: 'E-A', updated: '2026-07-02T00:00:00.000Z', node: 'nA' });          // epic LWW: A newer
     setRoot(rootB);
     seedLocal('alpha', { id: '2026-0001', uid: 'uY', title: 'Y', updated: '2026-03-02T00:00:00.000Z', node: 'nB', state: 'backlog' });   // B-only (collides on 0001)
     seedLocal('alpha', { id: '2026-0002', uid: 'uZ', title: 'Z-B', updated: '2026-05-01T00:00:00.000Z', node: 'nB', state: 'backlog' }); // LWW: B older -> loses
     seedLocal('alpha', { id: '2026-0003', uid: 'uT', title: 'T-B', updated: '2026-06-01T00:00:00.000Z', node: 'aaa', state: 'todo' });   // tie: B lower node -> loses
+    seedProjectEpic('alpha', { slug: 'auth', title: 'E-B', updated: '2026-07-01T00:00:00.000Z', node: 'nB' });          // epic LWW: B older -> loses
 
     // Pull A -> B.
     setRoot(rootA);
@@ -369,6 +554,17 @@ test('bidirectional pull converges both boards (union + LWW + tiebreak)', async 
     assert.equal(fpA.uT.title, 'T-A');
     assert.equal(fpB.uZ.title, 'Z-A');
     assert.equal(fpB.uT.title, 'T-A');
+
+    // Epics also converge by slug + content; the newer (A) version wins on both.
+    const epicFp = (root) => {
+      setRoot(root);
+      return store.listEpicSlugs('alpha').map((s) => {
+        const e = store.readEpic('alpha', s);
+        return { slug: e.slug, title: e.title, updated: e.updated, node: e.node };
+      });
+    };
+    assert.deepEqual(epicFp(rootA), epicFp(rootB));
+    assert.equal(epicFp(rootA)[0].title, 'E-A');
   } finally {
     board._setSyncFetcher(null);
     await cleanup(rootA);

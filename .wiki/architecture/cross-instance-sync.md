@@ -69,15 +69,44 @@ dep drops.
 `syncPull` returns a `summary` that `routes.js` passes to `app.js`. It must carry **no `uid`/`node`**
 (same invariant as reads). So `reassigned` uses `{from,to}` display ids, `droppedDeps` reports the
 dependent card by its remote **display** id, and malformed peer cards (missing/non-string `id` or an
-unknown column) are skipped into `skippedCards` by display id. GOTCHA: if you add a field to the
-summary, don't put a card's `uid` in it. `tests/sync.test.mjs` scans the whole serialized summary
-for any uid to enforce this.
+unknown column) are skipped into `skippedCards` by display id. Epic-merge adds `epicsAdded`/
+`epicsUpdated` counts, `epicConflicts[]` and `skippedEpics[]` — all **slugs/counts only**, no
+`updated`/`node`. GOTCHA: if you add a field to the summary, don't put a `uid`/`node`/timestamp in
+it. `tests/sync.test.mjs` scans the whole serialized summary to enforce this.
+
+## Epics sync too — slug is identity (NOT uid)
+This is the key divergence from the card model, and it's deliberate. Cards use a random `uid`
+because their numeric ids auto-mint and a collision means DIFFERENT cards. **Epics match by slug**
+(project epic keyed by `(project,slug)`, cross epic by `slug`) because the slug is human-chosen,
+addressable identity that cards reference via `epic:`. Consequences:
+- **No `uid` on epics.** They carry only `updated` (LWW clock, bumped by `createEpic` — the sole
+  epic mutator) and `node` (tiebreak). Both hand-rolled serializers in `store.js` (`writeEpic`,
+  `writeCrossEpic`) emit them; both parsers read them. Legacy epics get `updated = created`
+  backfilled deterministically so shared slugs match.
+- **Slugs are never reassigned, so `card.epic` is never translated** — it's kept verbatim and can
+  never mispoint (contrast `depends_on`, which IS translated because display ids get reassigned).
+  A dangling `card.epic` (slug present nowhere) is kept verbatim too — safe, just uncounted.
+- **Union by slug + whole-epic LWW** (later `updated`, tiebreak higher `node`). Same-slug/
+  different-content epics LWW-merge (loser's title/goal lost) — usually they're the same epic humans
+  named identically anyway.
+- **Merge order:** epics BEFORE cards, so a card's `epic:` resolves against fresh epics. Cross epics
+  merge under `CROSS_LOCK` first; then per project, project epics then cards under `withLock(P)`.
+- **Kind conflict** (a slug that is a project epic on one side, cross-project on the other — the
+  state `createEpic`'s `EPIC_CONFLICT` guard forbids): **skip + log** in `summary.epicConflicts`,
+  never merge the second representation, never delete (grow-only). Because the cross phase runs
+  first, an intra-dump kind flip (same slug appearing as both cross and project in ONE dump)
+  resolves deterministically: cross is written first, the project version then hits the guard and is
+  skipped+logged.
+- **Single-project scope** carries the project's own epics PLUS every cross epic covering it —
+  exactly the set a card in that project can reference (`epicVisibleIn`), so every `card.epic`
+  resolves without a drop-and-log rule.
+- **Hidden-field discipline:** `board.readEpic`/`listEpics` build responses from a field whitelist
+  (`{slug,title,goal,rollup,projects}`), so `updated`/`node` never leak; `/api/sync/export` is the
+  sole exposure. Same as cards.
 
 ## Scope & limitations
 - `project` = the current project; `all` = every live project (`listProjects`). A peer project
   absent locally is **skipped and reported**, never auto-created (the conductor owns the catalog).
-- **Epics are not synced in v1.** A synced card keeps its `epic` slug verbatim; if no matching epic
-  exists locally the card is fine, it just isn't counted in that epic's rollup.
 - `owner`/`commit` ride along on a whole-card replace (they're just frontmatter) — a synced
   in-progress card may carry the peer's session/worktree references. Acceptable under whole-card LWW.
 
