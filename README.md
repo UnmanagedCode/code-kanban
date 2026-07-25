@@ -18,6 +18,9 @@ team surface. Same extension pattern as the sibling plugins `code-hub` and `code
   (spanning several projects with an aggregated rollup).
 - **Web GUI:** a local zero-build board UI is served at `/` (manifest `frontend.path`), in-process
   over the same `board.js` service layer.
+- **Cross-instance sync:** a **Sync** button pulls another instance's board (over a
+  code-hub-forwarded URL) and merges it in, union + card-level last-edit-wins. Two-click, one-way
+  per click. See [docs/architecture.md](docs/architecture.md) "Cross-instance sync".
 
 See [docs/features.md](docs/features.md) for the full tool table.
 

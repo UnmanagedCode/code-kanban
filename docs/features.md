@@ -66,6 +66,14 @@ so it shares the same `board.js` service layer and per-project mutex as the MCP 
   "Span projects" multi-select makes a cross-project epic when ≥2 are picked (else project-scoped).
   Cross-project epics show a badge + member list; their detail lists each task's project.
 - **New task** — files into `triage` (acceptance is one line per line → checkboxes).
+- **Sync** — opens a dialog to sync with another instance on a different machine: it shows THIS
+  board's URL (copyable — share it with the peer), a field for the PEER board's URL, and a scope
+  selector (this project / all projects). Clicking **Pull from peer** does a **one-way pull**: it
+  fetches the peer's full board for the scope and merges it in, newer-edit-wins per card (union,
+  never deletes). Sync is two-click — click it on the peer too to make both machines converge. The
+  status line reports what changed (added / updated / re-id'd / dropped deps / skipped projects).
+  Epics themselves are not synced in v1 (a synced card keeps its epic slug; if no matching epic
+  exists locally it just isn't counted in rollups). See `docs/architecture.md` "Cross-instance sync".
 
 Domain refusals (illegal move, unknown project/epic) surface as a status-line message, not a
 transport error — see `docs/protocol.md`. GUI mutations are attributed to `gui` in the logbook

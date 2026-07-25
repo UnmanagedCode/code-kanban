@@ -128,6 +128,22 @@ export function buildRoutes() {
 
   r.get('/epics/:slug', wrap((req) => board.readEpic({ slug: req.params.slug })));
 
+  // ---- cross-instance sync ----
+
+  // Full board dump for a scope: the ONE endpoint that intentionally exposes the
+  // hidden uid/updated/node stamp. Read-only; reachable by a peer's puller via
+  // the code-hub-forwarded URL (possession of that URL is the capability — no
+  // token, matching the plugin's existing unauthenticated exposure).
+  r.get('/sync/export', wrap((req) =>
+    board.exportBoard({ scope: req.query.scope, project: req.query.project })));
+
+  // Pull the peer's dump and merge it locally (union + card-level last-edit-wins).
+  // Backend-to-backend so it isn't blocked by the browser's CORS policy.
+  r.post('/sync/pull', wrap((req) => {
+    const { peerUrl, scope, project } = req.body ?? {};
+    return board.syncPull({ peerUrl, scope, project });
+  }));
+
   // Malformed JSON body -> 400 {error}, not Express's default HTML page.
   r.use((err, req, res, next) => {
     if (err.type === 'entity.parse.failed' || err instanceof SyntaxError) {

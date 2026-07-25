@@ -74,6 +74,24 @@ export function moveTask(project, id, fromState, toState, updatedTask) {
   if (fromState !== toState && fs.existsSync(oldFile)) fs.rmSync(oldFile);
 }
 
+// Full cards in a project, parsed (all frontmatter incl. uid/updated/node),
+// state injected, WITHOUT the _mtimeMs stat. This is the raw board dump the sync
+// export serves and the sync merge consumes — the one place uid/node are exposed.
+export function exportTasks(project) {
+  const out = [];
+  for (const s of STATES) {
+    let names;
+    try { names = fs.readdirSync(stateDir(project, s)); }
+    catch { continue; }
+    for (const name of names) {
+      if (!name.endsWith('.md')) continue;
+      const raw = fs.readFileSync(path.join(stateDir(project, s), name), 'utf8');
+      out.push(taskfile.parse(raw, { state: s }));
+    }
+  }
+  return out;
+}
+
 // All cards in a project (optionally one state), parsed, with state injected.
 export function listTasks(project, { state } = {}) {
   const states = state ? [state] : STATES;

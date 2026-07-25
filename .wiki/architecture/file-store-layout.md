@@ -71,3 +71,7 @@ project's cards + 1`. The sequence is **project-wide monotonic and does NOT rese
 ids stay globally sortable and gap-free within a project; the year is a human-readable creation
 prefix only. Assignment happens inside the project mutex, so concurrent `file_task` calls never
 collide.
+
+Ids are unique only **per-project, per-filesystem** — two machines mint the same `2026-NNNN` for
+different cards. Cross-instance sync therefore treats display id as sugar, not identity, and matches
+on a hidden `uid` instead. See [[cross-instance-sync]].
