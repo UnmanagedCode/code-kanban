@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { freshRoot, cleanup } from './_helpers.mjs';
 import { _setProjectFetcher } from '../src/projects.js';
+import * as board from '../src/board.js';
 import { createServer } from '../server.js';
 
 // Drive the web GUI's HTTP routes end-to-end through the Express app (the same
@@ -224,6 +225,70 @@ test('unknown epic on file_task -> 200 EPIC_UNKNOWN', async () => {
     assert.equal(status, 200);
     assert.equal(body.ok, false);
     assert.equal(body.code, 'EPIC_UNKNOWN');
+  });
+});
+
+test('GET /api/sync/export returns the full card set incl. the hidden uid stamp', async () => {
+  await withServer(async ({ json }) => {
+    await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'Exportable' } });
+    const { status, body } = await json('/api/sync/export?scope=project&project=demo');
+    assert.equal(status, 200);
+    assert.equal(body.ok, true);
+    assert.ok(Array.isArray(body.projects.demo));
+    const [c] = body.projects.demo;
+    assert.equal(c.title, 'Exportable');
+    assert.ok(c.uid); // export is the one place uid is exposed
+    assert.ok(c.updated);
+  });
+});
+
+test('GET /api/sync/export includes project + cross epics with the hidden stamp', async () => {
+  await withServer(async ({ json }) => {
+    await json('/api/board/demo/epics', { method: 'POST', body: { slug: 'auth', title: 'Auth' } });
+    const { status, body } = await json('/api/sync/export?scope=project&project=demo');
+    assert.equal(status, 200);
+    assert.ok(Array.isArray(body.projectEpics.demo));
+    assert.ok(Array.isArray(body.crossEpics));
+    const auth = body.projectEpics.demo.find((e) => e.slug === 'auth');
+    assert.equal(auth.title, 'Auth');
+    assert.ok(auth.updated && auth.node); // export exposes the epic stamp
+  });
+});
+
+test('POST /api/sync/pull merges a stubbed peer dump and returns a summary', async () => {
+  await withServer(async ({ json }) => {
+    board._setSyncFetcher(async () => ({
+      ok: true, nodeId: 'peer', projects: { demo: [{
+        id: '2026-0001', uid: 'u-peer', title: 'FromPeer', project: 'demo',
+        epic: null, priority: 0, created: '2026-01-01T00:00:00.000Z',
+        updated: '2026-01-01T00:00:00.000Z', node: 'peer', owner: null,
+        commit: null, depends_on: [], goal: '', acceptance: [], logbook: [],
+        state: 'triage',
+      }] },
+    }));
+    try {
+      const { status, body } = await json('/api/sync/pull', {
+        method: 'POST', body: { peerUrl: 'http://peer.test', scope: 'project', project: 'demo' },
+      });
+      assert.equal(status, 200);
+      assert.equal(body.ok, true);
+      assert.equal(body.summary.added, 1);
+      const read = await json('/api/board/demo/tasks/2026-0001');
+      assert.equal(read.body.task.title, 'FromPeer');
+    } finally {
+      board._setSyncFetcher(null);
+    }
+  });
+});
+
+test('POST /api/sync/pull with a bad peerUrl -> 200 {ok:false, INVALID_STATE}', async () => {
+  await withServer(async ({ json }) => {
+    const { status, body } = await json('/api/sync/pull', {
+      method: 'POST', body: { peerUrl: 'nope', scope: 'project', project: 'demo' },
+    });
+    assert.equal(status, 200);
+    assert.equal(body.ok, false);
+    assert.equal(body.code, 'INVALID_STATE');
   });
 });
 

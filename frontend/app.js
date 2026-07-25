@@ -91,6 +91,7 @@ async function init() {
 
   $('#new-task-btn').addEventListener('click', () => renderTaskForm());
   $('#new-epic-btn').addEventListener('click', () => renderEpicForm());
+  $('#sync-btn').addEventListener('click', () => renderSyncForm());
   $('#refresh-btn').addEventListener('click', () => loadBoard());
   $('#project-select').addEventListener('change', (e) => selectProject(e.target.value));
 
@@ -114,7 +115,7 @@ function renderProjectSelect() {
 }
 
 function setBoardEnabled(on) {
-  for (const id of ['new-task-btn', 'new-epic-btn', 'refresh-btn']) $('#' + id).disabled = !on;
+  for (const id of ['new-task-btn', 'new-epic-btn', 'sync-btn', 'refresh-btn']) $('#' + id).disabled = !on;
 }
 
 // ---- board load + render --------------------------------------------------
@@ -451,6 +452,75 @@ async function doCreateEpic(e) {
   const r = refusalReason(data);
   if (r) { form.querySelector('.form-error').textContent = r; return; }
   setStatus(`Epic ${slug} saved.`, 'ok');
+  closeOverlay();
+  await loadBoard();
+}
+
+// ---- sync dialog ----------------------------------------------------------
+
+// Two-click, one-way pull. THIS board's own URL is read from the browser
+// (location) — the backend can't know its public code-hub-forwarded URL, but the
+// browser reached the board through it. The peer pastes this same URL on their
+// side; converging both machines means each clicks Sync once.
+function renderSyncForm() {
+  const ownUrl = location.origin + location.pathname;
+  const copyBtn = el('button', { type: 'button', class: 'ghost', onclick: async () => {
+    try { await navigator.clipboard.writeText(ownUrl); setStatus('Board URL copied.', 'ok'); }
+    catch { setStatus('Copy failed — select the URL manually.', 'err'); }
+  } }, 'Copy');
+  const form = el('form', { class: 'form-grid', onsubmit: doSyncPull }, [
+    el('h2', {}, 'Sync board'),
+    el('label', { class: 'field' }, ['This board’s URL (share with the peer)',
+      el('div', { class: 'sync-own-url' }, [
+        el('input', { name: 'own', readonly: '', value: ownUrl }), copyBtn,
+      ])]),
+    el('label', { class: 'field' }, ['Peer board URL',
+      el('input', { name: 'peerUrl', required: '', placeholder: 'https://… (the peer’s board URL)' })]),
+    el('label', { class: 'field' }, ['Scope',
+      el('select', { name: 'scope' }, [
+        el('option', { value: 'project' }, `This project (${state.current})`),
+        el('option', { value: 'all' }, 'All projects'),
+      ])]),
+    el('div', { class: 'form-error' }, ''),
+    el('div', { class: 'form-actions' }, [
+      el('button', { type: 'button', class: 'ghost', onclick: closeOverlay }, 'Cancel'),
+      el('button', { type: 'submit', class: 'primary' }, 'Pull from peer'),
+    ]),
+    el('p', { class: 'hint' }, 'Pulls the peer’s cards and merges them in (newer edit wins). One-way per click — click Sync on the peer too to converge.'),
+  ]);
+  openOverlay(el('div', { class: 'overlay-card' }, [
+    el('button', { class: 'overlay-close', type: 'button', 'aria-label': 'Close', onclick: closeOverlay }, '✕'),
+    form,
+  ]));
+}
+
+async function doSyncPull(e) {
+  e.preventDefault();
+  const form = e.target;
+  const fd = new FormData(form);
+  const scope = fd.get('scope')?.toString() || 'project';
+  const body = {
+    peerUrl: fd.get('peerUrl')?.toString().trim(),
+    scope,
+    project: scope === 'project' ? state.current : undefined,
+  };
+  const submit = form.querySelector('button[type=submit]');
+  submit.disabled = true;
+  let data;
+  try { data = await api('api/sync/pull', { method: 'POST', body }); }
+  catch (e2) { form.querySelector('.form-error').textContent = e2.message; submit.disabled = false; return; }
+  const r = refusalReason(data);
+  if (r) { form.querySelector('.form-error').textContent = r; submit.disabled = false; return; }
+  const s = data.summary || {};
+  const bits = [`${s.added || 0} added`, `${s.updated || 0} updated`];
+  if (s.reassigned?.length) bits.push(`${s.reassigned.length} re-id’d`);
+  if (s.epicsAdded || s.epicsUpdated) bits.push(`epics +${s.epicsAdded || 0}/~${s.epicsUpdated || 0}`);
+  if (s.epicConflicts?.length) bits.push(`${s.epicConflicts.length} epic conflict${s.epicConflicts.length === 1 ? '' : 's'}`);
+  if (s.droppedDeps?.length) bits.push(`${s.droppedDeps.length} dep${s.droppedDeps.length === 1 ? '' : 's'} dropped`);
+  if (s.skippedCards?.length) bits.push(`${s.skippedCards.length} malformed skipped`);
+  if (s.skippedEpics?.length) bits.push(`${s.skippedEpics.length} epic${s.skippedEpics.length === 1 ? '' : 's'} skipped`);
+  if (s.skippedProjects?.length) bits.push(`${s.skippedProjects.length} project${s.skippedProjects.length === 1 ? '' : 's'} skipped`);
+  setStatus(`Sync: ${bits.join(', ')}.`, 'ok');
   closeOverlay();
   await loadBoard();
 }

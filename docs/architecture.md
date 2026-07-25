@@ -52,6 +52,48 @@ Board DATA lives in the conductor's tree, not this repo:
   unambiguous. Their writes serialize on a dedicated `withLock(' cross-epics')` key — distinct from
   every project name — so the per-project single-writer invariant is untouched.
 
+## Cross-instance sync
+
+Sync one board with another instance on a different machine, reachable at a code-hub-forwarded
+URL (no git). **Two-click, one-way pull per click**: each click pulls the peer's FULL board dump
+for a scope and merges it in; converging both machines means clicking Sync on each side. Grow-only
+(no delete op → no tombstones). Details + rationale: `.wiki/architecture/cross-instance-sync.md`.
+
+- **Hidden identity.** Cards carry three sync-only frontmatter fields (`src/taskfile.js`):
+  `uid` (the true match key — random `crypto.randomUUID` for new cards), `updated` (UTC ISO-8601
+  version stamp, bumped by **every** mutator via `board.js`'s `touch()`), and `node` (the machine
+  that wrote this version — the LWW tiebreak). `uid`/`node` are stripped from every MCP/GUI read
+  (`board.readTask`'s `stripHidden`; `summary()` never included them); `GET /api/sync/export` is
+  the sole exposure. The short `${year}-${NNNN}` display id stays the MCP handle and never grows.
+- **Node id**: a per-machine id minted once at `<kanbanRoot>/.node-id` (`src/nodeId.js`).
+- **Merge** (`board.syncPull` → `mergeProject`, inside the same per-project `withLock`): union by
+  `uid`. New peer uid → copied in, keeping its display id if free, else **reassigned** the next
+  free local id (`uid` untouched — solves two machines minting the same `2026-NNNN` for different
+  cards). Same uid on both → whole-card **last-edit-wins** (later `updated`, tiebreak higher
+  `node`), keeping the local display id. `depends_on` (display-id sugar) is translated
+  remote-id → uid → local-id from the pulled set; unresolvable entries are dropped and reported.
+- **Migration**: legacy cards (no `uid`) are backfilled lazily at export/pull time under the lock.
+  `uid` is **deterministic** — `deriveUid(project, id, created)` — so two machines holding the
+  same shared-lineage legacy card derive the identical uid and union instead of duplicating.
+- **Epics sync too** (`exportBoard` carries `projectEpics`/`crossEpics`; `syncPull` merges them
+  BEFORE cards, so a card's `epic:` resolves against fresh epics). Epics match by **slug** (project
+  epic keyed by `(project,slug)`, cross by `slug`) — NOT uid: the slug is human-chosen, addressable
+  identity that cards reference, so it is never reassigned and `card.epic` is kept verbatim (never
+  translated, and can never mispoint). Union by slug + whole-epic last-edit-wins (`updated`, tiebreak
+  `node`; no uid). Legacy epics get `updated = created` backfilled so shared slugs match. A
+  **kind conflict** (a slug that is a project epic on one side, cross-project on the other — the
+  state `createEpic`'s `EPIC_CONFLICT` guard forbids) is **skipped and logged** in
+  `summary.epicConflicts`, never merged and never deleted (grow-only). Cross epics merge under
+  `CROSS_LOCK`, project epics under the project lock. A single-project export carries the project's
+  own epics plus every cross epic covering it — exactly the set its cards can reference. `updated`/
+  `node` are hidden from `read_epic`/`list_epics` (their responses are built from a field whitelist);
+  `/api/sync/export` is the sole exposure.
+- **Scope**: `project` (the current project) or `all` (every live project from `listProjects`).
+  A peer project not present locally is skipped and reported (never auto-created).
+- **Trust**: no auth — possession of the code-hub URL is the capability (the whole board API is
+  already exposed by forwarding). The pull runs backend-to-backend to dodge browser CORS; the
+  dialog shows THIS board's URL from `window.location` (the backend can't know its forwarded URL).
+
 ## GUI integration seam
 
 The web GUI runs **in this process**. `server.js` mounts the API router at `/api` first, then

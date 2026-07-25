@@ -97,6 +97,8 @@ through unchanged as the HTTP body.
 | `POST /api/board/:project/epics` | `board.createEpic` | `{slug, title, goal?}` | `{ok}` (project-scoped) |
 | `GET /api/epics/:slug` | `board.readEpic` | — | `{ok, epic, tasks:[summary]}` (cross-project epic by slug) |
 | `POST /api/epics` | `board.createEpic` | `{slug, title, goal?, projects:[…]}` | `{ok}` (cross-project epic; `projects` has ≥2 members) |
+| `GET /api/sync/export` | `board.exportBoard` | `?scope=project\|all`, `?project` (required for `project`) | `{ok, nodeId, scope, projects:{<project>:[fullCard]}, projectEpics:{<project>:[epic]}, crossEpics:[epic]}` |
+| `POST /api/sync/pull` | `board.syncPull` | `{peerUrl, scope, project?}` | `{ok, summary:{added, updated, reassigned[], droppedDeps[], skippedProjects[], skippedCards[], epicsAdded, epicsUpdated, epicConflicts[], skippedEpics[], perProject}}` |
 
 Notes:
 - The `POST /epics` route exposes `createEpic`'s **real behavior — an upsert**: an existing slug
@@ -107,3 +109,25 @@ Notes:
   logbook line (and in-progress ownership) — never a stuck owner on other columns.
 - The `meta` route is the GUI's single source for legal move targets; `transitions` is the
   `ALLOWED_TRANSITIONS` Set serialized as `"from>to"` strings.
+- **Sync (cross-instance).** `GET /api/sync/export` is the **only** endpoint that exposes a
+  card's hidden `uid`/`node`; every other read (`read_task`, `/tasks/:id`, summaries) strips
+  them. It is read-only from the caller's view but lazily backfills the version stamp on any
+  legacy card it serves. No auth: possession of the code-hub-forwarded URL is the capability.
+  `POST /api/sync/pull` fetches the peer's export (`<peerUrl>/api/sync/export`) **backend-to-backend**
+  (avoids browser CORS) and merges by `uid` (union + card-level last-edit-wins). The pull summary
+  contains **display ids/slugs/counts only** — never `uid`/`node` (it reaches the GUI). Malformed peer
+  cards (missing/non-string `id`, or an unknown column) are skipped and listed in `skippedCards`.
+  **Epics** are exported (`projectEpics`/`crossEpics`) and merged BEFORE cards, matched by **slug**
+  (whole-epic last-edit-wins; hidden `updated`/`node` exposed only by export, never by `read_epic`/
+  `list_epics`). A slug that is a project epic on one side and cross-project on the other is skipped +
+  reported in `epicConflicts` (never merged/deleted — grow-only); malformed epics (bad slug / cross
+  epic with <2 members) go to `skippedEpics`.
+  Refusals: malformed `peerUrl` or a blocked host → 200 `{ok:false, INVALID_STATE}`; an
+  unreachable/garbage/oversized peer → 200 `{ok:false, SYNC_UNREACHABLE}`.
+  **SSRF guard**: `peerUrl` pointing at a loopback / private / link-local IP literal
+  (`127.0.0.0/8`, `10/8`, `172.16/12`, `192.168/16`, `169.254/16` incl. `169.254.169.254`, `::1`,
+  `fc00::/7`, `fe80::/10`, `localhost`) is refused; the peer fetch does not follow redirects and is
+  bounded by a 15 s timeout + 25 MB size cap. Hostnames are not DNS-resolved (lightweight guard —
+  a code-hub peer is a public host); set `CODE_KANBAN_SYNC_ALLOW_PRIVATE=1` to permit private
+  targets for local dev / the visual harness. See `docs/architecture.md` and
+  `.wiki/architecture/cross-instance-sync.md`.

@@ -74,6 +74,24 @@ export function moveTask(project, id, fromState, toState, updatedTask) {
   if (fromState !== toState && fs.existsSync(oldFile)) fs.rmSync(oldFile);
 }
 
+// Full cards in a project, parsed (all frontmatter incl. uid/updated/node),
+// state injected, WITHOUT the _mtimeMs stat. This is the raw board dump the sync
+// export serves and the sync merge consumes — the one place uid/node are exposed.
+export function exportTasks(project) {
+  const out = [];
+  for (const s of STATES) {
+    let names;
+    try { names = fs.readdirSync(stateDir(project, s)); }
+    catch { continue; }
+    for (const name of names) {
+      if (!name.endsWith('.md')) continue;
+      const raw = fs.readFileSync(path.join(stateDir(project, s), name), 'utf8');
+      out.push(taskfile.parse(raw, { state: s }));
+    }
+  }
+  return out;
+}
+
 // All cards in a project (optionally one state), parsed, with state injected.
 export function listTasks(project, { state } = {}) {
   const states = state ? [state] : STATES;
@@ -103,6 +121,10 @@ export function epicExists(project, slug) {
   return fs.existsSync(epicPath(project, slug));
 }
 
+// `updated`/`node` are the cross-instance sync version stamp — the LWW clock and
+// its tiebreak, mirroring cards (but epics have NO uid: their slug is identity).
+// Emitted only when set; hidden from reads (board.readEpic/listEpics whitelist
+// their output) — exposed only via /api/sync/export.
 export function writeEpic(project, epic) {
   const parts = [
     '---',
@@ -110,6 +132,8 @@ export function writeEpic(project, epic) {
     `title: ${epic.title ?? ''}`,
     `project: ${project}`,
     `created: ${epic.created}`,
+    ...(epic.updated ? [`updated: ${epic.updated}`] : []),
+    ...(epic.node ? [`node: ${epic.node}`] : []),
     '---',
     '## Goal',
     (epic.goal ?? '').trim(),
@@ -122,7 +146,7 @@ export function readEpic(project, slug) {
   const file = epicPath(project, slug);
   if (!fs.existsSync(file)) return null;
   const lines = fs.readFileSync(file, 'utf8').split('\n');
-  const epic = { slug, title: '', project, created: null, goal: '' };
+  const epic = { slug, title: '', project, created: null, updated: null, node: null, goal: '' };
   let i = 0;
   if (lines[0]?.trim() === '---') {
     i = 1;
@@ -131,7 +155,7 @@ export function readEpic(project, slug) {
       if (idx === -1) continue;
       const key = lines[i].slice(0, idx).trim();
       const val = lines[i].slice(idx + 1).trim();
-      if (key === 'title' || key === 'created') epic[key] = val;
+      if (key === 'title' || key === 'created' || key === 'updated' || key === 'node') epic[key] = val;
     }
     i++;
   }
@@ -173,6 +197,8 @@ export function writeCrossEpic(epic) {
     `title: ${epic.title ?? ''}`,
     `projects: [${(epic.projects ?? []).join(', ')}]`,
     `created: ${epic.created}`,
+    ...(epic.updated ? [`updated: ${epic.updated}`] : []),
+    ...(epic.node ? [`node: ${epic.node}`] : []),
     '---',
     '## Goal',
     (epic.goal ?? '').trim(),
@@ -185,7 +211,7 @@ export function readCrossEpic(slug) {
   const file = crossEpicPath(slug);
   if (!fs.existsSync(file)) return null;
   const lines = fs.readFileSync(file, 'utf8').split('\n');
-  const epic = { slug, title: '', projects: [], created: null, goal: '' };
+  const epic = { slug, title: '', projects: [], created: null, updated: null, node: null, goal: '' };
   let i = 0;
   if (lines[0]?.trim() === '---') {
     i = 1;
@@ -194,7 +220,7 @@ export function readCrossEpic(slug) {
       if (idx === -1) continue;
       const key = lines[i].slice(0, idx).trim();
       const val = lines[i].slice(idx + 1).trim();
-      if (key === 'title' || key === 'created') epic[key] = val;
+      if (key === 'title' || key === 'created' || key === 'updated' || key === 'node') epic[key] = val;
       else if (key === 'projects') {
         const inner = val.replace(/^\[/, '').replace(/\]$/, '').trim();
         epic.projects = inner ? inner.split(',').map((s) => s.trim()).filter(Boolean) : [];

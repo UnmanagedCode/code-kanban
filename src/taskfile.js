@@ -3,8 +3,14 @@
 // sections are Goal (free text), Acceptance (checkbox list) and Logbook
 // (append-only lines). The `state` field is NOT stored in the file — it is the
 // task's on-disk column dir, injected by the store on read.
+//
+// Cross-instance sync adds three scalars: `uid` (hidden stable identity — the
+// sync match key), `updated` (UTC ISO-8601 version stamp, bumped by every
+// mutator) and `node` (the machine that produced this version — the LWW
+// tiebreak). `uid`/`node` are stripped from MCP/GUI reads (board.readTask); only
+// /api/sync/export exposes them. See .wiki/architecture/cross-instance-sync.md.
 
-const SCALAR_KEYS = ['id', 'title', 'project', 'epic', 'priority', 'created', 'owner', 'commit'];
+const SCALAR_KEYS = ['id', 'uid', 'title', 'project', 'epic', 'priority', 'created', 'updated', 'node', 'owner', 'commit'];
 
 function serializeDependsOn(deps) {
   return `[${(deps ?? []).join(', ')}]`;
@@ -16,16 +22,19 @@ function parseDependsOn(raw) {
   return inner.split(',').map((s) => s.trim()).filter(Boolean);
 }
 
-// task: {id,title,project,epic?,priority,created,owner?,commit?,depends_on[],
-//        goal, acceptance:[{text,done}], logbook:[string]}
+// task: {id,uid?,title,project,epic?,priority,created,updated?,node?,owner?,
+//        commit?,depends_on[], goal, acceptance:[{text,done}], logbook:[string]}
 export function serialize(task) {
   const fm = [];
   fm.push(`id: ${task.id}`);
+  if (task.uid) fm.push(`uid: ${task.uid}`);
   fm.push(`title: ${task.title ?? ''}`);
   fm.push(`project: ${task.project}`);
   if (task.epic) fm.push(`epic: ${task.epic}`);
   fm.push(`priority: ${Number.isFinite(task.priority) ? task.priority : 0}`);
   fm.push(`created: ${task.created}`);
+  if (task.updated) fm.push(`updated: ${task.updated}`);
+  if (task.node) fm.push(`node: ${task.node}`);
   if (task.owner) fm.push(`owner: ${task.owner}`);
   if (task.commit) fm.push(`commit: ${task.commit}`);
   fm.push(`depends_on: ${serializeDependsOn(task.depends_on)}`);
@@ -53,9 +62,9 @@ export function serialize(task) {
 export function parse(text, { state } = {}) {
   const lines = text.split('\n');
   const task = {
-    id: null, title: '', project: '', epic: null, priority: 0,
-    created: null, owner: null, commit: null, depends_on: [],
-    goal: '', acceptance: [], logbook: [], state: state ?? null,
+    id: null, uid: null, title: '', project: '', epic: null, priority: 0,
+    created: null, updated: null, node: null, owner: null, commit: null,
+    depends_on: [], goal: '', acceptance: [], logbook: [], state: state ?? null,
   };
 
   // Frontmatter: between the first two `---` fences.
@@ -70,7 +79,7 @@ export function parse(text, { state } = {}) {
       const val = line.slice(idx + 1).trim();
       if (key === 'depends_on') task.depends_on = parseDependsOn(val);
       else if (key === 'priority') task.priority = Number.parseInt(val, 10) || 0;
-      else if (SCALAR_KEYS.includes(key)) task[key] = val === '' ? (key === 'epic' || key === 'owner' || key === 'commit' ? null : val) : val;
+      else if (SCALAR_KEYS.includes(key)) task[key] = val === '' ? (['epic', 'owner', 'commit', 'uid', 'updated', 'node'].includes(key) ? null : val) : val;
     }
     i++; // skip closing fence
   }

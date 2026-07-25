@@ -9,16 +9,39 @@
 // a domain outcome (unexpected exceptions are the caller's to catch). Every
 // mutator runs inside withLock(project, ...) so writes serialize on one path.
 
+import crypto from 'node:crypto';
+import net from 'node:net';
 import { STATES } from './paths.js';
 import { validateProject, listProjects } from './projects.js';
 import { withLock } from './mutex.js';
 import * as store from './store.js';
 import { logLine } from './taskfile.js';
+import { localNodeId, deriveUid } from './nodeId.js';
 import { headSha } from './git.js';
 import { ownerCwd } from './ownerWorktree.js';
 
 function fail(code, reason) { return { ok: false, code, reason }; }
 function nowIso() { return new Date().toISOString(); }
+
+// The `uid`/`updated`/`node` version stamp is hidden from every MCP/GUI read.
+// summary() (list_tasks / epics) already whitelists fields; readTask returns a
+// full card, so it strips these before returning. /api/sync/export is the ONLY
+// intentional exposure. Call this on any full card leaving a read path.
+function stripHidden(task) {
+  delete task.uid;
+  delete task.node;
+  return task;
+}
+
+// Bump the version stamp on any local mutation so the LWW merge can tell which
+// side is newer. Load-bearing: an edit that doesn't move `updated` is invisible
+// to sync. Leaves `uid` untouched (a legacy card without one is given a
+// deterministic uid at the sync boundary, not here).
+function touch(task) {
+  task.updated = nowIso();
+  task.node = localNodeId();
+  return task;
+}
 
 // An explicit commit lands verbatim in frontmatter (taskfile.js's `commit:
 // <value>` line), so a value with an embedded newline or internal whitespace
@@ -109,7 +132,8 @@ export async function fileTask({ project, title, goal, acceptance, epic, depends
     const id = store.nextId(project);
     const created = nowIso();
     const task = {
-      id, title: title.trim(), project, epic: epic ?? null, priority: 0, created,
+      id, uid: crypto.randomUUID(), title: title.trim(), project, epic: epic ?? null,
+      priority: 0, created, updated: created, node: localNodeId(),
       owner: null, depends_on: Array.isArray(depends_on) ? depends_on : [],
       goal: typeof goal === 'string' ? goal : '',
       acceptance: (Array.isArray(acceptance) ? acceptance : []).map((text) => ({ text, done: false })),
@@ -149,7 +173,7 @@ export async function logProgress({ project, id, entry, sessionId } = {}) {
         return fail('TASK_UNKNOWN', `no in-progress card: ${id}`);
       }
       task.logbook.push(logLine(nowIso(), null, entry.trim()));
-      store.writeTask(project, 'in-progress', task);
+      store.writeTask(project, 'in-progress', touch(task));
       return { ok: true };
     });
   }
@@ -178,7 +202,7 @@ export async function logProgress({ project, id, entry, sessionId } = {}) {
       return fail('TASK_UNKNOWN', 'no in-progress card owned by this session');
     }
     task.logbook.push(logLine(nowIso(), sessionId, entry.trim()));
-    store.writeTask(targetProject, 'in-progress', task);
+    store.writeTask(targetProject, 'in-progress', touch(task));
     return { ok: true };
   });
 }
@@ -205,7 +229,7 @@ export async function readTask({ project, id, logTail } = {}) {
     task.logbook = task.logbook.slice(Math.max(0, task.logbook.length - logTail));
   }
   delete task._mtimeMs;
-  return { ok: true, task };
+  return { ok: true, task: stripHidden(task) };
 }
 
 export async function readProgress({ project, id, limit } = {}) {
@@ -256,7 +280,7 @@ export async function moveTask({ project, id, to, owner, commit } = {}) {
       if (sha) task.commit = sha;
     }
     task.logbook.push(logLine(nowIso(), owner, `moved ${from} -> ${to}`));
-    store.moveTask(project, id, from, to, task);
+    store.moveTask(project, id, from, to, touch(task));
     return { ok: true, from, to };
   });
 }
@@ -279,7 +303,7 @@ export async function updateTask({ project, id, fields } = {}) {
       else if (key === 'priority') task.priority = Number.parseInt(fields.priority, 10) || 0;
       else task[key] = fields[key];
     }
-    store.writeTask(project, task.state, task);
+    store.writeTask(project, task.state, touch(task));
     return { ok: true };
   });
 }
@@ -340,6 +364,7 @@ async function createProjectEpic({ project, slug, title, goal }) {
     store.writeEpic(project, {
       slug, title: title.trim(), goal: goal ?? '',
       created: existing?.created ?? nowIso(),
+      updated: nowIso(), node: localNodeId(), // sync version stamp (see writeEpic)
     });
     return { ok: true };
   });
@@ -364,9 +389,422 @@ async function createCrossEpic({ projects, slug, title, goal }) {
     store.writeCrossEpic({
       slug, title: title.trim(), goal: goal ?? '', projects: members,
       created: existing?.created ?? nowIso(),
+      updated: nowIso(), node: localNodeId(), // sync version stamp (see writeEpic)
     });
     return { ok: true };
   });
+}
+
+// ---- cross-instance sync ----
+//
+// Two-click, one-way-pull-per-click. A pull fetches the peer's FULL board dump
+// for a scope and merges by `uid` (union + whole-card last-edit-wins). Display
+// ids (2026-NNNN) are per-project/per-machine, so an incoming card whose id
+// collides with a DIFFERENT local uid is reassigned a free local id; depends_on
+// (display-id sugar over uid) is translated remote-id -> uid -> local-id at the
+// boundary, dropping entries that don't resolve from the pulled set. Every merge
+// write goes through the same store + per-project withLock as any other mutator.
+// See .wiki/architecture/cross-instance-sync.md.
+
+// Network seam (mirrors projects._setProjectFetcher): tests inject a canned peer
+// export instead of hitting a real instance.
+const SYNC_FETCH_TIMEOUT_MS = 15_000;
+const SYNC_MAX_BYTES = 25 * 1024 * 1024; // hard ceiling on a peer dump (~25 MB)
+async function defaultSyncFetch(url) {
+  const res = await fetch(url, {
+    headers: { accept: 'application/json' },
+    redirect: 'error', // never chase a redirect off the vetted host (SSRF)
+    signal: AbortSignal.timeout(SYNC_FETCH_TIMEOUT_MS), // no unbounded hang
+  });
+  if (!res.ok) throw new Error(`peer export HTTP ${res.status}`);
+  // Stream with a size cap so a huge (or content-length-lying) peer can't OOM
+  // the handler.
+  const reader = res.body?.getReader();
+  if (!reader) return res.json();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > SYNC_MAX_BYTES) { await reader.cancel(); throw new Error('peer export exceeds size limit'); }
+    chunks.push(value);
+  }
+  return JSON.parse(Buffer.concat(chunks, total).toString('utf8'));
+}
+let syncFetch = defaultSyncFetch;
+export function _setSyncFetcher(fn) { syncFetch = fn ?? defaultSyncFetch; }
+
+// Loopback / private / link-local ranges the pull must never fetch. net.BlockList
+// handles v4 and v6 uniformly; IPv4-mapped IPv6 is normalised to its v4 below so
+// e.g. ::ffff:127.0.0.1 is caught by the v4 rules.
+const SYNC_BLOCKLIST = new net.BlockList();
+SYNC_BLOCKLIST.addSubnet('0.0.0.0', 8, 'ipv4');      // unspecified / "this host"
+SYNC_BLOCKLIST.addSubnet('127.0.0.0', 8, 'ipv4');    // loopback
+SYNC_BLOCKLIST.addSubnet('10.0.0.0', 8, 'ipv4');     // private
+SYNC_BLOCKLIST.addSubnet('172.16.0.0', 12, 'ipv4');  // private
+SYNC_BLOCKLIST.addSubnet('192.168.0.0', 16, 'ipv4'); // private
+SYNC_BLOCKLIST.addSubnet('169.254.0.0', 16, 'ipv4'); // link-local incl. 169.254.169.254
+SYNC_BLOCKLIST.addAddress('::1', 'ipv6');            // loopback
+SYNC_BLOCKLIST.addAddress('::', 'ipv6');             // unspecified
+SYNC_BLOCKLIST.addSubnet('fc00::', 7, 'ipv6');       // unique-local
+SYNC_BLOCKLIST.addSubnet('fe80::', 10, 'ipv6');      // link-local
+
+// Extract the embedded IPv4 of an IPv4-mapped IPv6 literal, in either the dotted
+// (`::ffff:127.0.0.1`) or the hex form node's URL parser normalises to
+// (`::ffff:7f00:1`). Returns null if `h` isn't a mapped address.
+function mappedV4(h) {
+  let m = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i.exec(h);
+  if (m) return m[1];
+  m = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(h);
+  if (m) {
+    const hi = Number.parseInt(m[1], 16); const lo = Number.parseInt(m[2], 16);
+    return `${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`;
+  }
+  return null;
+}
+
+// SSRF guard: the pull fetches a user-supplied URL server-side, so refuse
+// loopback / private / link-local IP LITERALS (incl. the cloud metadata IP
+// 169.254.169.254 and its IPv4-mapped form). Kept lightweight — hostnames are
+// NOT DNS-resolved (a code-hub-forwarded peer is a public host); set
+// CODE_KANBAN_SYNC_ALLOW_PRIVATE=1 to allow private targets for local dev / the
+// visual harness.
+function isBlockedSyncHost(hostname) {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, ''); // strip v6 brackets + a trailing dot
+  if (h === '' || h === 'localhost' || h.endsWith('.localhost')) return true;
+  const fam = net.isIP(h);
+  if (!fam) return false; // a hostname, not an IP literal — not resolved here
+  if (fam === 6) {
+    const v4 = mappedV4(h);
+    if (v4 && SYNC_BLOCKLIST.check(v4, 'ipv4')) return true;
+    return SYNC_BLOCKLIST.check(h, 'ipv6');
+  }
+  return SYNC_BLOCKLIST.check(h, 'ipv4');
+}
+
+// Backfill the hidden version stamp on a legacy card (one that predates sync).
+// `uid` is DETERMINISTIC from (project,id,created) so two machines holding the
+// same shared-lineage card derive the same uid and union instead of duplicating.
+// Returns true if anything changed. In-memory only — callers persist.
+function ensureIdentity(task, project) {
+  let changed = false;
+  if (!task.uid) { task.uid = deriveUid(project, task.id, task.created); changed = true; }
+  if (!task.updated) { task.updated = task.created ?? nowIso(); changed = true; }
+  if (!task.node) { task.node = localNodeId(); changed = true; }
+  return changed;
+}
+
+// Read a project's full card set, persisting any backfilled identity so the dump
+// is self-consistent. MUST run inside withLock(project, ...).
+function backfillProject(project) {
+  const cards = store.exportTasks(project);
+  for (const c of cards) {
+    if (ensureIdentity(c, project)) store.writeTask(project, c.state, c);
+  }
+  return cards;
+}
+
+// LWW: does the incoming card win over the local one? Later `updated` wins;
+// on an exact tie the higher `node` id wins (deterministic on both machines,
+// which each hold both node ids). Equal on both -> local stays (no-op).
+function remoteWins(remote, local) {
+  const ru = remote.updated ?? '';
+  const lu = local.updated ?? '';
+  if (ru !== lu) return ru > lu;
+  return (remote.node ?? '') > (local.node ?? '');
+}
+
+// ---- epic sync ----
+// Epics match by SLUG (not uid): the slug is human-chosen, addressable identity
+// that cards reference via `epic:`, so it is never reassigned and card refs need
+// no translation. Union by slug + whole-epic LWW (updated, tiebreak node). A
+// legacy epic (no stamp) gets updated = created deterministically so shared
+// slugs match; node is only the tiebreak.
+function ensureEpicIdentity(epic) {
+  let changed = false;
+  if (!epic.updated) { epic.updated = epic.created ?? nowIso(); changed = true; }
+  if (!epic.node) { epic.node = localNodeId(); changed = true; }
+  return changed;
+}
+
+// Read + persist-backfill a project's epics. MUST run inside withLock(project).
+function backfillProjectEpics(project) {
+  const out = [];
+  for (const slug of store.listEpicSlugs(project)) {
+    const e = store.readEpic(project, slug);
+    if (!e) continue;
+    if (ensureEpicIdentity(e)) store.writeEpic(project, e);
+    out.push(e);
+  }
+  return out;
+}
+
+// Read + persist-backfill all cross-project epics. MUST run inside withLock(CROSS_LOCK).
+function backfillCrossEpics() {
+  const out = [];
+  for (const slug of store.listCrossEpicSlugs()) {
+    const e = store.readCrossEpic(slug);
+    if (!e) continue;
+    if (ensureEpicIdentity(e)) store.writeCrossEpic(e);
+    out.push(e);
+  }
+  return out;
+}
+
+// Merge incoming cross-project epics. MUST run inside withLock(CROSS_LOCK), and
+// runs BEFORE the per-project card/epic merge. Kind conflict (a member already
+// owns the slug as a per-project epic) -> skip + log, mirroring createEpic's
+// EPIC_CONFLICT guard (no deletion). This phase also resolves an intra-dump
+// kind flip deterministically: a slug that is cross here is written first, so the
+// later project-epic merge for that slug hits the guard and is skipped+logged.
+function mergeCrossEpics(remoteCross, localProjects, summary) {
+  const localBySlug = new Map();
+  for (const e of backfillCrossEpics()) localBySlug.set(e.slug, e);
+  for (const re of remoteCross) {
+    if (typeof re?.slug !== 'string' || !SLUG_RE.test(re.slug)) {
+      summary.skippedEpics.push({ slug: (re && typeof re.slug === 'string') ? re.slug : null, kind: 'cross' });
+      continue;
+    }
+    const members = Array.isArray(re.projects) ? [...new Set(re.projects)] : [];
+    if (members.length < 2) { summary.skippedEpics.push({ slug: re.slug, kind: 'cross' }); continue; }
+    if (!members.some((p) => localProjects.has(p))) continue; // covers no local project — irrelevant
+    const clash = members.find((p) => store.epicExists(p, re.slug));
+    if (clash) { summary.epicConflicts.push({ slug: re.slug, kind: 'cross-vs-project', project: clash }); continue; }
+    ensureEpicIdentity(re);
+    const local = localBySlug.get(re.slug);
+    if (!local) { store.writeCrossEpic({ ...re, projects: members }); summary.epicsAdded += 1; }
+    else if (remoteWins(re, local)) { store.writeCrossEpic({ ...re, projects: members }); summary.epicsUpdated += 1; }
+  }
+}
+
+// Merge a project's incoming project-scoped epics. MUST run inside
+// withLock(project), BEFORE cards. Kind conflict (slug is a local cross epic
+// covering this project) -> skip + log.
+function mergeProjectEpics(project, remoteEpics, summary) {
+  const localBySlug = new Map();
+  for (const e of backfillProjectEpics(project)) localBySlug.set(e.slug, e);
+  for (const re of remoteEpics) {
+    if (typeof re?.slug !== 'string' || !SLUG_RE.test(re.slug)) {
+      summary.skippedEpics.push({ slug: (re && typeof re.slug === 'string') ? re.slug : null, kind: 'project' });
+      continue;
+    }
+    const x = store.readCrossEpic(re.slug);
+    if (x && x.projects.includes(project)) {
+      summary.epicConflicts.push({ slug: re.slug, kind: 'project-vs-cross', project });
+      continue;
+    }
+    ensureEpicIdentity(re);
+    const local = localBySlug.get(re.slug);
+    if (!local) { store.writeEpic(project, re); summary.epicsAdded += 1; }
+    else if (remoteWins(re, local)) { store.writeEpic(project, re); summary.epicsUpdated += 1; }
+  }
+}
+
+export async function exportBoard({ scope, project } = {}) {
+  if (scope !== 'all' && scope !== 'project') {
+    return fail('INVALID_STATE', "scope must be 'project' or 'all'");
+  }
+  let targets;
+  if (scope === 'project') {
+    const bad = await requireProject(project);
+    if (bad) return bad;
+    targets = [project];
+  } else {
+    targets = await listProjects();
+  }
+  const projects = {};
+  const projectEpics = {};
+  for (const p of targets) {
+    const r = await withLock(p, () => ({ cards: backfillProject(p), epics: backfillProjectEpics(p) }));
+    projects[p] = r.cards;
+    projectEpics[p] = r.epics;
+  }
+  // Cross epics: for a single-project export, only those covering the project (=
+  // exactly the cross epics a card in that project can reference); for all, every
+  // cross epic. Under CROSS_LOCK, separate from the per-project locks.
+  const crossEpics = await withLock(CROSS_LOCK, () => {
+    const all = backfillCrossEpics();
+    return scope === 'project' ? all.filter((e) => e.projects.includes(project)) : all;
+  });
+  return { ok: true, nodeId: localNodeId(), scope, projects, projectEpics, crossEpics };
+}
+
+export async function syncPull({ peerUrl, scope, project } = {}) {
+  if (scope !== 'all' && scope !== 'project') {
+    return fail('INVALID_STATE', "scope must be 'project' or 'all'");
+  }
+  let base;
+  let host;
+  try {
+    const u = new URL(peerUrl);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('protocol');
+    host = u.hostname;
+    base = `${u.origin}${u.pathname}`.replace(/\/+$/, '');
+  } catch {
+    return fail('INVALID_STATE', 'peerUrl must be an absolute http(s) URL');
+  }
+  if (process.env.CODE_KANBAN_SYNC_ALLOW_PRIVATE !== '1' && isBlockedSyncHost(host)) {
+    return fail('INVALID_STATE', 'peerUrl host is a loopback/private/link-local address (blocked)');
+  }
+  if (scope === 'project') {
+    const bad = await requireProject(project);
+    if (bad) return bad;
+  }
+
+  const url = `${base}/api/sync/export?scope=${scope}`
+    + (scope === 'project' ? `&project=${encodeURIComponent(project)}` : '');
+  let dump;
+  try {
+    dump = await syncFetch(url);
+  } catch (e) {
+    return fail('SYNC_UNREACHABLE', `could not pull from peer: ${e.message}`);
+  }
+  if (!dump || typeof dump.projects !== 'object' || dump.projects === null) {
+    return fail('SYNC_UNREACHABLE', 'peer returned no board data');
+  }
+
+  const localProjects = new Set(await listProjects());
+  // NB: this summary reaches the GUI (routes.js -> app.js), so it must carry NO
+  // hidden uid/node — only display ids, slugs, project names, and counts. See
+  // stripHidden's invariant.
+  const summary = {
+    added: 0, updated: 0, reassigned: [], droppedDeps: [], skippedProjects: [], skippedCards: [],
+    epicsAdded: 0, epicsUpdated: 0, epicConflicts: [], skippedEpics: [], perProject: {},
+  };
+
+  // Epics merge BEFORE cards so a card's `epic:` resolves against fresh epics.
+  // Cross-project epics first, under CROSS_LOCK (a peer with no epics — an older
+  // card-only build — simply supplies empty sets).
+  const remoteCross = Array.isArray(dump.crossEpics) ? dump.crossEpics : [];
+  await withLock(CROSS_LOCK, () => mergeCrossEpics(remoteCross, localProjects, summary));
+  const remoteProjectEpics = (dump.projectEpics && typeof dump.projectEpics === 'object') ? dump.projectEpics : {};
+
+  const toMerge = scope === 'project' ? [project] : Object.keys(dump.projects);
+  for (const p of toMerge) {
+    const remoteCards = dump.projects[p];
+    if (!Array.isArray(remoteCards)) continue;
+    if (!localProjects.has(p)) { summary.skippedProjects.push(p); continue; }
+    const epics = Array.isArray(remoteProjectEpics[p]) ? remoteProjectEpics[p] : [];
+    const pr = await withLock(p, () => mergeProject(p, remoteCards, epics, summary));
+    summary.perProject[p] = pr;
+  }
+  return { ok: true, summary };
+}
+
+// Merge one project's incoming project-epics then cards into the local board.
+// MUST run inside withLock(project, ...). Epics first so a card's `epic:` (kept
+// verbatim — slugs are stable, never translated) resolves against fresh epics.
+function mergeProject(project, remoteCards, remoteEpics, summary) {
+  store.ensureProjectDirs(project);
+  mergeProjectEpics(project, remoteEpics, summary);
+  const localCards = backfillProject(project);
+
+  const localByUid = new Map();
+  const usedIds = new Set();
+  let maxNum = 0;
+  const idNum = (id) => { const m = /(\d+)\s*$/.exec(id ?? ''); return m ? Number.parseInt(m[1], 10) : 0; };
+  for (const c of localCards) {
+    localByUid.set(c.uid, c);
+    usedIds.add(c.id);
+    maxNum = Math.max(maxNum, idNum(c.id));
+  }
+  const year = new Date().getFullYear();
+  const allocId = () => {
+    let cand;
+    do { cand = `${year}-${String(++maxNum).padStart(4, '0')}`; } while (usedIds.has(cand));
+    usedIds.add(cand);
+    return cand;
+  };
+
+  // Validate incoming shape before it can reach deriveUid/writeTask: a card
+  // without a usable display id or a known column would write a garbage file.
+  // Skip (and report) rather than corrupt the store.
+  const valid = [];
+  for (const rc of remoteCards) {
+    if (!rc || typeof rc.id !== 'string' || !rc.id.trim() || !STATES.includes(rc.state)) {
+      summary.skippedCards.push({ project, id: (rc && typeof rc.id === 'string') ? rc.id : null });
+      continue;
+    }
+    valid.push(rc);
+  }
+
+  // Remote lookups (ensure remote identity in-memory in case a peer served a
+  // card without a uid — deterministic derivation keeps matching stable).
+  const remoteIdToUid = new Map();
+  for (const rc of valid) {
+    ensureIdentity(rc, project);
+    remoteIdToUid.set(rc.id, rc.uid);
+  }
+
+  // uid -> final local display id, seeded with every local card so depends_on
+  // that points at a local-only or LWW-losing card still resolves.
+  const uidToLocalId = new Map();
+  for (const c of localCards) uidToLocalId.set(c.uid, c.id);
+
+  // Pass A: classify each incoming card and assign final local display ids.
+  const replaces = []; // {rc, localId, fromState}
+  const inserts = [];  // {rc, localId}
+  const newUid = [];
+  for (const rc of valid) {
+    const local = localByUid.get(rc.uid);
+    if (local) {
+      if (remoteWins(rc, local)) replaces.push({ rc, localId: local.id, fromState: local.state });
+      // uidToLocalId already maps this uid to local.id (kept either way).
+    } else {
+      newUid.push(rc);
+    }
+  }
+  // Reserve free desired ids first (minimise churn), then reassign collisions.
+  const pending = [];
+  for (const rc of newUid) {
+    if (usedIds.has(rc.id)) { pending.push(rc); continue; }
+    usedIds.add(rc.id);
+    uidToLocalId.set(rc.uid, rc.id);
+    inserts.push({ rc, localId: rc.id });
+  }
+  for (const rc of pending) {
+    const localId = allocId();
+    uidToLocalId.set(rc.uid, localId);
+    // Display ids only (from = peer's id, to = local id) — no uid in the summary.
+    summary.reassigned.push({ project, from: rc.id, to: localId });
+    inserts.push({ rc, localId });
+  }
+
+  // Translate a card's depends_on: remote display id -> remote uid -> local id.
+  // Unresolvable entries (dangling on the peer, or pointing outside the pulled
+  // set) are dropped and reported by DISPLAY id (never uid).
+  const translateDeps = (rc, remoteId) => {
+    const deps = Array.isArray(rc.depends_on) ? rc.depends_on : [];
+    const out = [];
+    for (const dep of deps) {
+      const uid = remoteIdToUid.get(dep);
+      const localId = uid ? uidToLocalId.get(uid) : undefined;
+      if (localId) out.push(localId);
+      else summary.droppedDeps.push({ project, card: remoteId, dep });
+    }
+    return out;
+  };
+
+  // Pass B: write winners wholesale (fields, goal, acceptance, logbook, uid,
+  // updated, node all from the incoming card).
+  const write = (rc, localId, fromState) => {
+    const remoteId = rc.id; // the peer's display id for THIS card (for reporting)
+    rc.id = localId;
+    rc.project = project;
+    rc.depends_on = translateDeps(rc, remoteId);
+    rc.acceptance = Array.isArray(rc.acceptance) ? rc.acceptance : [];
+    rc.logbook = Array.isArray(rc.logbook) ? rc.logbook : [];
+    if (fromState !== undefined && fromState !== rc.state) {
+      store.moveTask(project, localId, fromState, rc.state, rc);
+    } else {
+      store.writeTask(project, rc.state, rc);
+    }
+  };
+  for (const { rc, localId } of inserts) { write(rc, localId); summary.added += 1; }
+  for (const { rc, localId, fromState } of replaces) { write(rc, localId, fromState); summary.updated += 1; }
+
+  return { added: inserts.length, updated: replaces.length };
 }
 
 // Per-state counts for a project-scoped epic (one project's tasks).
