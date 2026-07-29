@@ -177,7 +177,8 @@ main { flex: 1; overflow: auto; padding: 12px 16px 32px; display: flex; flex-dir
 }
 .overlay-close:hover { color: var(--ink); border: none; }
 
-.detail-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+.detail-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; padding-right: 28px; }
+.detail-head-left { display: flex; align-items: baseline; gap: 10px; }
 .detail-id { color: var(--ink-dim); font-size: 12px; }
 .detail-state { font-size: 12px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--line); text-transform: capitalize; }
 .detail-title { font-size: 18px; font-weight: 600; margin: 2px 0 12px; }

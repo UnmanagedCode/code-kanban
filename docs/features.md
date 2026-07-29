@@ -60,9 +60,10 @@ so it shares the same `board.js` service layer and per-project mutex as the MCP 
 - **Board** — five columns rendered from `STATES`; cards show id, title, epic/priority/owner
   badges. A card's legal move targets come from `GET /api/board/meta` (the single source
   `ALLOWED_TRANSITIONS`), so the GUI never offers an illegal move.
-- **Card detail** — Goal, Acceptance checklist (read-only), the append-only Logbook, and (once
-  landed) the Commit hash; a Move control and an Edit form (title/goal/epic/priority/depends_on).
-  Acceptance and Commit are not editable in the GUI.
+- **Card detail** — opens to a read-only view: Goal, Priority, Acceptance checklist, the
+  append-only Logbook, and (once landed) the Commit hash, plus a Move control. An Edit button
+  swaps in a form (title/goal/epic/priority/depends_on); Save or Cancel returns to the read view.
+  Acceptance, Logbook, and Commit are not editable in the GUI.
 - **Epics** — rollup table; "open" reads one epic (+ its tasks). New-epic form upserts by slug; its
   "Span projects" multi-select makes a cross-project epic when ≥2 are picked (else project-scoped).
   Cross-project epics show a badge + member list; their detail lists each task's project.

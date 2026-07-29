@@ -11,6 +11,7 @@ Durable, hard-to-re-derive knowledge for code-kanban. Read this before planning,
 - [gotchas/flat-inputschema-constraint.md](gotchas/flat-inputschema-constraint.md) — host rejects nested/`oneOf` schemas; the opaque-object trick.
 - [gotchas/result-envelope-vs-ok-shape.md](gotchas/result-envelope-vs-ok-shape.md) — `{result}` outer envelope vs `{ok}` domain payload; refusals are never thrown.
 - [gotchas/owner-from-caller-sessionid.md](gotchas/owner-from-caller-sessionid.md) — `log_progress` resolves the card from the session; optional `project` scans all projects; tie-break rule; cross-project scan locking; conductor's `id`-based path bypasses ownership (requires `project`).
+- [gotchas/detail-overlay-close-button-stacking.md](gotchas/detail-overlay-close-button-stacking.md) — `#detail-overlay`'s close ✕ always paints over `.detail-head` content; new right-aligned buttons there need clearance padding.
 
 ## Architecture / decisions
 - [architecture/service-layer-seam.md](architecture/service-layer-seam.md) — `board.js` is the single writer + GUI seam; why same-process.
