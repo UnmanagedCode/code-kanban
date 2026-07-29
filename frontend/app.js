@@ -259,7 +259,7 @@ async function openDetail(id) {
   openDetailNode(data.task);
 }
 
-function openDetailNode(t) {
+function openDetailNode(t, editing = false) {
   const targets = transitionsFrom(t.state);
   const moveRow = el('div', { class: 'move-row' }, [
     el('label', { class: 'field' }, ['Move to',
@@ -272,25 +272,32 @@ function openDetailNode(t) {
 
   const body = el('div', {}, [
     el('div', { class: 'detail-head' }, [
-      el('span', { class: 'detail-id' }, t.id),
-      el('span', { class: 'detail-state' }, t.state),
+      el('div', { class: 'detail-head-left' }, [
+        el('span', { class: 'detail-id' }, t.id),
+        el('span', { class: 'detail-state' }, t.state),
+      ]),
+      editing ? null : el('button', { class: 'ghost', type: 'button', onclick: () => openDetailNode(t, true) }, 'Edit'),
     ]),
     el('div', { class: 'detail-title' }, t.title),
-    detailSection('Goal', t.goal),
-    detailSection('Acceptance', null,
-      t.acceptance?.length
-        ? el('ul', { class: 'acceptance' }, (t.acceptance || []).map((a) => el('li', {}, [
-            el('input', { type: 'checkbox', disabled: '', ...(a.done ? { checked: '' } : {}) }),
-            el('span', {}, a.text),
-          ])))
-        : el('p', { class: 'muted' }, '— none —')),
-    detailSection('Logbook', null,
-      t.logbook?.length
-        ? el('ul', { class: 'logbook' }, (t.logbook || []).slice().reverse().map(renderLogLine))
-        : el('p', { class: 'muted' }, '— empty —')),
-    t.commit ? detailSection('Commit', t.commit) : null,
-    detailSection('Move', null, moveRow),
-    detailSection('Edit', null, renderEditForm(t)),
+    editing
+      ? detailSection('Edit', null, renderEditForm(t))
+      : el('div', {}, [
+          detailSection('Goal', t.goal),
+          detailSection('Priority', t.priority ? String(t.priority) : ''),
+          detailSection('Acceptance', null,
+            t.acceptance?.length
+              ? el('ul', { class: 'acceptance' }, (t.acceptance || []).map((a) => el('li', {}, [
+                  el('input', { type: 'checkbox', disabled: '', ...(a.done ? { checked: '' } : {}) }),
+                  el('span', {}, a.text),
+                ])))
+              : el('p', { class: 'muted' }, '— none —')),
+          detailSection('Logbook', null,
+            t.logbook?.length
+              ? el('ul', { class: 'logbook' }, (t.logbook || []).slice().reverse().map(renderLogLine))
+              : el('p', { class: 'muted' }, '— empty —')),
+          t.commit ? detailSection('Commit', t.commit) : null,
+          detailSection('Move', null, moveRow),
+        ]),
   ]);
   showDetail(body);
 }
@@ -312,7 +319,10 @@ function renderEditForm(t) {
     el('label', { class: 'field' }, ['Priority', el('input', { name: 'priority', type: 'number', value: String(t.priority ?? 0) })]),
     el('label', { class: 'field' }, ['Depends on (comma-separated ids)', el('input', { name: 'depends_on', value: (t.depends_on || []).join(', ') })]),
     el('div', { class: 'form-error' }, ''),
-    el('div', { class: 'form-actions' }, [el('button', { type: 'submit', class: 'primary' }, 'Save')]),
+    el('div', { class: 'form-actions' }, [
+      el('button', { type: 'button', class: 'ghost', onclick: () => openDetailNode(t, false) }, 'Cancel'),
+      el('button', { type: 'submit', class: 'primary' }, 'Save'),
+    ]),
   ]);
   return f;
 }
