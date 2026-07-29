@@ -453,6 +453,85 @@ test('update_task applies whitelisted fields and ignores others', async () => {
   } finally { await cleanup(root); }
 });
 
+test('delete_task permanently removes the card', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 'to be deleted' });
+    const del = await board.deleteTask({ project: 'demo', id });
+    assert.equal(del.ok, true);
+    assert.equal((await board.readTask({ project: 'demo', id })).code, 'TASK_UNKNOWN');
+  } finally { await cleanup(root); }
+});
+
+test('delete_task with an unknown id -> TASK_UNKNOWN (soft refusal, not a throw)', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    assert.equal((await board.deleteTask({ project: 'demo', id: 'ghost-0001' })).code, 'TASK_UNKNOWN');
+  } finally { await cleanup(root); }
+});
+
+test('delete_task with an unknown project -> PROJECT_UNKNOWN', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    assert.equal((await board.deleteTask({ project: 'ghost', id: 'x' })).code, 'PROJECT_UNKNOWN');
+  } finally { await cleanup(root); }
+});
+
+test('deleting the highest-numbered task does not let a later file_task reuse its id', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    await board.fileTask({ project: 'demo', title: 'a' });
+    const b = (await board.fileTask({ project: 'demo', title: 'b' })).id; // highest so far
+    assert.equal((await board.deleteTask({ project: 'demo', id: b })).ok, true);
+    const c = (await board.fileTask({ project: 'demo', title: 'c' })).id;
+    assert.notEqual(c, b); // must not reuse the freed id
+    assert.ok(c > b); // still strictly higher, not just different
+  } finally { await cleanup(root); }
+});
+
+test('file_task with category "todo" lands directly in todo, skipping triage', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't', category: 'todo' });
+    const r = await board.readTask({ project: 'demo', id });
+    assert.equal(r.task.state, 'todo');
+  } finally { await cleanup(root); }
+});
+
+test('file_task with category "backlog" lands directly in backlog', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't', category: 'backlog' });
+    const r = await board.readTask({ project: 'demo', id });
+    assert.equal(r.task.state, 'backlog');
+  } finally { await cleanup(root); }
+});
+
+test('file_task with an illegal category -> INVALID_STATE', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    assert.equal((await board.fileTask({ project: 'demo', title: 't', category: 'done' })).code, 'INVALID_STATE');
+    assert.equal((await board.fileTask({ project: 'demo', title: 't', category: 'bogus' })).code, 'INVALID_STATE');
+  } finally { await cleanup(root); }
+});
+
+test('file_task with category omitted still defaults to triage', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    const r = await board.readTask({ project: 'demo', id });
+    assert.equal(r.task.state, 'triage');
+  } finally { await cleanup(root); }
+});
+
 test('moveTask auto-captures the OWNER WORKTREE HEAD sha, not the base checkout, on landing', async () => {
   const root = await freshRoot();
   useProjects(['demo']);

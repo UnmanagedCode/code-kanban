@@ -56,8 +56,12 @@ Board DATA lives in the conductor's tree, not this repo:
 
 Sync one board with another instance on a different machine, reachable at a code-hub-forwarded
 URL (no git). **Two-click, one-way pull per click**: each click pulls the peer's FULL board dump
-for a scope and merges it in; converging both machines means clicking Sync on each side. Grow-only
-(no delete op → no tombstones). Details + rationale: `.wiki/architecture/cross-instance-sync.md`.
+for a scope and merges it in; converging both machines means clicking Sync on each side. The merge
+itself is grow-only: it unions by `uid` and never deletes a card it doesn't recognize. `delete_task`
+(a plain hard delete, not a sync-aware tombstone) is a real gap this leaves: a task deleted on one
+machine can reappear the next time that machine pulls from a peer that still holds it. Accepted for
+now (YAGNI — no caller needs cross-machine delete propagation); revisit if that changes. Details +
+rationale: `.wiki/architecture/cross-instance-sync.md`.
 
 - **Hidden identity.** Cards carry three sync-only frontmatter fields (`src/taskfile.js`):
   `uid` (the true match key — random `crypto.randomUUID` for new cards), `updated` (UTC ISO-8601

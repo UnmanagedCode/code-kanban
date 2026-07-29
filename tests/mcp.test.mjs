@@ -81,6 +81,23 @@ test('caller.sessionId is threaded into owner-scoped tools', async () => {
   } finally { await cleanup(root); }
 });
 
+test('delete_task via mcp: happy path removes the card, unknown id rides in {result:{ok:false}}', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const f = await mcp.handle({ tool: 'file_task', arguments: { project: 'demo', title: 't' } });
+    const id = f.body.result.id;
+
+    const del = await mcp.handle({ tool: 'delete_task', arguments: { project: 'demo', id } });
+    assert.equal(del.body.result.ok, true);
+
+    const missing = await mcp.handle({ tool: 'delete_task', arguments: { project: 'demo', id } });
+    assert.equal(missing.body.error, undefined);
+    assert.equal(missing.body.result.ok, false);
+    assert.equal(missing.body.result.code, 'TASK_UNKNOWN');
+  } finally { await cleanup(root); }
+});
+
 test('move_task forwards an explicit commit arg through to the stamped task', async () => {
   const root = await freshRoot();
   useProjects(['demo']);

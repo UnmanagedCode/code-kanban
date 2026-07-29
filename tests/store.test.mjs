@@ -45,6 +45,21 @@ test('nextId is a gap-free project-wide sequence across states', async () => {
   } finally { await cleanup(root); }
 });
 
+test('nextId does not regress after the highest-numbered card is deleted', async () => {
+  const root = await freshRoot();
+  try {
+    store.ensureProjectDirs('demo');
+    const year = new Date().getFullYear();
+    store.writeTask('demo', 'triage', baseTask(store.nextId('demo'))); // 0001
+    const id2 = store.nextId('demo');
+    store.writeTask('demo', 'triage', baseTask(id2)); // 0002, the highest so far
+    assert.equal(store.deleteTask('demo', id2), true);
+    // Without the persisted floor this would reuse 0002 (the live scan's new
+    // max, since 0001 is now the only file left).
+    assert.equal(store.nextId('demo'), `${year}-0003`);
+  } finally { await cleanup(root); }
+});
+
 test('moveTask relocates the file and removes the old one', async () => {
   const root = await freshRoot();
   try {

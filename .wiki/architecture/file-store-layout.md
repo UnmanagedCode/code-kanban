@@ -64,13 +64,24 @@ leading space, which `projects.NAME_RE` forbids, so it can never collide with a 
 is the *same* single-writer mechanism keyed on a different domain, **not** a second write path: it
 does not touch per-project task/epic files, so invariant #1 in [[overview]] holds.
 
-## ID sequence (year rollover)
+## ID sequence (year rollover, persisted floor)
 
-`nextId` = `${currentYear}-${NNNN}` where `NNNN` = `max numeric suffix across all of the
-project's cards + 1`. The sequence is **project-wide monotonic and does NOT reset per year** —
-ids stay globally sortable and gap-free within a project; the year is a human-readable creation
-prefix only. Assignment happens inside the project mutex, so concurrent `file_task` calls never
-collide.
+`nextId` = `${currentYear}-${NNNN}` where `NNNN` = `max(persisted floor, max numeric suffix across
+all of the project's cards) + 1`. The sequence is **project-wide monotonic and does NOT reset per
+year** — ids stay globally sortable within a project and a deleted id is never reused (a deletion
+is *supposed* to leave a gap; the guarantee is that the gap is never re-filled); the year is a
+human-readable creation prefix only. Assignment happens inside the project mutex, so concurrent
+`file_task` calls never collide.
+
+**Persisted floor (`store.js`'s `<projectDir>/.id-seq`).** A pure live-directory-scan sequence
+regresses the moment `delete_task` removes the highest-numbered card: the scanned max drops, and
+the next id reuses the freed number — silently re-satisfying any dangling `depends_on` that pointed
+at the deleted card. `store.writeTask` bumps this floor to at least every id it ever actually
+commits to disk (never on a `nextId()` peek alone — see the gap-free-sequence test in
+`tests/store.test.mjs`, which calls `nextId()` without writing), so a later delete can never pull it
+back down. Sync's `mergeProject` seeds its own id allocator from this same floor for the identical
+reason (an incoming card reassigned a fresh id must not land on a locally-deleted high id either).
+Purely local bookkeeping — not part of the sync wire format (see [[cross-instance-sync]]).
 
 Ids are unique only **per-project, per-filesystem** — two machines mint the same `2026-NNNN` for
 different cards. Cross-instance sync therefore treats display id as sugar, not identity, and matches
