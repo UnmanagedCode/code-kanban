@@ -32,7 +32,7 @@
     "tools": [
       {
         "name": "file_task",
-        "description": "File a new task for a project, into triage by default or directly into todo/backlog via category. Worker + conductor. Returns the server-assigned id.",
+        "description": "File a new task for a project. Worker + conductor. Returns the server-assigned id.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -167,7 +167,7 @@
       },
       {
         "name": "delete_task",
-        "description": "Permanently delete a task by id. Conductor. Irreversible — no undo, no history retained. Not sync-aware: cross-instance Sync is grow-only (no tombstones), so a deleted task can reappear on a future pull from a peer that still holds it.",
+        "description": "Permanently delete a task by id. Conductor. Irreversible.",
         "inputSchema": {
           "type": "object",
           "properties": {
