@@ -118,11 +118,18 @@ function sortTasks(tasks) {
 
 // ---- worker + conductor ----
 
-export async function fileTask({ project, title, goal, acceptance, epic, depends_on, sessionId } = {}) {
+// file_task's only non-default landing lanes — mirrors triage's legal exits
+// (ALLOWED_TRANSITIONS has triage>backlog, triage>todo) rather than a separate list.
+const CATEGORIES = ['todo', 'backlog'];
+
+export async function fileTask({ project, title, goal, acceptance, epic, depends_on, category, sessionId } = {}) {
   const bad = await requireProject(project);
   if (bad) return bad;
   if (typeof title !== 'string' || !title.trim()) {
     return fail('INVALID_STATE', 'title is required and must be a non-empty string');
+  }
+  if (category !== undefined && !CATEGORIES.includes(category)) {
+    return fail('INVALID_STATE', `category must be one of ${CATEGORIES.join(', ')}`);
   }
   return withLock(project, () => {
     store.ensureProjectDirs(project);
@@ -139,8 +146,19 @@ export async function fileTask({ project, title, goal, acceptance, epic, depends
       acceptance: (Array.isArray(acceptance) ? acceptance : []).map((text) => ({ text, done: false })),
       logbook: [logLine(created, sessionId, 'filed')],
     };
-    store.writeTask(project, 'triage', task);
+    store.writeTask(project, category ?? 'triage', task);
     return { ok: true, id };
+  });
+}
+
+// Permanent removal — no undo, no logbook (the file is gone). Not sync-aware:
+// see docs/architecture.md's grow-only note and delete_task's tool description.
+export async function deleteTask({ project, id } = {}) {
+  const bad = await requireProject(project);
+  if (bad) return bad;
+  return withLock(project, () => {
+    if (!store.deleteTask(project, id)) return fail('TASK_UNKNOWN', `unknown task: ${id}`);
+    return { ok: true };
   });
 }
 
@@ -702,7 +720,9 @@ function mergeProject(project, remoteCards, remoteEpics, summary) {
 
   const localByUid = new Map();
   const usedIds = new Set();
-  let maxNum = 0;
+  // Seed from the persisted floor (store.js's nextId uses the same one) so a
+  // locally-deleted high-numbered card can't make this allocator reuse its id.
+  let maxNum = store.idFloor(project);
   const idNum = (id) => { const m = /(\d+)\s*$/.exec(id ?? ''); return m ? Number.parseInt(m[1], 10) : 0; };
   for (const c of localCards) {
     localByUid.set(c.uid, c);
@@ -803,6 +823,9 @@ function mergeProject(project, remoteCards, remoteEpics, summary) {
   };
   for (const { rc, localId } of inserts) { write(rc, localId); summary.added += 1; }
   for (const { rc, localId, fromState } of replaces) { write(rc, localId, fromState); summary.updated += 1; }
+  // Every write above goes through store.writeTask/store.moveTask, which
+  // already bumps the persisted id floor to each written id — no separate
+  // floor update needed here.
 
   return { added: inserts.length, updated: replaces.length };
 }

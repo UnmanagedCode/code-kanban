@@ -13,6 +13,7 @@ const handlers = {
   read_progress: (a) => board.readProgress(a),
   move_task:   (a) => board.moveTask(a),
   update_task: (a) => board.updateTask(a),
+  delete_task: (a) => board.deleteTask(a),
   create_epic: (a) => board.createEpic(a),
   list_epics:  (a) => board.listEpics(a),
   read_epic:   (a) => board.readEpic(a),

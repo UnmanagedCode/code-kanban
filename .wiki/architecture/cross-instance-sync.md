@@ -7,7 +7,10 @@ code-kanban/2026-0005). Transport is a code-hub-forwarded URL — no git.
 - **Two-click, one-way pull per click.** A click pulls the peer's FULL board dump for a scope
   and merges it locally. Converging both machines = clicking Sync on each side. There is no
   push/bidirectional exchange.
-- **Grow-only.** No delete op exists, so no tombstones — the merge is a pure union + overwrite.
+- **Grow-only merge.** `delete_task` exists (a plain hard delete) but is NOT sync-integrated — no
+  tombstone concept, so the merge itself is still a pure union + overwrite. Consequence: a task
+  deleted locally can reappear on a future pull from a peer that still holds it. See
+  `docs/architecture.md` "Cross-instance sync" for the accepted-tradeoff rationale.
 
 ## The identity problem this solves
 Display ids (`${year}-${NNNN}`) are minted **per-project, per-filesystem** (`store.nextId`), so

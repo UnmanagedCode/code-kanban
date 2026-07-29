@@ -31,7 +31,7 @@ conductor's own tool — not a team/shared surface.
 
 | Tool | Who | Effect |
 |------|-----|--------|
-| `file_task` | worker + conductor | Create a task in `triage`; returns the new id. |
+| `file_task` | worker + conductor | Create a task in `triage`, or directly in `todo`/`backlog` via `category`; returns the new id. |
 | `log_progress` | worker + conductor | Append a logbook line: worker's owned in-progress card (no `id`), or conductor's target card (`id` + `project`). |
 | `list_tasks` | conductor | List tasks, optionally filtered by `state`/`epic`. |
 | `read_task` | conductor | Read one task (+ logbook, optionally last `logTail`). |
@@ -41,6 +41,7 @@ conductor's own tool — not a team/shared surface.
 | `create_epic` | conductor | Create/refresh an epic — `project` (project-scoped) or `projects` (cross-project). |
 | `list_epics` | conductor | A project's epics + cross-project epics spanning it, with computed rollups. |
 | `read_epic` | conductor | One epic (+ rollup) and its tasks; cross-project epics aggregate across members. |
+| `delete_task` | conductor | Permanently delete a task by id. Irreversible; not sync-aware (see "Cross-instance sync" in `docs/architecture.md`). |
 
 Every tool takes a `project` (validated against the live project list), except:
 - `create_epic`/`read_epic`, which instead accept a cross-project epic's `projects` list / a bare slug.

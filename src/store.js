@@ -37,12 +37,58 @@ export function findTaskFile(project, id) {
   return null;
 }
 
+// ---- id sequence (persisted high-water mark) ----
+//
+// The sequence used to be derived purely by scanning existing card files for
+// the max numeric suffix. That regresses the moment a card is deleted:
+// unlinking the highest-numbered card lowers the live-scanned max, so the next
+// nextId() call reuses the freed number — silently re-satisfying any dangling
+// depends_on that pointed at the deleted card, and breaking the monotonic,
+// never-reuse guarantee this sequence is supposed to hold (a deletion is
+// SUPPOSED to leave a gap; it must never let that gap be re-filled). A
+// persisted per-project floor file fixes this: writeTask bumps the floor to
+// at least every id it ever actually commits to disk, and nextId() takes the
+// max of that floor and the live scan — so once a card is written, deleting
+// it later can never let its number come back.
+//
+// The bump lives in writeTask, NOT in nextId: nextId only proposes a candidate
+// id and may be called speculatively without a following write (see
+// tests/store.test.mjs's gap-free-sequence test, which peeks nextId() before
+// ever writing) — persisting on the peek would burn ids that were never used.
+//
+// Purely local bookkeeping — NOT part of the sync wire format. Ids are already
+// unique only per-project, per-filesystem (see
+// .wiki/architecture/file-store-layout.md), so each machine enforces its own
+// floor independently; board.js's sync merge seeds its own id allocator from
+// idFloor() too, so a reassigned incoming card can't reuse a locally-deleted
+// high id either — never against the peer's floor, which isn't on the wire.
+function idFloorPath(project) {
+  return path.join(projectDir(project), '.id-seq');
+}
+
+// Highest task-id number ever committed to disk in this project, including
+// ids whose card has since been deleted. Read-only peek.
+export function idFloor(project) {
+  try {
+    const n = Number.parseInt(fs.readFileSync(idFloorPath(project), 'utf8').trim(), 10);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+// Raise the persisted floor to at least `n` (never regress it).
+function bumpIdFloor(project, n) {
+  if (n > idFloor(project)) atomicWrite(idFloorPath(project), String(n));
+}
+
 // Next id for a project: current year + a project-wide monotonic sequence.
-// The sequence is the max numeric suffix across ALL existing cards + 1 and does
-// NOT reset on year rollover — ids stay globally sortable and gap-free within a
-// project; the year is a human-readable creation prefix only.
+// The sequence is the max of the persisted floor and the max numeric suffix
+// across ALL existing cards, + 1, and does NOT reset on year rollover — ids
+// stay globally sortable within a project and a deleted id is never reused;
+// the year is a human-readable creation prefix only.
 export function nextId(project) {
-  let max = 0;
+  let max = idFloor(project);
   for (const state of STATES) {
     let names;
     try { names = fs.readdirSync(stateDir(project, state)); }
@@ -58,6 +104,8 @@ export function nextId(project) {
 
 export function writeTask(project, state, task) {
   atomicWrite(taskPath(project, state, task.id), taskfile.serialize({ ...task, project }));
+  const m = /-(\d+)$/.exec(task.id ?? '');
+  if (m) bumpIdFloor(project, Number.parseInt(m[1], 10));
 }
 
 export function readTaskById(project, id) {
@@ -72,6 +120,15 @@ export function moveTask(project, id, fromState, toState, updatedTask) {
   writeTask(project, toState, updatedTask);
   const oldFile = taskPath(project, fromState, id);
   if (fromState !== toState && fs.existsSync(oldFile)) fs.rmSync(oldFile);
+}
+
+// Permanently remove a card's file. Returns true if a card was found and
+// deleted, false if none existed (the caller turns that into TASK_UNKNOWN).
+export function deleteTask(project, id) {
+  const loc = findTaskFile(project, id);
+  if (!loc) return false;
+  fs.rmSync(loc.file);
+  return true;
 }
 
 // Full cards in a project, parsed (all frontmatter incl. uid/updated/node),

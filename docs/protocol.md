@@ -27,7 +27,7 @@ malformed envelope or an unexpected exception.
 
 ## Tool signatures
 
-- `file_task({project, title, goal?, acceptance?, epic?, depends_on?}) → {ok, id}` — task lands in `triage`. `epic` must already exist → else `EPIC_UNKNOWN`.
+- `file_task({project, title, goal?, acceptance?, epic?, depends_on?, category?}) → {ok, id}` — task lands in `triage` by default; `category: 'todo'|'backlog'` lands it directly in that lane instead (mirrors triage's legal exits). An illegal `category` value → `INVALID_STATE`. `epic` must already exist → else `EPIC_UNKNOWN`.
 - `log_progress({project?, id?, entry}) → {ok}` — two paths, chosen by `id`:
   - **`id` omitted (worker path):** target card resolved server-side from `caller.sessionId`
     (the owned `in-progress` card; ties broken by most-recently-modified). `project` is
@@ -55,6 +55,7 @@ malformed envelope or an unexpected exception.
 - `create_epic({project?, projects?, slug, title, goal?}) → {ok}` — `slug` matches `^[a-z0-9._-]+$`; idempotent upsert (re-creating refreshes title/goal, preserves `created`; for a cross-project epic it also **replaces the member `projects` list** — membership is mutable). Give **exactly one** of `project` (project-scoped) or `projects` (a cross-project epic spanning ≥2 members) → else `INVALID_STATE`. A slug may not be both a cross-project epic and a per-project epic in one of its members → `EPIC_CONFLICT` (guarded in both create orders).
 - `list_epics({project}) → {ok, epics:[{slug, title, rollup, projects}]}` — the project's own epics (`projects:null`) plus cross-project epics spanning it (`projects:[…]`, `rollup` aggregated over all members).
 - `read_epic({project?, slug}) → {ok, epic:{slug,title,goal,rollup[,projects]}, tasks:[summary]}` — with `project`, a project-scoped epic resolves first, else a cross-project epic covering it. Omit `project` to read a cross-project epic by slug; its `rollup` and `tasks` aggregate across all member projects and `epic.projects` lists them.
+- `delete_task({project, id}) → {ok}` — permanently removes the task's file; unknown id → `TASK_UNKNOWN`. Irreversible and not sync-aware: see "Cross-instance sync" in `docs/architecture.md`.
 
 A `summary` is `{id, title, state, project, epic, priority, owner, depends_on, created}`. A `rollup`
 is a per-state count object over `triage/backlog/todo/in-progress/done`. `file_task`/`update_task`
