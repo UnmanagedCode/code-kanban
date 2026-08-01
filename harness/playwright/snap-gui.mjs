@@ -156,18 +156,25 @@ async function main() {
       await page.screenshot({ path: path.join(SHOTS, 'gui-4-detail-done-commit.png'), fullPage: true });
       console.log('snapped done detail with commit');
 
-      // 5. Project-selection persistence: pick the second project, reload, and
-      //    assert the selection survives — the second load does NO selectOption,
-      //    so this is the localStorage restore path (not a re-pick).
-      await page.selectOption('#project-select', PROJECT2);
-      await page.waitForFunction(() => document.querySelector('#project-select')?.value === 'web', { timeout: 10_000 });
+      // 5. Project-selection persistence: pick a project that provably differs
+      //    from the default fallback (projects[0]), reload, and assert the
+      //    selection survives — the second load does NO selectOption, so this is
+      //    the localStorage restore path (not a re-pick). If the picked project
+      //    were the default, the reload assertion would pass even without the
+      //    persistence code; a non-default pick makes it a true witness.
+      const projRes = await fetch(`${srv.url}/api/projects`).then((r) => r.json());
+      const defaultProj = projRes.projects[0];
+      const persistProj = projRes.projects.find((p) => p !== defaultProj);
+      if (!persistProj) throw new Error('need ≥2 projects to discriminate the restore path');
+      await page.selectOption('#project-select', persistProj);
+      await page.waitForFunction((v) => document.querySelector('#project-select')?.value === v, persistProj, { timeout: 10_000 });
       await page.waitForSelector('.card', { timeout: 10_000 });
       await page.reload({ waitUntil: 'domcontentloaded' });
       await page.waitForSelector('#project-select', { timeout: 10_000 });
-      await page.waitForFunction(() => document.querySelector('#project-select')?.value === 'web', { timeout: 10_000 });
+      await page.waitForFunction((v) => document.querySelector('#project-select')?.value === v, persistProj, { timeout: 10_000 });
       await page.waitForSelector('.card', { timeout: 10_000 });
       await page.screenshot({ path: path.join(SHOTS, 'gui-5-persisted-selection.png'), fullPage: true });
-      console.log('snapped persisted-selection after reload');
+      console.log(`snapped persisted-selection after reload (restored non-default ${persistProj})`);
     }, { headless: true, viewport: { width: 1440, height: 900 } });
   } finally {
     await srv.close();

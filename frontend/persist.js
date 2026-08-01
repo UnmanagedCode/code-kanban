@@ -8,8 +8,7 @@ export const SELECTED_PROJECT_KEY = 'code-kanban:selected-project';
 export function readSelectedProject(storage) {
   try {
     const s = storage ?? globalThis.localStorage;
-    const v = s.getItem(SELECTED_PROJECT_KEY);
-    return v ? v : null; // '' → null, so a stored empty string can't wedge the selector
+    return s.getItem(SELECTED_PROJECT_KEY);
   } catch {
     return null; // storage unavailable (privacy mode / sandbox) — degrade to default
   }
