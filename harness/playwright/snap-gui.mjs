@@ -155,6 +155,19 @@ async function main() {
       await page.waitForSelector('.detail-section:has-text("Commit")', { timeout: 10_000 });
       await page.screenshot({ path: path.join(SHOTS, 'gui-4-detail-done-commit.png'), fullPage: true });
       console.log('snapped done detail with commit');
+
+      // 5. Project-selection persistence: pick the second project, reload, and
+      //    assert the selection survives — the second load does NO selectOption,
+      //    so this is the localStorage restore path (not a re-pick).
+      await page.selectOption('#project-select', PROJECT2);
+      await page.waitForFunction(() => document.querySelector('#project-select')?.value === 'web', { timeout: 10_000 });
+      await page.waitForSelector('.card', { timeout: 10_000 });
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('#project-select', { timeout: 10_000 });
+      await page.waitForFunction(() => document.querySelector('#project-select')?.value === 'web', { timeout: 10_000 });
+      await page.waitForSelector('.card', { timeout: 10_000 });
+      await page.screenshot({ path: path.join(SHOTS, 'gui-5-persisted-selection.png'), fullPage: true });
+      console.log('snapped persisted-selection after reload');
     }, { headless: true, viewport: { width: 1440, height: 900 } });
   } finally {
     await srv.close();
