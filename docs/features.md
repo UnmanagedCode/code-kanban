@@ -56,7 +56,9 @@ A local web app to view + manage the board is served at `/` (manifest `frontend.
 so it shares the same `board.js` service layer and per-project mutex as the MCP tools — one writer.
 
 - **Project selector** — picks from the live project catalog (`GET /api/projects`); auto-selects
-  the first project on load.
+  the first project on load, and remembers your last pick in the browser (`localStorage` key
+  `code-kanban:selected-project`) so a reload or revisit restores it — falling back to the first
+  project if the saved pick no longer exists.
 - **Board** — five columns rendered from `STATES`; cards show id, title, epic/priority/owner
   badges. A card's legal move targets come from `GET /api/board/meta` (the single source
   `ALLOWED_TRANSITIONS`), so the GUI never offers an illegal move.

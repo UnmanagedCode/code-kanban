@@ -2,6 +2,7 @@
 // through the in-process /api/board/* routes, which delegate 1:1 to board.js
 // (the single writer). Domain refusals come back as 200 {ok:false,code,reason}
 // and are surfaced here rather than worked around. See docs/protocol.md.
+import { readSelectedProject, writeSelectedProject, resolveInitialProject } from './persist.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const el = (tag, props = {}, children = []) => {
@@ -104,7 +105,8 @@ async function init() {
     return;
   }
   renderProjectSelect();
-  if (state.projects.length) selectProject(state.projects[0]);
+  const target = resolveInitialProject(state.projects, readSelectedProject());
+  if (target) selectProject(target);
   else setStatus('No projects available.', '');
 }
 
@@ -121,8 +123,16 @@ function setBoardEnabled(on) {
 // ---- board load + render --------------------------------------------------
 
 async function selectProject(name) {
-  if (!name) { state.current = null; setBoardEnabled(false); return; }
+  if (!name) {
+    state.current = null;
+    setBoardEnabled(false);
+    $('#project-select').value = '';
+    writeSelectedProject(null);
+    return;
+  }
   state.current = name;
+  $('#project-select').value = name;
+  writeSelectedProject(name);
   setBoardEnabled(true);
   await loadBoard();
 }
