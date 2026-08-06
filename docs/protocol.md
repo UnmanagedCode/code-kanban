@@ -85,10 +85,15 @@ malformed envelope or an unexpected exception.
   `plan_body` is promoted **out of** `meta` only when it is a string, and a block is emitted only
   when that string is non-empty. So with `includePlan: true` there are three outcomes:
   a body was read → no `plan_body` in `meta`, second block present; the file exists but is
-  **empty** → no `plan_body` in `meta`, **no** second block, `plan_missing: false` (distinguish
-  this from "`includePlan` not passed" by `plan_path`, which is non-null); no link or an
+  **empty** → no `plan_body` in `meta`, **no** second block, `plan_missing: false`; no link or an
   unreadable file → `plan_body: null` **stays in `meta`** (null is not a string) alongside
-  `plan_missing`. Over the GUI's HTTP route it stays a single
+  `plan_missing`.
+
+  The empty-file case and "`includePlan` not passed" are told apart by the **presence of
+  `plan_missing`/`plan_truncated`** — set (to `false`) only when `includePlan` was passed, absent
+  otherwise. Not by `plan_path`, which is returned always and reflects the card's *link*, not the
+  flag (`src/board.js` assigns it outside the `includePlan` branch), so it is non-null for both
+  calls on a linked card. Over the GUI's HTTP route it stays a single
   JSON object with `goal`/`acceptance`/`logbook`/`plan_body` as fields (`src/routes.js` delegates
   to `board.js`, which is unchanged; only `src/mcp.js` splits).
 - `read_progress({project, id, limit?}) → {ok, entries:[…], total}` — most-recent first.

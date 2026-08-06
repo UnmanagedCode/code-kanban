@@ -26,7 +26,8 @@ not folklore: code-conductor `src/plugins/mcpBridge.ts` (the `rec.text !== undef
 `src/mcp/content.ts`'s `textPayload`.
 
 Every **prose-bearing read** uses it: `read_task` (card body, then `plan_body` when `includePlan`
-read a file), `read_progress` (logbook entries), `read_epic` (`epic.goal`). `list_tasks`/
+read a **non-empty** file — an empty body emits no block, and `docs/protocol.md` has the full
+key-by-key outcome table), `read_progress` (logbook entries), `read_epic` (`epic.goal`). `list_tasks`/
 `list_epics` and the mutators stay on `{result}`. The rule that decides this — prose/document → text
 block, anything a caller branches on (incl. arrays of summaries) → the JSON block — and the
 per-tool block order live in `docs/protocol.md`; the mechanism is `RAW_TEXT` + `shapeBody` in
