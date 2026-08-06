@@ -26,6 +26,7 @@ const state = {
   current: null,
   tasks: [],
   epics: [],
+  planOnly: false, // "Has plan" filter — session-only, deliberately not persisted
 };
 
 // 2-char rollup-pill labels. s[0] collides (triage and todo both render "t"),
@@ -95,6 +96,7 @@ async function init() {
   $('#sync-btn').addEventListener('click', () => renderSyncForm());
   $('#refresh-btn').addEventListener('click', () => loadBoard());
   $('#project-select').addEventListener('change', (e) => selectProject(e.target.value));
+  $('#plan-filter').addEventListener('change', (e) => { state.planOnly = e.target.checked; renderBoard(); });
 
   try {
     const [metaRes, projRes] = await Promise.all([api('api/board/meta'), api('api/projects')]);
@@ -166,7 +168,7 @@ function renderBoard() {
   const board = $('#board');
   board.replaceChildren();
   for (const st of state.meta.states) {
-    const cards = state.tasks.filter((t) => t.state === st);
+    const cards = state.tasks.filter((t) => t.state === st && (!state.planOnly || t.plan));
     const body = cards.length
       ? cards.map(renderCard)
       : [el('div', { class: 'column-empty' }, '— empty —')];
@@ -186,6 +188,7 @@ function renderCard(t) {
   if (t.epic) meta.push(el('span', { class: 'badge epic' }, t.epic));
   if (t.priority) meta.push(el('span', { class: 'badge prio' }, `p${t.priority}`));
   if (t.owner) meta.push(el('span', { class: 'badge owner' }, t.owner));
+  if (t.plan) meta.push(el('span', { class: 'badge plan', title: t.plan }, 'plan'));
   return el('div', { class: 'card', tabindex: '0', role: 'button', onclick: () => openDetail(t.id), onkeydown: (e) => { if (e.key === 'Enter') openDetail(t.id); } }, [
     el('div', { class: 'card-id' }, t.id),
     el('div', { class: 'card-title' }, t.title),
@@ -262,14 +265,29 @@ function detailSection(label, text, node) {
 
 async function openDetail(id) {
   let data;
-  try { data = await api(`api/board/${encodeURIComponent(state.current)}/tasks/${encodeURIComponent(id)}`); }
+  // includePlan=1 pulls the linked plan file's body (bounded server-side); the
+  // plan fields ride TOP-LEVEL on the envelope, not inside `task`.
+  try { data = await api(`api/board/${encodeURIComponent(state.current)}/tasks/${encodeURIComponent(id)}?includePlan=1`); }
   catch (e) { return setStatus(`Read task failed: ${e.message}`, 'err'); }
   const r = refusalReason(data);
   if (r) return setStatus(r, 'err');
-  openDetailNode(data.task);
+  openDetailNode(data.task, false, {
+    body: data.plan_body, missing: data.plan_missing, truncated: data.plan_truncated,
+  });
 }
 
-function openDetailNode(t, editing = false) {
+function planSection(t, plan) {
+  if (!t.plan) return null;
+  return detailSection('Plan', null, el('div', {}, [
+    el('p', { class: 'plan-link' }, t.plan),
+    plan?.missing
+      ? el('p', { class: 'muted' }, '(file not found)')
+      : el('p', {}, plan?.body || '—'),
+    plan?.truncated ? el('p', { class: 'muted' }, '(truncated)') : null,
+  ]));
+}
+
+function openDetailNode(t, editing = false, plan = null) {
   const targets = transitionsFrom(t.state);
   const moveRow = el('div', { class: 'move-row' }, [
     el('label', { class: 'field' }, ['Move to',
@@ -286,11 +304,11 @@ function openDetailNode(t, editing = false) {
         el('span', { class: 'detail-id' }, t.id),
         el('span', { class: 'detail-state' }, t.state),
       ]),
-      editing ? null : el('button', { class: 'ghost', type: 'button', onclick: () => openDetailNode(t, true) }, 'Edit'),
+      editing ? null : el('button', { class: 'ghost', type: 'button', onclick: () => openDetailNode(t, true, plan) }, 'Edit'),
     ]),
     el('div', { class: 'detail-title' }, t.title),
     editing
-      ? detailSection('Edit', null, renderEditForm(t))
+      ? detailSection('Edit', null, renderEditForm(t, plan))
       : el('div', {}, [
           detailSection('Goal', t.goal),
           detailSection('Priority', t.priority ? String(t.priority) : ''),
@@ -306,6 +324,7 @@ function openDetailNode(t, editing = false) {
               ? el('ul', { class: 'logbook' }, (t.logbook || []).slice().reverse().map(renderLogLine))
               : el('p', { class: 'muted' }, '— empty —')),
           t.commit ? detailSection('Commit', t.commit) : null,
+          planSection(t, plan),
           detailSection('Move', null, moveRow),
         ]),
   ]);
@@ -320,7 +339,10 @@ function renderLogLine(line) {
   return el('li', {}, sid ? [parts[0], ' · ', el('span', { class: 'sid' }, sid), ' · ', rest] : [line]);
 }
 
-function renderEditForm(t) {
+// `plan` is threaded through only so Cancel can re-render the read view with
+// the plan body it already has (no second fetch). The plan link is NOT editable
+// here — it is set by the conductor / plan worker, never typed into the GUI.
+function renderEditForm(t, plan = null) {
   const epicOpts = [el('option', { value: '' }, '— none —'), ...state.epics.map((e) => el('option', { value: e.slug, ...(t.epic === e.slug ? { selected: '' } : {}) }, e.slug))];
   const f = el('form', { class: 'form-grid', onsubmit: (e) => doEdit(e, t.id) }, [
     el('label', { class: 'field' }, ['Title', el('input', { name: 'title', value: t.title })]),
@@ -330,7 +352,7 @@ function renderEditForm(t) {
     el('label', { class: 'field' }, ['Depends on (comma-separated ids)', el('input', { name: 'depends_on', value: (t.depends_on || []).join(', ') })]),
     el('div', { class: 'form-error' }, ''),
     el('div', { class: 'form-actions' }, [
-      el('button', { type: 'button', class: 'ghost', onclick: () => openDetailNode(t, false) }, 'Cancel'),
+      el('button', { type: 'button', class: 'ghost', onclick: () => openDetailNode(t, false, plan) }, 'Cancel'),
       el('button', { type: 'submit', class: 'primary' }, 'Save'),
     ]),
   ]);

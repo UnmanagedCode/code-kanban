@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { freshRoot, cleanup } from './_helpers.mjs';
+import { plansDir } from '../src/paths.js';
 import { _setProjectFetcher } from '../src/projects.js';
 import * as board from '../src/board.js';
 import { createServer } from '../server.js';
@@ -304,5 +307,37 @@ test('unexpected throw in a board fn -> 500 {error}, not a hung response', async
     const { status, body } = await json('/api/board/demo/tasks');
     assert.equal(status, 500);
     assert.equal(body.error, 'boom');
+  });
+});
+test('GET /tasks/:id?includePlan=1 returns plan_path + plan_body; without it, only plan_path', async () => {
+  await withServer(async ({ json }) => {
+    const id = (await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'planned' } })).body.id;
+    const file = path.join(plansDir('demo'), 'p.md');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '# plan body\nsecond line\n');
+    const patched = await json(`/api/board/demo/tasks/${id}`, { method: 'PATCH', body: { plan: 'p.md' } });
+    assert.equal(patched.body.ok, true);
+
+    const plain = await json(`/api/board/demo/tasks/${id}`);
+    assert.equal(plain.body.task.plan, 'board:p.md');
+    assert.equal(plain.body.plan_path, file);
+    assert.equal('plan_body' in plain.body, false); // no body unless asked
+
+    const withPlan = await json(`/api/board/demo/tasks/${id}?includePlan=1`);
+    assert.equal(withPlan.body.plan_body, '# plan body\nsecond line\n');
+    assert.equal(withPlan.body.plan_missing, false);
+    assert.equal((await json(`/api/board/demo/tasks/${id}?includePlan=true`)).body.plan_body, '# plan body\nsecond line\n');
+    // Any other value is falsy — the route coerces, it doesn't guess.
+    assert.equal('plan_body' in (await json(`/api/board/demo/tasks/${id}?includePlan=0`)).body, false);
+  });
+});
+
+test('PATCH with an unresolvable plan field returns 200 PLAN_UNKNOWN', async () => {
+  await withServer(async ({ json }) => {
+    const id = (await json('/api/board/demo/tasks', { method: 'POST', body: { title: 't' } })).body.id;
+    const res = await json(`/api/board/demo/tasks/${id}`, { method: 'PATCH', body: { plan: 'ghost.md' } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.ok, false);
+    assert.equal(res.body.code, 'PLAN_UNKNOWN');
   });
 });

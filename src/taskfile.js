@@ -10,7 +10,7 @@
 // tiebreak). `uid`/`node` are stripped from MCP/GUI reads (board.readTask); only
 // /api/sync/export exposes them. See .wiki/architecture/cross-instance-sync.md.
 
-const SCALAR_KEYS = ['id', 'uid', 'title', 'project', 'epic', 'priority', 'created', 'updated', 'node', 'owner', 'commit'];
+const SCALAR_KEYS = ['id', 'uid', 'title', 'project', 'epic', 'priority', 'created', 'updated', 'node', 'owner', 'commit', 'plan'];
 
 function serializeDependsOn(deps) {
   return `[${(deps ?? []).join(', ')}]`;
@@ -23,7 +23,8 @@ function parseDependsOn(raw) {
 }
 
 // task: {id,uid?,title,project,epic?,priority,created,updated?,node?,owner?,
-//        commit?,depends_on[], goal, acceptance:[{text,done}], logbook:[string]}
+//        commit?,plan?,depends_on[], goal, acceptance:[{text,done}], logbook:[string]}
+// `plan` is a LINK to a plan file (src/planLink.js), never the plan text.
 export function serialize(task) {
   const fm = [];
   fm.push(`id: ${task.id}`);
@@ -37,6 +38,7 @@ export function serialize(task) {
   if (task.node) fm.push(`node: ${task.node}`);
   if (task.owner) fm.push(`owner: ${task.owner}`);
   if (task.commit) fm.push(`commit: ${task.commit}`);
+  if (task.plan) fm.push(`plan: ${task.plan}`);
   fm.push(`depends_on: ${serializeDependsOn(task.depends_on)}`);
 
   const accLines = (task.acceptance ?? []).map(
@@ -63,7 +65,7 @@ export function parse(text, { state } = {}) {
   const lines = text.split('\n');
   const task = {
     id: null, uid: null, title: '', project: '', epic: null, priority: 0,
-    created: null, updated: null, node: null, owner: null, commit: null,
+    created: null, updated: null, node: null, owner: null, commit: null, plan: null,
     depends_on: [], goal: '', acceptance: [], logbook: [], state: state ?? null,
   };
 
@@ -79,7 +81,7 @@ export function parse(text, { state } = {}) {
       const val = line.slice(idx + 1).trim();
       if (key === 'depends_on') task.depends_on = parseDependsOn(val);
       else if (key === 'priority') task.priority = Number.parseInt(val, 10) || 0;
-      else if (SCALAR_KEYS.includes(key)) task[key] = val === '' ? (['epic', 'owner', 'commit', 'uid', 'updated', 'node'].includes(key) ? null : val) : val;
+      else if (SCALAR_KEYS.includes(key)) task[key] = val === '' ? (['epic', 'owner', 'commit', 'plan', 'uid', 'updated', 'node'].includes(key) ? null : val) : val;
     }
     i++; // skip closing fence
   }

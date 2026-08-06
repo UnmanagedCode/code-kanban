@@ -12,6 +12,9 @@ conductor's own tool — not a team/shared surface.
     in `in-progress` through review and only reaches `done` on landing.
 - **Tasks:** one markdown file per task, with a Goal, Acceptance checklist, and an append-only
   Logbook. IDs are server-assigned, per-project, sortable (`2026-0042`).
+- **Plans:** a task may carry an optional **link to a plan file** (never the plan text), so work
+  planned days earlier outlives the worker that planned it — a parked-with-plan card is just `todo`
+  plus that link. Link grammar and refusals: `docs/protocol.md` (`update_task`).
 - **Epics:** first-class (`goal` + a per-state rollup computed on read). A task carries an optional
   `epic` slug. Splitting an epic needs no verb — file N tasks sharing the same `epic`. An epic is
   either **project-scoped** or **cross-project** (spans ≥2 projects, rollup aggregated across all
@@ -34,14 +37,14 @@ conductor's own tool — not a team/shared surface.
 | `file_task` | worker + conductor | Create a task in `triage`, or directly in `todo`/`backlog` via `category`; returns the new id. |
 | `log_progress` | worker + conductor | Append a logbook line: worker's owned in-progress card (no `id`), or conductor's target card (`id` + `project`). |
 | `list_tasks` | conductor | List tasks, optionally filtered by `state`/`epic`. |
-| `read_task` | conductor | Read one task (+ logbook, optionally last `logTail`). |
+| `read_task` | conductor | Read one task (+ logbook, optionally last `logTail`); always returns the resolved plan path, and with `includePlan` the plan file's body. |
 | `read_progress` | conductor | Read a task's logbook only, most-recent first. |
 | `move_task` | conductor | Move between states; sets `owner` on entering `in-progress`; on landing (`→done`), stamps `commit` (given, or auto-captured from the owning worker's live worktree HEAD). |
-| `update_task` | conductor | Update `title`/`goal`/`epic`/`priority`/`depends_on`. |
+| `update_task` | conductor | Update `title`/`goal`/`epic`/`priority`/`depends_on`, attach or clear the `plan` link, and reassign `owner` on an in-progress card (plan worker → implementer, no lane move). |
 | `create_epic` | conductor | Create/refresh an epic — `project` (project-scoped) or `projects` (cross-project). |
 | `list_epics` | conductor | A project's epics + cross-project epics spanning it, with computed rollups. |
 | `read_epic` | conductor | One epic (+ rollup) and its tasks; cross-project epics aggregate across members. |
-| `delete_task` | conductor | Permanently delete a task by id. Irreversible; not sync-aware (see "Cross-instance sync" in `docs/architecture.md`). |
+| `delete_task` | conductor | Permanently delete a task by id, plus its `board:` plan file (never a `repo:` one). Irreversible; not sync-aware (see "Cross-instance sync" in `docs/architecture.md`). |
 
 Every tool takes a `project` (validated against the live project list), except:
 - `create_epic`/`read_epic`, which instead accept a cross-project epic's `projects` list / a bare slug.
@@ -59,13 +62,17 @@ so it shares the same `board.js` service layer and per-project mutex as the MCP 
   the first project on load, and remembers your last pick in the browser (`localStorage` key
   `code-kanban:selected-project`) so a reload or revisit restores it — falling back to the first
   project if the saved pick no longer exists.
-- **Board** — five columns rendered from `STATES`; cards show id, title, epic/priority/owner
-  badges. A card's legal move targets come from `GET /api/board/meta` (the single source
-  `ALLOWED_TRANSITIONS`), so the GUI never offers an illegal move.
+- **Board** — five columns rendered from `STATES`; cards show id, title, epic/priority/owner/plan
+  badges (the plan badge's tooltip is the link). A **Has plan** checkbox in the top bar filters the
+  board to cards carrying a plan link (client-side, not remembered across reloads). A card's legal
+  move targets come from `GET /api/board/meta` (the single source `ALLOWED_TRANSITIONS`), so the
+  GUI never offers an illegal move.
 - **Card detail** — opens to a read-only view: Goal, Priority, Acceptance checklist, the
-  append-only Logbook, and (once landed) the Commit hash, plus a Move control. An Edit button
-  swaps in a form (title/goal/epic/priority/depends_on); Save or Cancel returns to the read view.
-  Acceptance, Logbook, and Commit are not editable in the GUI.
+  append-only Logbook, (once landed) the Commit hash, and — when the card has a plan link — a Plan
+  section showing the link plus the plan file's text (`(file not found)` for a dead link,
+  `(truncated)` past the size cap), plus a Move control. An Edit button swaps in a form
+  (title/goal/epic/priority/depends_on); Save or Cancel returns to the read view. Acceptance,
+  Logbook, Commit and the plan link are not editable in the GUI.
 - **Epics** — rollup table; "open" reads one epic (+ its tasks). New-epic form upserts by slug; its
   "Span projects" multi-select makes a cross-project epic when ≥2 are picked (else project-scoped).
   Cross-project epics show a badge + member list; their detail lists each task's project.

@@ -78,8 +78,12 @@ export function buildRoutes() {
   }));
 
   // Full task incl. goal, acceptance, logbook (read-only in the GUI).
-  r.get('/board/:project/tasks/:id', wrap((req) =>
-    board.readTask({ project: req.params.project, id: req.params.id })));
+  // ?includePlan=1 additionally returns the linked plan file's body.
+  r.get('/board/:project/tasks/:id', wrap((req) => board.readTask({
+    project: req.params.project,
+    id: req.params.id,
+    includePlan: req.query.includePlan === '1' || req.query.includePlan === 'true',
+  })));
 
   // File a new task into triage. acceptance is string[] -> checkboxes.
   r.post('/board/:project/tasks', wrap((req) => {
@@ -90,8 +94,8 @@ export function buildRoutes() {
     });
   }));
 
-  // Patch updatable fields (title, goal, epic, priority, depends_on). The body
-  // IS the fields object; acceptance is not updatable (read-only in the GUI).
+  // Patch updatable fields (see board.js's UPDATABLE). The body IS the fields
+  // object; acceptance is not updatable (read-only in the GUI).
   r.patch('/board/:project/tasks/:id', wrap((req) =>
     board.updateTask({ project: req.params.project, id: req.params.id, fields: req.body ?? {} })));
 

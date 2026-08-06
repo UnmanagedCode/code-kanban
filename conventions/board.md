@@ -14,6 +14,11 @@ workflow, not a replacement for it.
 - **Landing commit.** `move_task` to `done` stamps `commit`: pass it explicitly for a squash/merge
   sha, otherwise the owning worker's live worktree HEAD is auto-captured (unset if that worktree
   can't be resolved).
+- **Plans.** `update_task` can attach `plan`, a link to a plan file. A
+  planned-but-unstarted card is `todo` with a plan link; there is no plan lane. Pull the text with
+  `read_task({includePlan:true})` only when you actually need it.
+- **Handoff.** `update_task` can reassign `owner` on an `in-progress` card (plan worker ->
+  implementer) with no lane move.
 - **Don't brief workers to mutate.** Never ask a worker to move or update a card.
 - **Epics.** `create_epic` when a thread will span more than one task; a standalone task needs
   none.

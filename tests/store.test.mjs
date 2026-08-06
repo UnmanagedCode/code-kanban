@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { freshRoot, cleanup } from './_helpers.mjs';
 import * as store from '../src/store.js';
-import { stateDir } from '../src/paths.js';
+import { stateDir, plansDir } from '../src/paths.js';
 
 function baseTask(id) {
   return {
@@ -95,5 +95,13 @@ test('writeCrossEpic/readCrossEpic round-trips title, goal, and the projects lis
     assert.equal(x.created, '2026-07-22T00:00:00.000Z');
     assert.deepEqual(store.listCrossEpicSlugs(), ['platform']);
     assert.equal(store.readCrossEpic('ghost'), null);
+  } finally { await cleanup(root); }
+});
+
+test('ensureProjectDirs creates plans/ (the board: plan-link base)', async () => {
+  const root = await freshRoot();
+  try {
+    store.ensureProjectDirs('demo');
+    assert.equal(fs.existsSync(plansDir('demo')), true);
   } finally { await cleanup(root); }
 });

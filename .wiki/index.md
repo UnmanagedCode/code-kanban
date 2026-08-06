@@ -9,8 +9,9 @@ Durable, hard-to-re-derive knowledge for code-kanban. Read this before planning,
 ## Gotchas
 - [gotchas/conduct-path-resolution.md](gotchas/conduct-path-resolution.md) — resolve `.conduct` via injected env; never hardcode/import.
 - [gotchas/flat-inputschema-constraint.md](gotchas/flat-inputschema-constraint.md) — host rejects nested/`oneOf` schemas; the opaque-object trick.
-- [gotchas/result-envelope-vs-ok-shape.md](gotchas/result-envelope-vs-ok-shape.md) — `{result}` outer envelope vs `{ok}` domain payload; refusals are never thrown.
+- [gotchas/result-envelope-vs-ok-shape.md](gotchas/result-envelope-vs-ok-shape.md) — `{result}` outer envelope vs `{ok}` domain payload; refusals are never thrown; the host's `{meta,text}` raw-text channel (read_task's plan body) and what it costs `body.result` readers.
 - [gotchas/owner-from-caller-sessionid.md](gotchas/owner-from-caller-sessionid.md) — `log_progress` resolves the card from the session; optional `project` scans all projects; tie-break rule; cross-project scan locking; conductor's `id`-based path bypasses ownership (requires `project`).
+- [gotchas/plan-link-and-sync-gap.md](gotchas/plan-link-and-sync-gap.md) — the plan LINK syncs but the body doesn't (dead links, and why re-setting one refuses `PLAN_UNKNOWN`); `repo:` needs the merge first; the newline + realpath guards on a worker-writable `plans/`.
 - [gotchas/detail-overlay-close-button-stacking.md](gotchas/detail-overlay-close-button-stacking.md) — `#detail-overlay`'s close ✕ always paints over `.detail-head` content; new right-aligned buttons there need clearance padding.
 
 ## Architecture / decisions

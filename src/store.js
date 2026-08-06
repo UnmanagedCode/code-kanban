@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { STATES, projectDir, stateDir, epicsDir, crossEpicsDir } from './paths.js';
+import { STATES, projectDir, stateDir, epicsDir, plansDir, crossEpicsDir } from './paths.js';
 import * as taskfile from './taskfile.js';
 
 // File store for the board. Plain atomic filesystem operations only — the plugin
@@ -13,6 +13,7 @@ import * as taskfile from './taskfile.js';
 export function ensureProjectDirs(project) {
   for (const s of STATES) fs.mkdirSync(stateDir(project, s), { recursive: true });
   fs.mkdirSync(epicsDir(project), { recursive: true });
+  fs.mkdirSync(plansDir(project), { recursive: true });
 }
 
 // Atomic write: tmp file in the same dir + rename (rename is atomic within a

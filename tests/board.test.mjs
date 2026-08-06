@@ -5,9 +5,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { freshRoot, cleanup } from './_helpers.mjs';
 import * as board from '../src/board.js';
+import * as store from '../src/store.js';
 import { _setProjectFetcher } from '../src/projects.js';
 import { _setInstanceFetcher } from '../src/ownerWorktree.js';
-import { stateDir } from '../src/paths.js';
+import { stateDir, plansDir, projectRepoDir } from '../src/paths.js';
 
 // Creates a real git repo at <root>/<name> with one commit and returns its
 // HEAD sha, so tests can assert the auto-captured value against ground truth.
@@ -714,5 +715,343 @@ test('the per-project mutex serializes concurrent id assignment (no dupes)', asy
     );
     const ids = results.map((r) => r.id);
     assert.equal(new Set(ids).size, 10); // all unique
+  } finally { await cleanup(root); }
+});
+
+// ---- plan links + owner reassignment ----
+
+// Write a file under the board's plans/ dir for `project` (the board: base) and
+// return its absolute path.
+function writeBoardPlan(project, rel, body) {
+  const file = path.join(plansDir(project), rel);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, body);
+  return file;
+}
+
+// Write a file under the project's BASE checkout (the repo: base). freshRoot()
+// sets PROJECTS_ROOT and useProjects() only stubs the catalog, so the checkout
+// dir does not exist until a test makes it.
+function writeRepoPlan(project, rel, body) {
+  const file = path.join(projectRepoDir(project), rel);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, body);
+  return file;
+}
+
+test('update_task sets a board: plan link; read_task returns plan_path', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 'planned' });
+    const file = writeBoardPlan('demo', 'p.md', '# the plan');
+    const u = await board.updateTask({ project: 'demo', id, fields: { plan: 'board:p.md' } });
+    assert.equal(u.ok, true);
+    const r = await board.readTask({ project: 'demo', id });
+    assert.equal(r.task.plan, 'board:p.md');
+    assert.equal(r.plan_path, file);
+    assert.equal(r.plan_body, undefined); // no body without includePlan
+  } finally { await cleanup(root); }
+});
+
+test('update_task normalizes a bare plan path to board:', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 'planned' });
+    writeBoardPlan('demo', 'sub/p.md', 'plan');
+    assert.equal((await board.updateTask({ project: 'demo', id, fields: { plan: 'sub/p.md' } })).ok, true);
+    // Stored WITH the explicit scheme, so every consumer reads one shape.
+    assert.equal((await board.readTask({ project: 'demo', id })).task.plan, 'board:sub/p.md');
+  } finally { await cleanup(root); }
+});
+
+test('update_task plan pointing at a missing file -> PLAN_UNKNOWN', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    const r = await board.updateTask({ project: 'demo', id, fields: { plan: 'board:nope.md' } });
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'PLAN_UNKNOWN');
+    assert.equal((await board.readTask({ project: 'demo', id })).task.plan, null); // nothing stored
+  } finally { await cleanup(root); }
+});
+
+test('update_task plan pointing at a DIRECTORY -> PLAN_UNKNOWN (must be a regular file)', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    fs.mkdirSync(path.join(plansDir('demo'), 'adir'), { recursive: true });
+    assert.equal((await board.updateTask({ project: 'demo', id, fields: { plan: 'adir' } })).code, 'PLAN_UNKNOWN');
+  } finally { await cleanup(root); }
+});
+
+test('update_task plan via a symlink out of plans/ -> PLAN_UNKNOWN (no arbitrary-file read)', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    const secret = path.join(root, 'secret.txt');
+    fs.writeFileSync(secret, 'top secret');
+    fs.mkdirSync(plansDir('demo'), { recursive: true });
+    fs.symlinkSync(secret, path.join(plansDir('demo'), 'escape.md'));
+    const r = await board.updateTask({ project: 'demo', id, fields: { plan: 'board:escape.md' } });
+    assert.equal(r.code, 'PLAN_UNKNOWN'); // statSync follows the link, the realpath check catches it
+  } finally { await cleanup(root); }
+});
+
+test('update_task plan with an absolute path -> INVALID_STATE', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    const abs = writeBoardPlan('demo', 'p.md', 'plan'); // exists — refused on grammar, not existence
+    const r = await board.updateTask({ project: 'demo', id, fields: { plan: abs } });
+    assert.equal(r.code, 'INVALID_STATE');
+    assert.match(r.reason, /relative/);
+  } finally { await cleanup(root); }
+});
+
+test('update_task plan with ../ traversal -> INVALID_STATE', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    // A real file one level ABOVE plans/ — reachable only if containment fails.
+    fs.mkdirSync(plansDir('demo'), { recursive: true });
+    fs.writeFileSync(path.join(plansDir('demo'), '..', 'outside.md'), 'nope');
+    const r = await board.updateTask({ project: 'demo', id, fields: { plan: '../outside.md' } });
+    assert.equal(r.code, 'INVALID_STATE');
+    assert.equal((await board.readTask({ project: 'demo', id })).task.plan, null);
+  } finally { await cleanup(root); }
+});
+
+test('update_task plan: null clears the link', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    writeBoardPlan('demo', 'p.md', 'plan');
+    await board.updateTask({ project: 'demo', id, fields: { plan: 'p.md' } });
+    assert.equal((await board.updateTask({ project: 'demo', id, fields: { plan: null } })).ok, true);
+    const r = await board.readTask({ project: 'demo', id });
+    assert.equal(r.task.plan, null);
+    assert.equal(r.plan_path, null);
+  } finally { await cleanup(root); }
+});
+
+test('update_task repo: plan link fails while unmerged -> PLAN_UNKNOWN, passes once the file exists', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    const link = 'repo:docs/plans/x.md';
+    // Unmerged: nothing at that path in the BASE checkout yet.
+    assert.equal((await board.updateTask({ project: 'demo', id, fields: { plan: link } })).code, 'PLAN_UNKNOWN');
+    const file = writeRepoPlan('demo', 'docs/plans/x.md', '# merged plan');
+    assert.equal((await board.updateTask({ project: 'demo', id, fields: { plan: link } })).ok, true);
+    const r = await board.readTask({ project: 'demo', id, includePlan: true });
+    assert.equal(r.task.plan, link);
+    assert.equal(r.plan_path, file);
+    assert.equal(r.plan_body, '# merged plan');
+  } finally { await cleanup(root); }
+});
+
+test('read_task includePlan returns the plan body', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    writeBoardPlan('demo', 'p.md', 'line one\nline two\n');
+    await board.updateTask({ project: 'demo', id, fields: { plan: 'p.md' } });
+    const r = await board.readTask({ project: 'demo', id, includePlan: true });
+    assert.equal(r.plan_body, 'line one\nline two\n');
+    assert.equal(r.plan_truncated, false);
+    assert.equal(r.plan_missing, false);
+  } finally { await cleanup(root); }
+});
+
+test('read_task includePlan sets plan_truncated over the cap', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    const big = 'x'.repeat(65536 + 100);
+    writeBoardPlan('demo', 'big.md', big);
+    await board.updateTask({ project: 'demo', id, fields: { plan: 'big.md' } });
+    const r = await board.readTask({ project: 'demo', id, includePlan: true });
+    assert.equal(r.plan_truncated, true);
+    assert.equal(r.plan_body.length, 65536); // cut at the cap, not the file size
+    assert.equal(r.plan_missing, false);
+  } finally { await cleanup(root); }
+});
+
+test('read_task includePlan at EXACTLY the cap is not truncated', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    const exact = 'x'.repeat(65536); // PLAN_MAX_BYTES to the byte
+    writeBoardPlan('demo', 'exact.md', exact);
+    await board.updateTask({ project: 'demo', id, fields: { plan: 'exact.md' } });
+    const r = await board.readTask({ project: 'demo', id, includePlan: true });
+    // The cap is `size > PLAN_MAX_BYTES`, not `>=` — a file that exactly fills
+    // it is returned whole and NOT flagged.
+    assert.equal(r.plan_truncated, false);
+    assert.equal(r.plan_body, exact);
+  } finally { await cleanup(root); }
+});
+
+test('read_task includePlan on a missing plan file -> plan_body null + plan_missing (never a refusal)', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    const file = writeBoardPlan('demo', 'p.md', 'plan');
+    await board.updateTask({ project: 'demo', id, fields: { plan: 'p.md' } });
+    fs.rmSync(file); // e.g. the card synced in from a peer that holds the file
+    const r = await board.readTask({ project: 'demo', id, includePlan: true });
+    assert.equal(r.ok, true);
+    assert.equal(r.plan_body, null);
+    assert.equal(r.plan_missing, true);
+    assert.equal(r.plan_path, file); // still resolved — a dead link, not an error
+  } finally { await cleanup(root); }
+});
+
+test('read_task on an ungrammatical stored plan link -> plan_path null, no refusal', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    // Simulate a card synced from a newer peer: write the raw frontmatter value.
+    const t = store.readTaskById('demo', id);
+    t.plan = 'weird:thing.md';
+    store.writeTask('demo', 'triage', t);
+    const r = await board.readTask({ project: 'demo', id, includePlan: true });
+    assert.equal(r.ok, true);
+    assert.equal(r.plan_path, null);
+    assert.equal(r.plan_body, null);
+    assert.equal(r.plan_missing, true);
+  } finally { await cleanup(root); }
+});
+
+test('update_task owner off in-progress -> INVALID_STATE', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' }); // triage
+    const r = await board.updateTask({ project: 'demo', id, fields: { owner: 'sess-2' } });
+    assert.equal(r.code, 'INVALID_STATE');
+    assert.equal((await board.readTask({ project: 'demo', id })).task.owner, null);
+  } finally { await cleanup(root); }
+});
+
+test('update_task owner on an in-progress card logs owner <from> -> <to>, and null clears it', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'sess-plan' });
+
+    assert.equal((await board.updateTask({ project: 'demo', id, fields: { owner: 'sess-impl' } })).ok, true);
+    let r = await board.readTask({ project: 'demo', id });
+    assert.equal(r.task.owner, 'sess-impl');
+    assert.match(r.task.logbook.at(-1), /owner sess-plan -> sess-impl$/);
+    assert.equal(r.task.state, 'in-progress'); // no lane move
+
+    assert.equal((await board.updateTask({ project: 'demo', id, fields: { owner: null } })).ok, true);
+    r = await board.readTask({ project: 'demo', id });
+    assert.equal(r.task.owner, null);
+    assert.match(r.task.logbook.at(-1), /owner sess-impl -> none$/);
+  } finally { await cleanup(root); }
+});
+
+test('update_task owner with the same value logs nothing', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'sess-1' });
+    const before = (await board.readTask({ project: 'demo', id })).task.logbook.length;
+    assert.equal((await board.updateTask({ project: 'demo', id, fields: { owner: 'sess-1' } })).ok, true);
+    const after = (await board.readTask({ project: 'demo', id })).task.logbook;
+    assert.equal(after.length, before);
+    assert.equal(after.filter((l) => l.includes('owner ')).length, 0);
+  } finally { await cleanup(root); }
+});
+
+test('update_task owner with whitespace or an empty value -> INVALID_STATE', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'sess-1' });
+    for (const v of ['', 'a b', 'a\nowner: b', 7]) {
+      assert.equal((await board.updateTask({ project: 'demo', id, fields: { owner: v } })).code, 'INVALID_STATE', `owner ${JSON.stringify(v)} refused`);
+    }
+    assert.equal((await board.readTask({ project: 'demo', id })).task.owner, 'sess-1'); // untouched
+  } finally { await cleanup(root); }
+});
+
+test('update_task: a refused plan leaves the other fields unapplied (validation precedes mutation)', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 'orig' });
+    const r = await board.updateTask({ project: 'demo', id, fields: { title: 'renamed', plan: 'board:ghost.md' } });
+    assert.equal(r.code, 'PLAN_UNKNOWN');
+    assert.equal((await board.readTask({ project: 'demo', id })).task.title, 'orig');
+  } finally { await cleanup(root); }
+});
+
+test('delete_task removes a board: plan file and never a repo: one', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const a = await board.fileTask({ project: 'demo', title: 'board-planned' });
+    const boardPlan = writeBoardPlan('demo', 'a.md', 'board plan');
+    await board.updateTask({ project: 'demo', id: a.id, fields: { plan: 'board:a.md' } });
+
+    const b = await board.fileTask({ project: 'demo', title: 'repo-planned' });
+    const repoPlan = writeRepoPlan('demo', 'docs/b.md', 'repo plan');
+    await board.updateTask({ project: 'demo', id: b.id, fields: { plan: 'repo:docs/b.md' } });
+
+    assert.equal((await board.deleteTask({ project: 'demo', id: a.id })).ok, true);
+    assert.equal(fs.existsSync(boardPlan), false); // the card's own plan file goes with it
+
+    assert.equal((await board.deleteTask({ project: 'demo', id: b.id })).ok, true);
+    assert.equal(fs.existsSync(repoPlan), true); // a source-tree file is NEVER touched
+  } finally { await cleanup(root); }
+});
+
+test('delete_task with an already-missing board: plan file still succeeds', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    const file = writeBoardPlan('demo', 'p.md', 'plan');
+    await board.updateTask({ project: 'demo', id, fields: { plan: 'p.md' } });
+    fs.rmSync(file);
+    assert.equal((await board.deleteTask({ project: 'demo', id })).ok, true);
+  } finally { await cleanup(root); }
+});
+
+test('list_tasks summary carries the plan link', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const a = await board.fileTask({ project: 'demo', title: 'planned' });
+    await board.fileTask({ project: 'demo', title: 'unplanned' });
+    writeBoardPlan('demo', 'p.md', 'plan');
+    await board.updateTask({ project: 'demo', id: a.id, fields: { plan: 'p.md' } });
+    const { tasks } = await board.listTasks({ project: 'demo' });
+    const byId = Object.fromEntries(tasks.map((t) => [t.id, t]));
+    assert.equal(byId[a.id].plan, 'board:p.md');
+    assert.equal(tasks.filter((t) => !t.plan).length, 1);
   } finally { await cleanup(root); }
 });
