@@ -17,7 +17,8 @@ Env this plugin reads: `PORT`, `HOST` (`server.js`), `PROJECTS_ROOT` (`src/paths
 | `src/board.js` | **Single source of truth** — all board logic (transitions, id assignment, validation, log stamping, refusal codes). The GUI seam. Exports `ALLOWED_TRANSITIONS` read-only for the GUI's legal-move rendering. |
 | `src/store.js` | File store: state dirs, atomic writes, moves, id sequence, epic files. **No git.** |
 | `src/taskfile.js` | Task markdown ⇄ object (frontmatter + Goal/Acceptance/Logbook). |
-| `src/paths.js` | Resolve `PROJECTS_ROOT` → `.conduct/kanban/...` paths. Ordered `STATES`. |
+| `src/paths.js` | Resolve `PROJECTS_ROOT` → `.conduct/kanban/...` paths (incl. each scheme's plan base dir). Ordered `STATES`. |
+| `src/planLink.js` | Plan-link grammar (`board:`/`repo:`/bare) + the one containment guard. Pure — no fs; `board.js` owns stat-ing and every refusal shape. |
 | `src/projects.js` | `validateProject` — shape check + live list via `CONDUCTOR_URL/api/projects` (scan fallback standalone). `listProjects` — same source, for the GUI selector. |
 | `src/mutex.js` | Per-project async mutex — the one serialized write path. |
 | `src/mcp.js` | Thin tool dispatch → `board.js`; MCP envelope. |
@@ -37,6 +38,7 @@ Board DATA lives in the conductor's tree, not this repo:
   projects/<project>/
     triage/ backlog/ todo/ in-progress/ done/  # one <id>.md per task
     epics/<slug>.md                            # project-scoped epic; goal only
+    plans/<rel>                                # base for a card's `board:` plan link
 ```
 
 - **No git writes from the plugin** (decision — see `.wiki/architecture/file-store-layout.md`).
@@ -60,8 +62,14 @@ for a scope and merges it in; converging both machines means clicking Sync on ea
 itself is grow-only: it unions by `uid` and never deletes a card it doesn't recognize. `delete_task`
 (a plain hard delete, not a sync-aware tombstone) is a real gap this leaves: a task deleted on one
 machine can reappear the next time that machine pulls from a peer that still holds it. Accepted for
-now (YAGNI — no caller needs cross-machine delete propagation); revisit if that changes. Details +
-rationale: `.wiki/architecture/cross-instance-sync.md`.
+now (YAGNI — no caller needs cross-machine delete propagation); revisit if that changes. A second,
+smaller gap of the same kind: a card's `plan` **link** is ordinary frontmatter and rides
+export/pull under whole-card LWW like `owner`/`commit`, but plan **bodies** are not shipped by
+`exportBoard`/`syncPull`, so a synced card can carry a dead link. It degrades — `read_task` returns
+`plan_missing`, `delete_task`'s unlink is a no-op, the GUI shows "(file not found)", and re-setting
+that same link on this machine refuses `PLAN_UNKNOWN` — but never crashes. Also accepted (YAGNI);
+not fixed. Details + rationale: `.wiki/architecture/cross-instance-sync.md`,
+`.wiki/gotchas/plan-link-and-sync-gap.md`.
 
 - **Hidden identity.** Cards carry three sync-only frontmatter fields (`src/taskfile.js`):
   `uid` (the true match key — random `crypto.randomUUID` for new cards), `updated` (UTC ISO-8601

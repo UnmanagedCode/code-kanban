@@ -38,6 +38,17 @@ export function epicsDir(project) {
   return path.join(projectDir(project), 'epics');
 }
 
+// Base dir for a `board:` plan link (see src/planLink.js).
+export function plansDir(project) {
+  return path.join(projectDir(project), 'plans');
+}
+
+// Base dir for a `repo:` plan link: the project's BASE checkout, never a
+// worktree — a repo: plan only resolves once it is merged.
+export function projectRepoDir(project) {
+  return path.join(projectsRoot(), project);
+}
+
 // Cross-project epics live ABOVE the per-project layout: one <slug>.md per epic,
 // each naming its member projects in frontmatter. A per-project epic and a
 // cross-project epic never share a slug in the same project (board.js guards it).

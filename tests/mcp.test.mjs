@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { freshRoot, cleanup } from './_helpers.mjs';
+import { plansDir } from '../src/paths.js';
 import * as mcp from '../src/mcp.js';
 import { _setProjectFetcher } from '../src/projects.js';
 
@@ -111,5 +114,48 @@ test('move_task forwards an explicit commit arg through to the stamped task', as
 
     const r = await mcp.handle({ tool: 'read_task', arguments: { project: 'demo', id } });
     assert.equal(r.body.result.task.commit, 'abc123');
+  } finally { await cleanup(root); }
+});
+
+test('read_task includePlan returns the plan body as a RAW text block, metadata in {meta}', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const f = await mcp.handle({ tool: 'file_task', arguments: { project: 'demo', title: 'planned' } });
+    const id = f.body.result.id;
+    const file = path.join(plansDir('demo'), 'p.md');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '# plan\n\nmulti-line prose\n');
+    await mcp.handle({ tool: 'update_task', arguments: { project: 'demo', id, fields: { plan: 'p.md' } } });
+
+    const r = await mcp.handle({ tool: 'read_task', arguments: { project: 'demo', id, includePlan: true } });
+    // The body rides the host's raw-text channel ({meta,text}), NOT {result} —
+    // so it is never JSON-escaped into one line.
+    assert.equal(r.body.result, undefined);
+    assert.equal(r.body.text, '# plan\n\nmulti-line prose\n');
+    assert.equal(r.body.meta.ok, true);
+    assert.equal('plan_body' in r.body.meta, false);
+    assert.equal(r.body.meta.plan_path, file);
+    assert.equal(r.body.meta.plan_truncated, false);
+    assert.equal(r.body.meta.plan_missing, false);
+    assert.equal(r.body.meta.task.plan, 'board:p.md');
+  } finally { await cleanup(root); }
+});
+
+test('read_task without a readable plan body stays on the plain {result} path', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const f = await mcp.handle({ tool: 'file_task', arguments: { project: 'demo', title: 'unplanned' } });
+    const id = f.body.result.id;
+    const plain = await mcp.handle({ tool: 'read_task', arguments: { project: 'demo', id } });
+    assert.equal(plain.body.result.ok, true);
+    assert.equal(plain.body.text, undefined);
+    // includePlan on a card with no link: plan_body is null (not a string), so
+    // there is no raw block to emit.
+    const asked = await mcp.handle({ tool: 'read_task', arguments: { project: 'demo', id, includePlan: true } });
+    assert.equal(asked.body.text, undefined);
+    assert.equal(asked.body.result.plan_body, null);
+    assert.equal(asked.body.result.plan_missing, false);
   } finally { await cleanup(root); }
 });

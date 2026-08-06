@@ -6,6 +6,10 @@
 //   2. a card's detail panel (Goal / Acceptance / Logbook + move + edit)
 //   3. the board after a legal move (status surfaces the move)
 //   4. a landed card's detail panel showing the stamped Commit field
+//   5. the project selection surviving a reload (localStorage restore)
+//   6. the plan badge on a card carrying a plan link
+//   7. that card's detail panel showing the Plan section (link + file body)
+//   8. the board with the "Has plan" filter on (only planned cards remain)
 // Reuses withPage/waitForServer from the shared code-playwright harness — no
 // chromium/launch logic here. Run: node harness/playwright/snap-gui.mjs
 import path from 'node:path';
@@ -13,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import fs from 'node:fs/promises';
 import { withPage, waitForServer } from '../../../code-playwright/browser.mjs';
 import { bootKanban } from './boot-kanban.mjs';
+import { plansDir } from '../../src/paths.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = path.join(__dirname, 'screenshots');
@@ -74,6 +79,17 @@ async function seed(base, projectsRoot) {
   await call('/api/epics', { method: 'POST', body: { slug: 'platform', title: 'Platform', goal: 'Shared infra across services', projects: [PROJECT, PROJECT2] } }, 'cross epic platform');
   await call(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Shared logging', goal: 'One logger', epic: 'platform' } }, 'file demo platform task');
   await call(`/api/board/${PROJECT2}/tasks`, { method: 'POST', body: { title: 'Config service', goal: 'Central config', epic: 'platform' } }, 'file web platform task');
+
+  // A plan link on exactly ONE card (c, which stays put in backlog): the other
+  // cards are the witness that the badge and the "Has plan" filter really
+  // discriminate, rather than matching everything. The plan FILE must exist
+  // before update_task will accept the link (PLAN_UNKNOWN otherwise) — the
+  // board: base is <kanbanRoot>/projects/<project>/plans/.
+  const planFile = path.join(plansDir(PROJECT), `${c.id}.md`);
+  await fs.mkdir(path.dirname(planFile), { recursive: true });
+  await fs.writeFile(planFile, `# Plan — build the search index\n\n1. Tokenize documents.\n2. Build the inverted index.\n3. Wire the query path.\n`);
+  await call(`/api/board/${PROJECT}/tasks/${c.id}`, { method: 'PATCH', body: { plan: `${c.id}.md` } }, 'plan link on c');
+
   return { a, b, c, d };
 }
 
@@ -83,6 +99,10 @@ async function main() {
   try {
     await waitForServer(srv.url);
     const projectsRoot = srv.sandbox.dirs.PROJECTS_ROOT;
+    // paths.js reads PROJECTS_ROOT at call time; point THIS process at the same
+    // sandbox the server got, so plansDir() resolves the child's board dirs
+    // instead of hardcoding the `.conduct/kanban/...` layout here.
+    process.env.PROJECTS_ROOT = projectsRoot;
     const seeded = await seed(srv.url, projectsRoot);
 
     await withPage(async (page) => {
@@ -175,7 +195,36 @@ async function main() {
       await page.waitForSelector('.card', { timeout: 10_000 });
       await page.screenshot({ path: path.join(SHOTS, 'gui-5-persisted-selection.png'), fullPage: true });
       console.log(`snapped persisted-selection after reload (restored non-default ${persistProj})`);
-    }, { headless: true, viewport: { width: 1440, height: 900 } });
+
+      // 6. Plan badge: back on demo, exactly one card carries a plan link.
+      await page.selectOption('#project-select', PROJECT);
+      await page.waitForFunction(() => document.querySelector('#project-select')?.value === 'demo', { timeout: 10_000 });
+      await page.waitForSelector('.badge.plan', { timeout: 10_000 });
+      const planBadges = await page.locator('.badge.plan').count();
+      if (planBadges !== 1) throw new Error(`expected exactly 1 plan badge, saw ${planBadges}`);
+      await page.screenshot({ path: path.join(SHOTS, 'gui-6-plan-badge.png'), fullPage: true });
+      console.log('snapped plan badge');
+
+      // 7. Plan detail: the section renders the link AND the file's body, which
+      //    only arrives via the detail fetch's ?includePlan=1.
+      await page.click(`.card:has(.card-id:text-is("${seeded.c.id}"))`);
+      await page.waitForSelector('#detail-overlay:not(.hidden) .detail-title', { timeout: 10_000 });
+      await page.waitForSelector('.detail-section:has-text("Plan")', { timeout: 10_000 });
+      await page.waitForSelector('.detail-section:has-text("Build the inverted index")', { timeout: 10_000 });
+      await page.screenshot({ path: path.join(SHOTS, 'gui-7-plan-detail.png'), fullPage: true });
+      console.log('snapped plan detail (link + body)');
+      await page.click('#detail-overlay .overlay-close');
+      await page.waitForSelector('#detail-overlay', { state: 'hidden', timeout: 10_000 });
+
+      // 8. Has-plan filter: ticking it must drop every card WITHOUT a plan —
+      //    the unplanned cards seeded above are the witness that it filters.
+      const before = await page.locator('.card').count();
+      await page.check('#plan-filter');
+      await page.waitForFunction(() => document.querySelectorAll('.card').length === 1, { timeout: 10_000 });
+      if (before <= 1) throw new Error(`filter proves nothing: only ${before} card(s) before filtering`);
+      await page.screenshot({ path: path.join(SHOTS, 'gui-8-plan-filter.png'), fullPage: true });
+      console.log(`snapped has-plan filter (${before} cards -> 1)`);
+    },{ headless: true, viewport: { width: 1440, height: 900 } });
   } finally {
     await srv.close();
   }

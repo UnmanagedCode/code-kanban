@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import { freshRoot, cleanup } from './_helpers.mjs';
+import { plansDir } from '../src/paths.js';
 import * as board from '../src/board.js';
 import * as store from '../src/store.js';
 import * as taskfile from '../src/taskfile.js';
@@ -20,6 +22,7 @@ function card(o) {
     created: o.created ?? '2026-01-01T00:00:00.000Z',
     updated: o.updated ?? o.created ?? '2026-01-01T00:00:00.000Z',
     node: o.node ?? 'peer-node', owner: o.owner ?? null, commit: o.commit ?? null,
+    plan: o.plan ?? null,
     depends_on: o.depends_on ?? [], goal: o.goal ?? '', acceptance: o.acceptance ?? [],
     logbook: o.logbook ?? [], state: o.state ?? 'triage',
   };
@@ -570,4 +573,36 @@ test('bidirectional pull converges both boards (union + LWW + tiebreak)', async 
     await cleanup(rootA);
     await cleanup(rootB);
   }
+});
+
+test('a plan link survives export -> merge as ordinary frontmatter (whole-card LWW)', async () => {
+  await withRoot(async () => {
+    // Local card is OLDER, so the peer's version (carrying the plan link) wins.
+    seedLocal('alpha', { id: '2026-0001', uid: 'u-P', title: 'Planned', updated: '2026-01-01T00:00:00.000Z' });
+    serveDump({
+      alpha: [card({
+        id: '2026-0001', uid: 'u-P', title: 'Planned',
+        updated: '2026-03-03T00:00:00.000Z', plan: 'board:2026-0001.md',
+      })],
+    });
+    const r = await pull('project', 'alpha');
+    assert.equal(r.summary.updated, 1);
+    const got = await board.readTask({ project: 'alpha', id: '2026-0001' });
+    assert.equal(got.task.plan, 'board:2026-0001.md');
+    // The BODY is not shipped by sync, so the link is dead here — a documented
+    // gap that degrades to plan_missing, never a crash.
+    assert.equal(got.plan_path, path.join(plansDir('alpha'), '2026-0001.md'));
+    const withBody = await board.readTask({ project: 'alpha', id: '2026-0001', includePlan: true });
+    assert.equal(withBody.ok, true);
+    assert.equal(withBody.plan_body, null);
+    assert.equal(withBody.plan_missing, true);
+  });
+});
+
+test('exportBoard carries a card plan link on the wire', async () => {
+  await withRoot(async () => {
+    seedLocal('alpha', { id: '2026-0001', uid: 'u-L', title: 'L', plan: 'repo:docs/p.md' });
+    const dump = await board.exportBoard({ scope: 'project', project: 'alpha' });
+    assert.equal(dump.projects.alpha[0].plan, 'repo:docs/p.md');
+  });
 });

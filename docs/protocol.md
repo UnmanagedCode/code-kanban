@@ -8,6 +8,13 @@ to `POST /api/mcp`:
 - **Request body:** `{ tool, arguments, caller:{ sessionId, project } }`.
 - **Response:** HTTP **200 for every well-formed call**, body `{ result: <any> }` on success or
   `{ error: "<msg>" }` on an envelope failure. Non-200 is a transport-level failure.
+- **Raw-text channel (opt-in, additive):** a success body may instead be `{ meta, text }` — the
+  host emits `meta` as one compact-JSON block plus each `text` as a **raw, unescaped** content
+  block after it (code-conductor `src/plugins/mcpBridge.ts` → `src/mcp/content.ts` `textPayload`).
+  Only `read_task` uses it, and only when `includePlan` actually read a body: `plan_body` becomes
+  the raw block, everything else (incl. `plan_path`/`plan_truncated`/`plan_missing`) stays in
+  `meta`. No plan body read → the plain `{result}` path, `plan_body: null` included. `text` may be
+  a list of strings (one raw block each, in order), which is how further bodies would join it.
 - Missing/empty `tool` → **400** `{error}`; unknown tool name → 200 `{error}`.
 - `caller.sessionId` may be `null` when the host can't resolve the caller.
 
@@ -23,7 +30,8 @@ So a refusal travels as `{ result: { ok:false, code, reason } }` at HTTP 200 —
 result the conductor relays to the model, **not** an `{error}`. `{error}` is reserved for a
 malformed envelope or an unexpected exception.
 
-**Refusal codes:** `PROJECT_UNKNOWN`, `TASK_UNKNOWN`, `EPIC_UNKNOWN`, `EPIC_CONFLICT`, `INVALID_STATE`.
+**Refusal codes:** `PROJECT_UNKNOWN`, `TASK_UNKNOWN`, `EPIC_UNKNOWN`, `EPIC_CONFLICT`, `INVALID_STATE`,
+`PLAN_UNKNOWN`.
 
 ## Tool signatures
 
@@ -38,7 +46,22 @@ malformed envelope or an unexpected exception.
     → `INVALID_STATE`. Card must be `in-progress`; nonexistent or not `in-progress` →
     `TASK_UNKNOWN`. Logged with `conductor` attribution.
 - `list_tasks({project, state?, epic?}) → {ok, tasks:[summary]}`.
-- `read_task({project, id, logTail?}) → {ok, task}`.
+- `read_task({project, id, logTail?, includePlan?}) → {ok, task, plan_path[, plan_body, plan_truncated, plan_missing]}` —
+  the plan fields are **top-level** on the envelope, never inside `task` (which mirrors frontmatter
+  1:1). `plan_path` (the resolved absolute path) is returned **always**, `includePlan` or not; it is
+  `null` when the card has no link or the stored link is ungrammatical (e.g. synced from a newer
+  peer). `includePlan: true` (default `false`) adds `plan_body` — the plan file read up to a fixed
+  **64 KiB** cap (`PLAN_MAX_BYTES` in `src/board.js`; not caller-settable) — plus
+  `plan_truncated` (file larger than the cap) and `plan_missing` (a link exists but its file is
+  absent/unreadable, incl. a symlink pointing out of its base dir). A dead link is **never a
+  refusal**: `plan_body: null, plan_missing: true`. No link at all → `plan_body: null,
+  plan_missing: false`.
+
+  **Over MCP the result is not one JSON object.** When a plan body was read it is a compact-JSON
+  **metadata block** (`{ok, task, plan_path, plan_truncated, plan_missing}` — no `plan_body`)
+  followed by a **raw, unescaped text block** carrying the plan verbatim, in that order — the shape
+  `project_read` uses. Over the GUI's HTTP route it stays a single JSON object with `plan_body` as
+  a field (`src/routes.js` delegates to `board.js`, which is unchanged; only `src/mcp.js` splits).
 - `read_progress({project, id, limit?}) → {ok, entries:[…], total}` — most-recent first.
 - `move_task({project, id, to, owner?, commit?}) → {ok, from, to}`. Legal transitions:
   `triage→backlog`, `triage→todo`, `backlog→todo`, `todo→in-progress`, `in-progress→done`,
@@ -51,18 +74,33 @@ malformed envelope or an unexpected exception.
   resolve either way is not an error — the move still succeeds and `commit` is simply left unset.
   A re-land (`done→in-progress→done`) re-runs this resolution: a fresh sha overwrites the prior
   one, but an unresolvable re-land leaves the previously-stamped `commit` untouched.
-- `update_task({project, id, fields}) → {ok}` — `fields` ⊆ `{title, goal, epic, priority, depends_on}`; other keys ignored. `fields.epic` must exist → else `EPIC_UNKNOWN`.
+- `update_task({project, id, fields}) → {ok}` — `fields` ⊆ `{title, goal, epic, priority, depends_on, plan, owner}`; other keys ignored. `fields.epic` must exist → else `EPIC_UNKNOWN`. Every field validates **before** any mutation, so a refusal leaves the card untouched.
+  - **`plan`** — a **link to a plan file**, never the plan text. Grammar (defined here, once):
+    `board:<rel>` resolves under `<kanbanRoot>/projects/<project>/plans/`; `repo:<rel>` resolves
+    under `<PROJECTS_ROOT>/<project>/` — the **base checkout**, never a worktree, so a `repo:` link
+    only resolves once the plan is merged; a **bare** `<rel>` means `board:` and is stored
+    normalised to the explicit `board:<rel>` form. Refused `INVALID_STATE`: an empty value, a
+    non-string, an embedded newline (frontmatter is one verbatim line), any other scheme
+    (`file:`, `http:`, `C:\…`), an **absolute** path (breaks cross-instance sync), and `../`
+    escaping the base. Refused `PLAN_UNKNOWN` when the link is grammatical but resolves to no
+    regular file inside its base (incl. via a symlink out of it). `plan: null` clears it.
+  - **`owner`** — only settable on an **`in-progress`** card → else `INVALID_STATE` (a plan-worker →
+    implementer handoff needs no lane move). Must be a non-empty single token with no whitespace;
+    `null` clears it. A real change stamps a logbook line `owner <from> -> <to>` (`none` for an
+    absent side); a no-op set logs nothing.
 - `create_epic({project?, projects?, slug, title, goal?}) → {ok}` — `slug` matches `^[a-z0-9._-]+$`; idempotent upsert (re-creating refreshes title/goal, preserves `created`; for a cross-project epic it also **replaces the member `projects` list** — membership is mutable). Give **exactly one** of `project` (project-scoped) or `projects` (a cross-project epic spanning ≥2 members) → else `INVALID_STATE`. A slug may not be both a cross-project epic and a per-project epic in one of its members → `EPIC_CONFLICT` (guarded in both create orders).
 - `list_epics({project}) → {ok, epics:[{slug, title, rollup, projects}]}` — the project's own epics (`projects:null`) plus cross-project epics spanning it (`projects:[…]`, `rollup` aggregated over all members).
 - `read_epic({project?, slug}) → {ok, epic:{slug,title,goal,rollup[,projects]}, tasks:[summary]}` — with `project`, a project-scoped epic resolves first, else a cross-project epic covering it. Omit `project` to read a cross-project epic by slug; its `rollup` and `tasks` aggregate across all member projects and `epic.projects` lists them.
-- `delete_task({project, id}) → {ok}` — permanently removes the task's file; unknown id → `TASK_UNKNOWN`. Irreversible and not sync-aware: see "Cross-instance sync" in `docs/architecture.md`.
+- `delete_task({project, id}) → {ok}` — permanently removes the task's file; unknown id → `TASK_UNKNOWN`. Also best-effort removes the card's plan file **when the link is `board:`** — a `repo:` plan is a source-tree file and is never touched; a failed unlink leaves an orphan, never a refusal. Irreversible and not sync-aware: see "Cross-instance sync" in `docs/architecture.md`.
 
-A `summary` is `{id, title, state, project, epic, priority, owner, depends_on, created}`. A `rollup`
+A `summary` is `{id, title, state, project, epic, priority, owner, depends_on, created, plan}`
+(`plan` is the link, or `null`). A `rollup`
 is a per-state count object over `triage/backlog/todo/in-progress/done`. `file_task`/`update_task`
 accept an `epic` slug that resolves to a per-project epic in the task's project **or** a
 cross-project epic covering it → else `EPIC_UNKNOWN`. The full task object (from `read_task`)
 additionally carries an optional `commit` field, set once the task lands; `commit` is not in
-`update_task`'s `UPDATABLE` set — it's stamped only by `move_task`.
+`update_task`'s `UPDATABLE` set — it's stamped only by `move_task`. `plan`, by contrast, **is** in
+`UPDATABLE` — it is the one card field a caller sets directly.
 
 ## Manifest / schema constraints
 
@@ -89,9 +127,9 @@ through unchanged as the HTTP body.
 | `GET /api/projects` | `projects.listProjects` | — | `{projects:[name]}` (502 `{error}` if the catalog fetch throws) |
 | `GET /api/board/meta` | `STATES` + `ALLOWED_TRANSITIONS` | — | `{states:[…], transitions:["from>to",…]}` |
 | `GET /api/board/:project/tasks` | `board.listTasks` | `?state`, `?epic` | `{ok, tasks:[summary]}` |
-| `GET /api/board/:project/tasks/:id` | `board.readTask` | — | `{ok, task}` (full: goal, acceptance, logbook) |
+| `GET /api/board/:project/tasks/:id` | `board.readTask` | `?includePlan=1\|true` | `{ok, task, plan_path[, plan_body, plan_truncated, plan_missing]}` (full: goal, acceptance, logbook). Any other `includePlan` value is falsy. The GUI always sends `includePlan=1` and reads `plan_body` as a field (the raw-text channel is MCP-only). |
 | `POST /api/board/:project/tasks` | `board.fileTask` | `{title, goal?, acceptance?, epic?, depends_on?}` | `{ok, id}` (lands in `triage`) |
-| `PATCH /api/board/:project/tasks/:id` | `board.updateTask` | body **is** `fields` ⊆ `{title, goal, epic, priority, depends_on}` | `{ok}` |
+| `PATCH /api/board/:project/tasks/:id` | `board.updateTask` | body **is** `fields` ⊆ `{title, goal, epic, priority, depends_on, plan, owner}` | `{ok}` (same refusals as the tool, incl. `PLAN_UNKNOWN`) |
 | `POST /api/board/:project/tasks/:id/move` | `board.moveTask` | `{to, owner?, commit?}` | `{ok, from, to}` |
 | `GET /api/board/:project/epics` | `board.listEpics` | — | `{ok, epics:[{slug, title, rollup, projects}]}` (incl. cross-project epics spanning the project) |
 | `GET /api/board/:project/epics/:slug` | `board.readEpic` | — | `{ok, epic, tasks:[summary]}` (resolves a cross-project epic the project belongs to) |

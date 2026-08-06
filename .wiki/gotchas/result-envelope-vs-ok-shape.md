@@ -16,3 +16,16 @@ should see and reason about, not a transport error.
 `{error}` is reserved for a malformed envelope (missing/unknown `tool`) or an unexpected
 exception (`src/mcp.js`). If you ever make `board.js` throw for a refusal, it becomes an
 `{error}` and the conductor will treat it as a failure — don't.
+
+## A third shape: `{meta, text}` — raw, unescaped text blocks
+
+The host's bridge also accepts `{meta, text}` **instead of** `{result}` on success (`text` wins if
+both are sent): it emits `meta` as one compact-JSON content block plus each `text` as a **raw,
+unescaped** block after it, rather than JSON-escaping a multi-KB document into one line. Evidence,
+not folklore: code-conductor `src/plugins/mcpBridge.ts` (the `rec.text !== undefined` branch) →
+`src/mcp/content.ts`'s `textPayload`.
+
+Only `read_task` uses it, and only when `includePlan` actually read a plan body (`shapeBody` in
+`src/mcp.js`). Two consequences: a tool on this path has **no `result` key** at all, so anything
+reading `body.result` must handle its absence; and the channel is **MCP-only** — the GUI's HTTP
+routes bypass `mcp.js` and keep reading `plan_body` as a plain field.

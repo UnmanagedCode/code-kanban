@@ -10,8 +10,10 @@
 // mutator runs inside withLock(project, ...) so writes serialize on one path.
 
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import net from 'node:net';
 import { STATES } from './paths.js';
+import { resolvePlanLink, planBaseDir, isContained } from './planLink.js';
 import { validateProject, listProjects } from './projects.js';
 import { withLock } from './mutex.js';
 import * as store from './store.js';
@@ -52,6 +54,65 @@ function sanitizeCommit(commit) {
   if (typeof commit !== 'string') return '';
   const firstLine = commit.split('\n')[0].trim();
   return /\s/.test(firstLine) ? '' : firstLine;
+}
+
+// ---- plan links ----
+//
+// A card's `plan` is a LINK to a plan file (grammar + containment in
+// src/planLink.js); the body is never stored on the card and never carried
+// through the conductor's context. Every refusal shape lives here.
+
+// Hard cap on a plan body served by read_task's includePlan. Deliberately
+// tighter than project_read's 256 KiB — plan prose lands in an agent's context.
+// A constant, not a parameter: nothing needs to tune it.
+const PLAN_MAX_BYTES = 65536;
+
+// The absolute path of a resolved link IF it is a regular file that really sits
+// inside its base dir, else null. The realpath re-check closes the symlink hole:
+// plans/ is worker-writable, so a symlink out of it would otherwise be an
+// arbitrary-file read once includePlan exists.
+function safePlanFile(project, resolved) {
+  try {
+    if (!fs.statSync(resolved.path).isFile()) return null;
+    const realBase = fs.realpathSync(planBaseDir(project, resolved.scheme));
+    const real = fs.realpathSync(resolved.path);
+    return isContained(realBase, real) ? real : null;
+  } catch {
+    return null;
+  }
+}
+
+// Resolve + stat a plan link for a SET. -> {link, scheme, path} | a fail().
+function resolvePlanForSet(project, link) {
+  const resolved = resolvePlanLink(project, link);
+  if (resolved.error) return fail(resolved.error.code, resolved.error.reason);
+  if (!safePlanFile(project, resolved)) {
+    return fail('PLAN_UNKNOWN', `no plan file at ${resolved.link} (resolved to ${resolved.path})`);
+  }
+  return resolved;
+}
+
+// Bounded read of a plan body -> {body, truncated} | null (unreadable).
+// All fs in this repo is sync; read at most PLAN_MAX_BYTES.
+function readPlanBody(file) {
+  let fd;
+  try {
+    const size = fs.statSync(file).size;
+    const len = Math.min(size, PLAN_MAX_BYTES);
+    const buf = Buffer.alloc(len);
+    fd = fs.openSync(file, 'r');
+    let off = 0;
+    while (off < len) {
+      const n = fs.readSync(fd, buf, off, len - off, off);
+      if (n <= 0) break;
+      off += n;
+    }
+    return { body: buf.subarray(0, off).toString('utf8'), truncated: size > PLAN_MAX_BYTES };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
 }
 
 // Legal state transitions. The forward path is the intended lifecycle; the extra
@@ -104,7 +165,7 @@ function summary(t) {
   return {
     id: t.id, title: t.title, state: t.state, project: t.project, epic: t.epic ?? null,
     priority: t.priority, owner: t.owner ?? null, depends_on: t.depends_on,
-    created: t.created,
+    created: t.created, plan: t.plan ?? null,
   };
 }
 
@@ -157,7 +218,19 @@ export async function deleteTask({ project, id } = {}) {
   const bad = await requireProject(project);
   if (bad) return bad;
   return withLock(project, () => {
+    // Read the card BEFORE deleting so the plan link is still available; the
+    // card file is the authoritative op and goes first.
+    const task = store.readTaskById(project, id);
     if (!store.deleteTask(project, id)) return fail('TASK_UNKNOWN', `unknown task: ${id}`);
+    // Best-effort: a board: plan file belongs to the card, so it goes too. A
+    // repo: plan is a source-tree file and is NEVER touched. A failed unlink
+    // leaves a harmless orphan and must not fail the delete.
+    if (task?.plan) {
+      const resolved = resolvePlanLink(project, task.plan);
+      if (!resolved.error && resolved.scheme === 'board') {
+        try { fs.rmSync(resolved.path, { force: true }); } catch { /* orphan, not a failure */ }
+      }
+    }
     return { ok: true };
   });
 }
@@ -236,7 +309,13 @@ export async function listTasks({ project, state, epic } = {}) {
   return { ok: true, tasks: sortTasks(tasks).map(summary) };
 }
 
-export async function readTask({ project, id, logTail } = {}) {
+// Envelope: {ok, task, plan_path, plan_body?, plan_truncated?, plan_missing?}.
+// The plan fields sit TOP-LEVEL (never inside `task`, which mirrors frontmatter
+// 1:1). `plan_path` is returned always — null when there is no link or the
+// stored link is ungrammatical (e.g. arrived by sync from a newer peer). A plan
+// file that is missing/unreadable is NEVER a refusal: plan_body:null +
+// plan_missing:true. plan_missing is false when the card simply has no link.
+export async function readTask({ project, id, logTail, includePlan } = {}) {
   const bad = await requireProject(project);
   if (bad) return bad;
   const task = store.readTaskById(project, id);
@@ -247,7 +326,17 @@ export async function readTask({ project, id, logTail } = {}) {
     task.logbook = task.logbook.slice(Math.max(0, task.logbook.length - logTail));
   }
   delete task._mtimeMs;
-  return { ok: true, task: stripHidden(task) };
+  const resolved = task.plan ? resolvePlanLink(project, task.plan) : null;
+  const ok = resolved && !resolved.error ? resolved : null;
+  const out = { ok: true, task: stripHidden(task), plan_path: ok ? ok.path : null };
+  if (includePlan) {
+    const file = ok ? safePlanFile(project, ok) : null;
+    const read = file ? readPlanBody(file) : null;
+    out.plan_body = read ? read.body : null;
+    out.plan_truncated = read ? read.truncated : false;
+    out.plan_missing = task.plan ? read === null : false;
+  }
+  return out;
 }
 
 export async function readProgress({ project, id, limit } = {}) {
@@ -303,7 +392,7 @@ export async function moveTask({ project, id, to, owner, commit } = {}) {
   });
 }
 
-const UPDATABLE = ['title', 'goal', 'epic', 'priority', 'depends_on'];
+const UPDATABLE = ['title', 'goal', 'epic', 'priority', 'depends_on', 'plan', 'owner'];
 
 export async function updateTask({ project, id, fields } = {}) {
   const bad = await requireProject(project);
@@ -315,11 +404,44 @@ export async function updateTask({ project, id, fields } = {}) {
     if (fields.epic && !epicVisibleIn(project, fields.epic)) {
       return fail('EPIC_UNKNOWN', `unknown epic: ${fields.epic}`);
     }
+    // plan/owner validate BEFORE any mutation (like the epic check above), so a
+    // refused field can never leave a half-applied card behind.
+    let planNext;
+    if ('plan' in fields) {
+      if (fields.plan === null) planNext = null;
+      else {
+        const resolved = resolvePlanForSet(project, fields.plan);
+        if (resolved.ok === false) return resolved;
+        planNext = resolved.link; // the NORMALISED link (a bare path gains board:)
+      }
+    }
+    let ownerNext;
+    if ('owner' in fields) {
+      if (task.state !== 'in-progress') {
+        return fail('INVALID_STATE', 'owner can only be set on an in-progress card');
+      }
+      if (fields.owner === null) ownerNext = null;
+      else if (typeof fields.owner !== 'string' || fields.owner === '' || /\s/.test(fields.owner)) {
+        // A session id is one clean token — same reasoning as sanitizeCommit
+        // (the value lands verbatim on a one-line frontmatter key).
+        return fail('INVALID_STATE', 'owner must be a non-empty session id with no whitespace');
+      } else ownerNext = fields.owner;
+    }
     for (const key of UPDATABLE) {
-      if (!(key in fields)) continue;
+      if (!(key in fields) || key === 'plan' || key === 'owner') continue;
       if (key === 'depends_on') task.depends_on = Array.isArray(fields.depends_on) ? fields.depends_on : [];
       else if (key === 'priority') task.priority = Number.parseInt(fields.priority, 10) || 0;
       else task[key] = fields[key];
+    }
+    if ('plan' in fields) task.plan = planNext;
+    if ('owner' in fields) {
+      const prev = task.owner ?? null;
+      // Only a real change is logged (a no-op set stamps nothing) — the line is
+      // the handoff audit trail, mirroring moveTask's `moved <from> -> <to>`.
+      if (prev !== ownerNext) {
+        task.owner = ownerNext;
+        task.logbook.push(logLine(nowIso(), null, `owner ${prev ?? 'none'} -> ${ownerNext ?? 'none'}`));
+      }
     }
     store.writeTask(project, task.state, touch(task));
     return { ok: true };
