@@ -23,7 +23,7 @@ to `POST /api/mcp`:
 
   | tool | JSON metadata block | raw text block(s), in order |
   |---|---|---|
-  | `read_task` | `{ok, task:{…frontmatter scalars…}, plan_path[, plan_truncated, plan_missing]}` | 1. the card body 2. `plan_body` (only with `includePlan` **and** a readable file) |
+  | `read_task` | `{ok, task:{…frontmatter scalars…}, plan_path[, plan_body, plan_truncated, plan_missing]}` | 1. the card body 2. `plan_body` (only with `includePlan` **and** a non-empty readable file) |
   | `read_progress` | `{ok, total, count}` | the logbook entries as a `- `-prefixed list |
   | `read_epic` | `{ok, epic:{slug,title,rollup[,projects]}, tasks:[summary]}` | `epic.goal` (block omitted when empty) |
   | `list_tasks`, `list_epics`, every mutator | unchanged `{result}` | — |
@@ -75,12 +75,20 @@ malformed envelope or an unexpected exception.
   plan_missing: false`.
 
   **Over MCP the result is not one JSON object.** It is **always** a compact-JSON metadata block
-  (`{ok, task, plan_path[, plan_truncated, plan_missing]}` — `task` minus `goal`/`acceptance`/
-  `logbook`, and never `plan_body`) followed by the **card body** as a raw, unescaped markdown
+  (`{ok, task, plan_path[, plan_body, plan_truncated, plan_missing]}` — `task` minus `goal`/
+  `acceptance`/`logbook`) followed by the **card body** as a raw, unescaped markdown
   block (`## Goal` / `## Acceptance` as real `- [ ]` checkboxes / `## Logbook`), then — only when
-  `includePlan` read a file — the plan verbatim as a **second** raw block. The card body is
+  `includePlan` read a non-empty file — the plan verbatim as a **second** raw block. The card body is
   re-rendered from the task object via `taskfile.serializeBody`, so `logTail` and hidden-field
-  stripping apply to it exactly as to the metadata. Over the GUI's HTTP route it stays a single
+  stripping apply to it exactly as to the metadata.
+
+  `plan_body` is promoted **out of** `meta` only when it is a string, and a block is emitted only
+  when that string is non-empty. So with `includePlan: true` there are three outcomes:
+  a body was read → no `plan_body` in `meta`, second block present; the file exists but is
+  **empty** → no `plan_body` in `meta`, **no** second block, `plan_missing: false` (distinguish
+  this from "`includePlan` not passed" by `plan_path`, which is non-null); no link or an
+  unreadable file → `plan_body: null` **stays in `meta`** (null is not a string) alongside
+  `plan_missing`. Over the GUI's HTTP route it stays a single
   JSON object with `goal`/`acceptance`/`logbook`/`plan_body` as fields (`src/routes.js` delegates
   to `board.js`, which is unchanged; only `src/mcp.js` splits).
 - `read_progress({project, id, limit?}) → {ok, entries:[…], total}` — most-recent first.

@@ -170,6 +170,48 @@ test('read_task without a readable plan body emits the card body alone (one bloc
   } finally { await cleanup(root); }
 });
 
+// Three distinct `plan_body` outcomes, and what each leaves in meta. The empty
+// case is the subtle one: '' IS a string, so it is promoted off meta, but an
+// empty body emits no block — so meta ends up with no `plan_body` key and
+// plan_missing:false. Pinned deliberately; see docs/protocol.md.
+test('read_task plan_body: read vs empty file vs no link, and the meta signal for each', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const mk = async (title, contents) => {
+      const f = await mcp.handle({ tool: 'file_task', arguments: { project: 'demo', title } });
+      const id = f.body.result.id;
+      if (contents !== null) {
+        const file = path.join(plansDir('demo'), `${title}.md`);
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, contents);
+        await mcp.handle({ tool: 'update_task', arguments: { project: 'demo', id, fields: { plan: `${title}.md` } } });
+      }
+      return mcp.handle({ tool: 'read_task', arguments: { project: 'demo', id, includePlan: true } });
+    };
+
+    // A real body: promoted to a block, key gone from meta.
+    const full = await mk('full', 'real prose\n');
+    assert.equal(full.body.text.length, 2);
+    assert.equal('plan_body' in full.body.meta, false);
+    assert.equal(full.body.meta.plan_missing, false);
+
+    // An EMPTY plan file: promoted (typeof '' === 'string') but no block emitted.
+    const empty = await mk('empty', '');
+    assert.equal(empty.body.text.length, 1);            // card body only
+    assert.equal('plan_body' in empty.body.meta, false); // promoted out, not left as ''
+    assert.equal(empty.body.meta.plan_missing, false);   // the file DOES exist
+    assert.ok(empty.body.meta.plan_path);                // …and this is how you tell
+
+    // No link at all: plan_body:null is NOT a string, so it stays in meta.
+    const none = await mk('none', null);
+    assert.equal(none.body.text.length, 1);
+    assert.equal('plan_body' in none.body.meta, true);
+    assert.equal(none.body.meta.plan_body, null);
+    assert.equal(none.body.meta.plan_path, null);
+  } finally { await cleanup(root); }
+});
+
 test('read_task card body is real markdown; the JSON block keeps only branchable scalars', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
@@ -311,14 +353,25 @@ test('list_tasks stays pure JSON — a table of summaries is data, not prose', a
   } finally { await cleanup(root); }
 });
 
-test('a refusal on a raw-text tool keeps the plain {result} path', async () => {
+// EVERY raw-text tool, not just read_task: shapeBody's `ok === true` guard is
+// what keeps a refusal in {result}. Without it the {ok:false,code} object moves
+// into `meta` with no `result` key, breaking any consumer branching on
+// `body.result.code`.
+test('a refusal on any raw-text tool keeps the plain {result} path', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
-    const r = await mcp.handle({ tool: 'read_task', arguments: { project: 'demo', id: 'nope' } });
-    assert.equal(r.body.meta, undefined);
-    assert.equal(r.body.text, undefined);
-    assert.equal(r.body.result.ok, false);
-    assert.equal(r.body.result.code, 'TASK_UNKNOWN');
+    const cases = [
+      ['read_task', { project: 'demo', id: 'nope' }, 'TASK_UNKNOWN'],
+      ['read_progress', { project: 'demo', id: 'nope' }, 'TASK_UNKNOWN'],
+      ['read_epic', { project: 'demo', slug: 'nope' }, 'EPIC_UNKNOWN'],
+    ];
+    for (const [tool, args, code] of cases) {
+      const r = await mcp.handle({ tool, arguments: args });
+      assert.equal(r.body.meta, undefined, `${tool}: no meta`);
+      assert.equal(r.body.text, undefined, `${tool}: no text`);
+      assert.equal(r.body.result.ok, false, `${tool}: ok:false`);
+      assert.equal(r.body.result.code, code, `${tool}: code`);
+    }
   } finally { await cleanup(root); }
 });
