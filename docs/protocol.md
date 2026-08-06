@@ -8,13 +8,30 @@ to `POST /api/mcp`:
 - **Request body:** `{ tool, arguments, caller:{ sessionId, project } }`.
 - **Response:** HTTP **200 for every well-formed call**, body `{ result: <any> }` on success or
   `{ error: "<msg>" }` on an envelope failure. Non-200 is a transport-level failure.
-- **Raw-text channel (opt-in, additive):** a success body may instead be `{ meta, text }` — the
-  host emits `meta` as one compact-JSON block plus each `text` as a **raw, unescaped** content
-  block after it (code-conductor `src/plugins/mcpBridge.ts` → `src/mcp/content.ts` `textPayload`).
-  Only `read_task` uses it, and only when `includePlan` actually read a body: `plan_body` becomes
-  the raw block, everything else (incl. `plan_path`/`plan_truncated`/`plan_missing`) stays in
-  `meta`. No plan body read → the plain `{result}` path, `plan_body: null` included. `text` may be
-  a list of strings (one raw block each, in order), which is how further bodies would join it.
+- **Raw-text channel (additive):** a success body may instead be `{ meta, text }` — the
+  host emits `meta` as one compact-JSON block plus each entry of `text` (always an **array**, in
+  order) as a **raw, unescaped** content block after it (code-conductor
+  `src/plugins/mcpBridge.ts` → `src/mcp/content.ts` `textPayload`). An empty `text` array emits the
+  metadata block alone. A body on this path has **no `result` key**.
+
+  **The split rule** (one rule, decided in `src/mcp.js`): a field gets its own raw text block when
+  it is *authored prose or a markdown document* — free text a human wrote and an LLM reads
+  top-to-bottom. Everything a caller **branches on** stays in the single compact-JSON metadata
+  block: scalars, ids, counts, flags, and arrays of record summaries. Author's test: *would this
+  field, printed alone, read as a document?* → text block. *Is it a scalar, or a table of records?*
+  → JSON. A list of summaries is **data even though it contains title strings**.
+
+  | tool | JSON metadata block | raw text block(s), in order |
+  |---|---|---|
+  | `read_task` | `{ok, task:{…frontmatter scalars…}, plan_path[, plan_body, plan_truncated, plan_missing]}` | 1. the card body 2. `plan_body` (only with `includePlan` **and** a non-empty readable file) |
+  | `read_progress` | `{ok, total, count}` | the logbook entries as a `- `-prefixed list |
+  | `read_epic` | `{ok, epic:{slug,title,rollup[,projects]}, tasks:[summary]}` | `epic.goal` (block omitted when empty) |
+  | `list_tasks`, `list_epics`, every mutator | unchanged `{result}` | — |
+
+  `meta.task` stays **nested and complete** — every frontmatter scalar including `title` and
+  `updated` — minus the three body sections that moved into the text block.
+  The channel is **MCP-only**: the GUI's HTTP routes bypass `src/mcp.js` and keep reading these as
+  plain JSON fields.
 - Missing/empty `tool` → **400** `{error}`; unknown tool name → 200 `{error}`.
 - `caller.sessionId` may be `null` when the host can't resolve the caller.
 
@@ -57,12 +74,32 @@ malformed envelope or an unexpected exception.
   refusal**: `plan_body: null, plan_missing: true`. No link at all → `plan_body: null,
   plan_missing: false`.
 
-  **Over MCP the result is not one JSON object.** When a plan body was read it is a compact-JSON
-  **metadata block** (`{ok, task, plan_path, plan_truncated, plan_missing}` — no `plan_body`)
-  followed by a **raw, unescaped text block** carrying the plan verbatim, in that order — the shape
-  `project_read` uses. Over the GUI's HTTP route it stays a single JSON object with `plan_body` as
-  a field (`src/routes.js` delegates to `board.js`, which is unchanged; only `src/mcp.js` splits).
+  **Over MCP the result is not one JSON object.** It is **always** a compact-JSON metadata block
+  (`{ok, task, plan_path[, plan_body, plan_truncated, plan_missing]}` — `task` minus `goal`/
+  `acceptance`/`logbook`) followed by the **card body** as a raw, unescaped markdown
+  block (`## Goal` / `## Acceptance` as real `- [ ]` checkboxes / `## Logbook`), then — only when
+  `includePlan` read a non-empty file — the plan verbatim as a **second** raw block. The card body is
+  re-rendered from the task object via `taskfile.serializeBody`, so `logTail` and hidden-field
+  stripping apply to it exactly as to the metadata.
+
+  `plan_body` is promoted **out of** `meta` only when it is a string, and a block is emitted only
+  when that string is non-empty. So with `includePlan: true` there are three outcomes:
+  a body was read → no `plan_body` in `meta`, second block present; the file exists but is
+  **empty** → no `plan_body` in `meta`, **no** second block, `plan_missing: false`; no link or an
+  unreadable file → `plan_body: null` **stays in `meta`** (null is not a string) alongside
+  `plan_missing`.
+
+  The empty-file case and "`includePlan` not passed" are told apart by the **presence of
+  `plan_missing`/`plan_truncated`** — set (to `false`) only when `includePlan` was passed, absent
+  otherwise. Not by `plan_path`, which is returned always and reflects the card's *link*, not the
+  flag (`src/board.js` assigns it outside the `includePlan` branch), so it is non-null for both
+  calls on a linked card. Over the GUI's HTTP route it stays a single
+  JSON object with `goal`/`acceptance`/`logbook`/`plan_body` as fields (`src/routes.js` delegates
+  to `board.js`, which is unchanged; only `src/mcp.js` splits).
 - `read_progress({project, id, limit?}) → {ok, entries:[…], total}` — most-recent first.
+  **Over MCP:** metadata block `{ok, total, count}` (`count` = entries returned after `limit`;
+  `total` = the card's full logbook length) plus the entries as one raw `- `-prefixed markdown
+  block. Zero entries → metadata block only.
 - `move_task({project, id, to, owner?, commit?}) → {ok, from, to}`. Legal transitions:
   `triage→backlog`, `triage→todo`, `backlog→todo`, `todo→in-progress`, `in-progress→done`,
   and corrective `todo→backlog`, `in-progress→todo`, `done→in-progress`. Anything else
@@ -90,7 +127,7 @@ malformed envelope or an unexpected exception.
     absent side); a no-op set logs nothing.
 - `create_epic({project?, projects?, slug, title, goal?}) → {ok}` — `slug` matches `^[a-z0-9._-]+$`; idempotent upsert (re-creating refreshes title/goal, preserves `created`; for a cross-project epic it also **replaces the member `projects` list** — membership is mutable). Give **exactly one** of `project` (project-scoped) or `projects` (a cross-project epic spanning ≥2 members) → else `INVALID_STATE`. A slug may not be both a cross-project epic and a per-project epic in one of its members → `EPIC_CONFLICT` (guarded in both create orders).
 - `list_epics({project}) → {ok, epics:[{slug, title, rollup, projects}]}` — the project's own epics (`projects:null`) plus cross-project epics spanning it (`projects:[…]`, `rollup` aggregated over all members).
-- `read_epic({project?, slug}) → {ok, epic:{slug,title,goal,rollup[,projects]}, tasks:[summary]}` — with `project`, a project-scoped epic resolves first, else a cross-project epic covering it. Omit `project` to read a cross-project epic by slug; its `rollup` and `tasks` aggregate across all member projects and `epic.projects` lists them.
+- `read_epic({project?, slug}) → {ok, epic:{slug,title,goal,rollup[,projects]}, tasks:[summary]}` — with `project`, a project-scoped epic resolves first, else a cross-project epic covering it. Omit `project` to read a cross-project epic by slug; its `rollup` and `tasks` aggregate across all member projects and `epic.projects` lists them. **Over MCP:** metadata block `{ok, epic:{slug,title,rollup[,projects]}, tasks:[summary]}` plus `epic.goal` as one raw markdown block (omitted when the goal is empty); `tasks` stays JSON — a table of summaries is data.
 - `delete_task({project, id}) → {ok}` — permanently removes the task's file; unknown id → `TASK_UNKNOWN`. Also best-effort removes the card's plan file **when the link is `board:`** — a `repo:` plan is a source-tree file and is never touched; a failed unlink leaves an orphan, never a refusal. Irreversible and not sync-aware: see "Cross-instance sync" in `docs/architecture.md`.
 
 A `summary` is `{id, title, state, project, epic, priority, owner, depends_on, created, plan}`

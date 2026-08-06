@@ -41,13 +41,18 @@ export function serialize(task) {
   if (task.plan) fm.push(`plan: ${task.plan}`);
   fm.push(`depends_on: ${serializeDependsOn(task.depends_on)}`);
 
+  return ['---', ...fm, '---', ''].join('\n') + serializeBody(task);
+}
+
+// The body half of the file format — Goal / Acceptance / Logbook, no
+// frontmatter. Exported because `src/mcp.js` renders it as a raw markdown text
+// block for prose-bearing reads; `serialize` is frontmatter + this, so there is
+// exactly ONE renderer of the body shape and the two cannot drift.
+export function serializeBody(task) {
   const accLines = (task.acceptance ?? []).map(
     (a) => `- [${a.done ? 'x' : ' '}] ${a.text}`,
   );
-  const parts = [
-    '---',
-    ...fm,
-    '---',
+  return [
     '## Goal',
     (task.goal ?? '').trim(),
     '',
@@ -57,8 +62,7 @@ export function serialize(task) {
     '## Logbook',
     ...(task.logbook ?? []).map((l) => `- ${l}`),
     '',
-  ];
-  return parts.join('\n');
+  ].join('\n');
 }
 
 export function parse(text, { state } = {}) {

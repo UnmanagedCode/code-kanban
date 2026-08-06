@@ -25,7 +25,22 @@ unescaped** block after it, rather than JSON-escaping a multi-KB document into o
 not folklore: code-conductor `src/plugins/mcpBridge.ts` (the `rec.text !== undefined` branch) →
 `src/mcp/content.ts`'s `textPayload`.
 
-Only `read_task` uses it, and only when `includePlan` actually read a plan body (`shapeBody` in
-`src/mcp.js`). Two consequences: a tool on this path has **no `result` key** at all, so anything
-reading `body.result` must handle its absence; and the channel is **MCP-only** — the GUI's HTTP
-routes bypass `mcp.js` and keep reading `plan_body` as a plain field.
+Every **prose-bearing read** uses it: `read_task` (card body, then `plan_body` when `includePlan`
+read a **non-empty** file — an empty body emits no block, and `docs/protocol.md` has the full
+key-by-key outcome table), `read_progress` (logbook entries), `read_epic` (`epic.goal`). `list_tasks`/
+`list_epics` and the mutators stay on `{result}`. The rule that decides this — prose/document → text
+block, anything a caller branches on (incl. arrays of summaries) → the JSON block — and the
+per-tool block order live in `docs/protocol.md`; the mechanism is `RAW_TEXT` + `shapeBody` in
+`src/mcp.js`.
+
+Two consequences: a tool on this path has **no `result` key** at all, so anything reading
+`body.result` must handle its absence — and it is now the *normal* path for those three reads, not a
+conditional one (`read_task` always emits a card body, so there is no `{result}` fallback left);
+and the channel is **MCP-only** — the GUI's HTTP routes bypass `mcp.js` and keep reading `goal`/
+`logbook`/`plan_body` as plain fields.
+
+Gotcha inside the gotcha: the card body is **re-rendered** from the task object
+(`taskfile.serializeBody`), never passed through from the file. Reading the file would silently
+ignore `logTail` and hidden-field stripping, so the text block would describe a different card than
+the JSON block. `serialize` is defined as frontmatter + `serializeBody` for that reason — one
+renderer, pinned by a test in `tests/taskfile.test.mjs`.
