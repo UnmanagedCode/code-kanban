@@ -888,6 +888,22 @@ test('read_task includePlan sets plan_truncated over the cap', async () => {
   } finally { await cleanup(root); }
 });
 
+test('read_task includePlan at EXACTLY the cap is not truncated', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    const exact = 'x'.repeat(65536); // PLAN_MAX_BYTES to the byte
+    writeBoardPlan('demo', 'exact.md', exact);
+    await board.updateTask({ project: 'demo', id, fields: { plan: 'exact.md' } });
+    const r = await board.readTask({ project: 'demo', id, includePlan: true });
+    // The cap is `size > PLAN_MAX_BYTES`, not `>=` — a file that exactly fills
+    // it is returned whole and NOT flagged.
+    assert.equal(r.plan_truncated, false);
+    assert.equal(r.plan_body, exact);
+  } finally { await cleanup(root); }
+});
+
 test('read_task includePlan on a missing plan file -> plan_body null + plan_missing (never a refusal)', async () => {
   const root = await freshRoot();
   useProjects(['demo']);

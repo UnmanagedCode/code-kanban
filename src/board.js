@@ -404,8 +404,10 @@ export async function updateTask({ project, id, fields } = {}) {
     if (fields.epic && !epicVisibleIn(project, fields.epic)) {
       return fail('EPIC_UNKNOWN', `unknown epic: ${fields.epic}`);
     }
-    // plan/owner validate BEFORE any mutation (like the epic check above), so a
-    // refused field can never leave a half-applied card behind.
+    // plan/owner are validated up here, alongside the epic check. What actually
+    // guarantees no half-applied card is that every refusal returns before the
+    // single store.writeTask at the end — `task` is an in-memory parse, so
+    // nothing is PERSISTED on a refusal path regardless of this ordering.
     let planNext;
     if ('plan' in fields) {
       if (fields.plan === null) planNext = null;
