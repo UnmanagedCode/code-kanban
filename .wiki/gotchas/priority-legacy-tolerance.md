@@ -1,7 +1,7 @@
 # Gotcha: priority tolerance is one-directional (and a mixed-version peer pair loses levels)
 
 `priority` was an integer ladder (`0`..`5`, `0` = unset, sorted **ascending** so unset outranked
-everything). It is now the four-level enum in `src/priority.js:20`. The old values did not go away:
+everything). It is now the four-level enum in `src/priority.js:18`. The old values did not go away:
 all 166 live cards were written as `priority: 0`, and there is **no migration script** — the
 tolerant parse is the migration.
 
@@ -21,8 +21,10 @@ Legacy int map (`src/priority.js`): `1→CRITICAL, 2→HIGH, 3→MEDIUM, 4→LOW
 `0`, a larger int, an unknown word, an empty value, a missing key — is `MEDIUM`. `0` is
 deliberately absent from the map: it meant "unset", and unset is now MEDIUM.
 
-`serialize` normalises too, so a legacy card is rewritten in the new vocabulary the first time
-anything writes it (any `update_task`/`move_task`, and every sync merge write).
+Because `parse` coerces on the way in, a loaded legacy card is already holding a level in memory —
+so the first write of any kind (any `update_task`/`move_task`, every sync merge write) persists the
+new vocabulary. `serialize` applies the same coercion, but as a guard on a card object that never
+came through `parse`, not as what drives the rewrite.
 
 ## The one-directional trap: an old peer silently degrades levels to MEDIUM
 

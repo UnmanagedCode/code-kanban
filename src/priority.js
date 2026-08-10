@@ -45,9 +45,10 @@ export function priorityRank(value) {
 
 // Tolerant coercion for values read off disk. Never throws. Anything not
 // recognised — 0, a larger int, an unknown word, an empty/missing value — is
-// MEDIUM. Because serialize() runs this too, a legacy card is rewritten in the
-// new vocabulary the first time anything writes it: the tolerant parse IS the
-// migration (there is no migration script).
+// MEDIUM. Because parse() applies this, a legacy card is already holding a level
+// in memory, so the first write of any kind persists it: the tolerant parse IS
+// the migration (there is no migration script). serialize() applies it as well,
+// guarding a card object that never came through parse().
 export function normalizePriority(value) {
   if (typeof value === 'string') {
     const up = value.trim().toUpperCase();

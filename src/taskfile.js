@@ -27,9 +27,10 @@ function parseDependsOn(raw) {
 // task: {id,uid?,title,project,epic?,priority,created,updated?,node?,owner?,
 //        commit?,plan?,depends_on[], goal, acceptance:[{text,done}], logbook:[string]}
 // `plan` is a LINK to a plan file (src/planLink.js), never the plan text.
-// `priority` is one of src/priority.js's PRIORITIES; it is normalised on the way
-// out as well as in, so a legacy integer read off disk is rewritten as a level
-// the first time anything writes the card (the tolerant parse IS the migration).
+// `priority` is one of src/priority.js's PRIORITIES. `parse` coerces a legacy
+// value to a level in memory, so any subsequent write persists the level — the
+// tolerant parse IS the migration. `serialize` normalises too, as a separate
+// guard on a card object that never came through `parse`.
 export function serialize(task) {
   const fm = [];
   fm.push(`id: ${task.id}`);

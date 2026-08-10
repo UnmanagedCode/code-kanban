@@ -50,8 +50,9 @@ Board DATA lives in the conductor's tree, not this repo:
   to `src/priority.js`'s `CRITICAL|HIGH|MEDIUM|LOW`, and no migration script was written.
   `taskfile.parse` coerces tolerantly (`1→CRITICAL, 2→HIGH, 3→MEDIUM, 4→LOW, 5→LOW`; **anything
   else, including `0`, a missing key and an unknown word → `MEDIUM`**) and never throws or drops a
-  card; `taskfile.serialize` runs the same coercion, so a legacy card is rewritten in the new
-  vocabulary the first time anything writes it. Live caller input is validated **strictly**
+  card, so a loaded legacy card already holds a level in memory and the first write of any kind
+  persists the new vocabulary; `taskfile.serialize` applies the same coercion as a guard on card
+  objects that never came through `parse`. Live caller input is validated **strictly**
   instead (`INVALID_STATE`) — the two rules and the mixed-version sync hazard are in
   `.wiki/gotchas/priority-legacy-tolerance.md`.
 - **Epic rollups** are never stored — recomputed by scanning tasks on each read. A cross-project

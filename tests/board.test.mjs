@@ -1122,10 +1122,13 @@ test('file_task refuses an unrecognised priority and files no card', async () =>
       assert.equal(r.ok, false, `priority ${JSON.stringify(bad)} should refuse`);
       assert.equal(r.code, 'INVALID_STATE', JSON.stringify(bad));
     }
-    // No card was created and no id was consumed by any of those attempts.
+    // What this pins: a refusal performs NO store.writeTask. Nothing is listed,
+    // and the next real card still gets -0001 — the id floor is bumped by
+    // writeTask, not by store.nextId (which is a read), so a consumed id would
+    // mean a card file had been written.
     assert.deepEqual((await board.listTasks({ project: 'demo' })).tasks, []);
     const { id } = await board.fileTask({ project: 'demo', title: 'first real card' });
-    assert.equal(id.endsWith('-0001'), true, `refusals consumed an id: ${id}`);
+    assert.equal(id.endsWith('-0001'), true, `a refusal wrote a card: ${id}`);
   } finally { await cleanup(root); }
 });
 
@@ -1134,9 +1137,11 @@ test('update_task refuses a bad priority and leaves the WHOLE card untouched', a
   useProjects(['demo']);
   try {
     const { id } = await board.fileTask({ project: 'demo', title: 'orig', priority: 'LOW' });
-    // A valid title rides along with the bad priority: validate-before-mutate
-    // means NEITHER lands. A mutant that validates inside the write loop would
-    // let the title through.
+    // A valid title rides along with the bad priority, and NEITHER lands. What
+    // guarantees that is not the ordering of the checks but the single terminal
+    // store.writeTask (board.js:417-420): `task` is an in-memory parse, so any
+    // refusal path returns before anything is persisted. This pins that
+    // property — a mutant that persists mid-loop lets the title through.
     const r = await board.updateTask({ project: 'demo', id, fields: { title: 'renamed', priority: 'URGENT' } });
     assert.equal(r.ok, false);
     assert.equal(r.code, 'INVALID_STATE');
@@ -1240,8 +1245,13 @@ test('touching a legacy card rewrites its priority in the new vocabulary', async
   try {
     store.ensureProjectDirs('demo');
     seedRawCard('demo', 'todo', { id: '2026-0001', priorityLine: '2' });
-    // Any unrelated mutation is enough — the serializer normalises on write, so
-    // the tolerant parse IS the migration (there is no migration script).
+    // What this pins: a legacy on-disk value does not survive being touched —
+    // any unrelated mutation rewrites it in the new vocabulary, which is why
+    // there is no migration script. The coercion that achieves it happens on
+    // PARSE (the read side), so this test says nothing about serialize's own
+    // normalisation; that invariant is owned by
+    // tests/taskfile.test.mjs::"serialize never emits a non-level, whatever it
+    // is handed", which hands junk straight to serialize and bypasses parse.
     const r = await board.updateTask({ project: 'demo', id: '2026-0001', fields: { title: 'touched' } });
     assert.equal(r.ok, true);
     const raw = fs.readFileSync(path.join(stateDir('demo', 'todo'), '2026-0001.md'), 'utf8');
