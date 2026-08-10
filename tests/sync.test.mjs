@@ -627,9 +627,27 @@ test('a peer dump carrying legacy INTEGER priorities merges and maps to levels',
     const levels = Object.fromEntries(
       (await board.listTasks({ project: 'alpha' })).tasks.map((t) => [t.title, t.priority]),
     );
-    assert.deepEqual(levels, { 'was 1': 'CRITICAL', 'was 0': 'MEDIUM', 'was 4': 'LOW' });
+    // `was 0` arrives unjudged and STAYS unjudged — the sync path must not
+    // invent a level for a peer's unset card any more than the disk path does.
+    assert.deepEqual(levels, { 'was 1': 'CRITICAL', 'was 0': null, 'was 4': 'LOW' });
     // The merge write normalises on disk too, so the card stops being legacy.
     assert.equal(byTitle('alpha', 'was 1').priority, 'CRITICAL');
+    assert.equal(byTitle('alpha', 'was 0').priority, null);
+  });
+});
+
+test('an incoming legacy 0 card sorts BELOW a local LOW, not above it', async () => {
+  await withRoot(async () => {
+    // The cross-version ordering divergence made concrete: the peer that wrote
+    // this card sorts its `0` FIRST (ascending integers), we sort it LAST. Same
+    // card, opposite ends of the column — see
+    // .wiki/gotchas/priority-legacy-tolerance.md. The peer card also holds the
+    // LOWER id, so the id tiebreak would put it first if the rank were dropped.
+    seedLocal('alpha', { id: '2026-0002', uid: 'u-local', title: 'local low', priority: 'LOW', state: 'todo' });
+    serveDump({ alpha: [card({ id: '2026-0001', uid: 'u-peer', title: 'peer was 0', priority: 0, state: 'todo' })] });
+    assert.equal((await pull('project', 'alpha')).ok, true);
+    const titles = (await board.listTasks({ project: 'alpha' })).tasks.map((t) => t.title);
+    assert.deepEqual(titles, ['local low', 'peer was 0']);
   });
 });
 

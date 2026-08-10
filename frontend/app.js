@@ -33,19 +33,23 @@ const state = {
 // so each state gets a distinct short label. Keys track STATES in src/paths.js.
 const ROLLUP_LABEL = { triage: 'tr', backlog: 'bk', todo: 'td', 'in-progress': 'ip', done: 'dn' };
 
-// Every card has a priority (there is no unset state), so badging all of them is
-// noise. MEDIUM — the default — renders BARE; only a deliberate departure from it
-// gets a badge. Bare does not read as "unset" because the card detail view always
-// states the level. The catalog itself comes from /api/board/meta (src/priority.js),
-// never a copy; this set only decides what is worth a badge.
-const DEFAULT_PRIORITY = 'MEDIUM';
-const badgedPriority = (p) => typeof p === 'string' && p !== DEFAULT_PRIORITY;
+// EVERY judged level gets a badge, so BARE means exactly one thing: nobody has
+// judged this card yet. Badging only some levels would make bare ambiguous
+// between a judgement and the absence of one — which are the two states a board
+// most needs to tell apart. The catalog comes from /api/board/meta
+// (src/priority.js), never a copy.
+const badgedPriority = (p) => typeof p === 'string' && p !== '';
 
-// Priority <select> options, from the server's catalog, with `current` selected.
+// Priority <select> options: the server's catalog, preceded by an unset option.
+// Its value is '' (submitted as null/omitted) and its label reads as an
+// unfinished choice, so the form prompts for a judgement without pre-selecting
+// one. `current` selects; anything not a level (i.e. unset) selects the '' option.
 function priorityOptions(current) {
-  const levels = state.meta.priorities?.length ? state.meta.priorities : [DEFAULT_PRIORITY];
-  const sel = levels.includes(current) ? current : DEFAULT_PRIORITY;
-  return levels.map((p) => el('option', { value: p, ...(p === sel ? { selected: '' } : {}) }, p));
+  const levels = state.meta.priorities ?? [];
+  return [
+    el('option', { value: '', ...(levels.includes(current) ? {} : { selected: '' }) }, '— unset —'),
+    ...levels.map((p) => el('option', { value: p, ...(p === current ? { selected: '' } : {}) }, p)),
+  ];
 }
 
 // ---- api ------------------------------------------------------------------
@@ -328,9 +332,9 @@ function openDetailNode(t, editing = false, plan = null) {
       ? detailSection('Edit', null, renderEditForm(t, plan))
       : el('div', {}, [
           detailSection('Goal', t.goal),
-          // Always stated, MEDIUM included — this is what makes a bare card
-          // unambiguous on the board.
-          detailSection('Priority', String(t.priority ?? DEFAULT_PRIORITY)),
+          // Always stated, unset included — never blank, so the read view can
+          // never be mistaken for "the field didn't load".
+          detailSection('Priority', t.priority ?? 'unset'),
           detailSection('Acceptance', null,
             t.acceptance?.length
               ? el('ul', { class: 'acceptance' }, (t.acceptance || []).map((a) => el('li', {}, [
@@ -386,7 +390,7 @@ async function doEdit(e, id) {
     title: fd.get('title')?.toString().trim(),
     goal: fd.get('goal')?.toString(),
     epic: fd.get('epic')?.toString() || null,
-    priority: fd.get('priority')?.toString(),
+    priority: fd.get('priority')?.toString() || null, // '' is the unset option -> clear it
     depends_on: fd.get('depends_on')?.toString().split(',').map((s) => s.trim()).filter(Boolean),
   };
   if (!fields.title) { form.querySelector('.form-error').textContent = 'title is required'; return; }
@@ -430,7 +434,7 @@ function renderTaskForm() {
     el('label', { class: 'field' }, ['Goal', el('textarea', { name: 'goal', rows: '3' })]),
     el('label', { class: 'field' }, ['Acceptance (one per line)', el('textarea', { name: 'acceptance', rows: '3' })]),
     el('label', { class: 'field' }, ['Epic', el('select', { name: 'epic' }, epicOpts)]),
-    el('label', { class: 'field' }, ['Priority', el('select', { name: 'priority' }, priorityOptions(DEFAULT_PRIORITY))]),
+    el('label', { class: 'field' }, ['Priority', el('select', { name: 'priority' }, priorityOptions(null))]),
     el('label', { class: 'field' }, ['Depends on (comma-separated ids)', el('input', { name: 'depends_on' })]),
     el('div', { class: 'form-error' }, ''),
     el('div', { class: 'form-actions' }, [

@@ -47,12 +47,16 @@ Board DATA lives in the conductor's tree, not this repo:
 - **IDs**: `${year}-${NNNN}`, where `NNNN` is a project-wide monotonic sequence
   (`max existing + 1`, does **not** reset on year rollover). Assigned inside the project mutex.
 - **Priority: legacy tolerance instead of a migration.** `priority` moved from an integer ladder
-  to `src/priority.js`'s `CRITICAL|HIGH|MEDIUM|LOW`, and no migration script was written.
+  to `src/priority.js`'s `CRITICAL|HIGH|MEDIUM|LOW` plus a first-class unset state, and no migration
+  script was written.
   `taskfile.parse` coerces tolerantly (`1→CRITICAL, 2→HIGH, 3→MEDIUM, 4→LOW, 5→LOW`; **anything
-  else, including `0`, a missing key and an unknown word → `MEDIUM`**) and never throws or drops a
-  card, so a loaded legacy card already holds a level in memory and the first write of any kind
-  persists the new vocabulary; `taskfile.serialize` applies the same coercion as a guard on card
-  objects that never came through `parse`. Live caller input is validated **strictly**
+  else, including `0`, a missing key and an unknown word → unset (`null`)**) and never throws or
+  drops a card, so a loaded legacy card already holds its true state in memory and the first write
+  of any kind persists the new vocabulary; `taskfile.serialize` applies the same coercion as a guard
+  on card objects that never came through `parse`, and **omits the frontmatter key entirely** when
+  the card is unset. `0` maps to unset rather than to a level precisely because `0` meant "never
+  judged": all 166 pre-existing cards hold it, and mapping it to `MEDIUM` would invent that many
+  judgements. Live caller input is validated **strictly**
   instead (`INVALID_STATE`) — the two rules and the mixed-version sync hazard are in
   `.wiki/gotchas/priority-legacy-tolerance.md`.
 - **Epic rollups** are never stored — recomputed by scanning tasks on each read. A cross-project

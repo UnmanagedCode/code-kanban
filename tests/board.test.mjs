@@ -1058,10 +1058,11 @@ test('list_tasks summary carries the plan link', async () => {
 
 // ---- priority ----------------------------------------------------------
 //
-// The field is an enum (src/priority.js) with no unset state. These pin the
-// three things a mutant can quietly break: the rank ORDER, the fact that a
-// refusal never half-writes, and that a card written by the pre-enum build
-// still loads and sorts.
+// The field is an enum (src/priority.js) plus a first-class UNSET state. These
+// pin the things a mutant can quietly break: the rank ORDER (and specifically
+// that unset sorts LAST), that unset round-trips through a clear, that a refusal
+// never half-writes, and that a card written by the pre-enum build still loads
+// and sorts.
 
 // Write a task file straight into a column dir, bypassing board.js entirely —
 // the only way to fabricate the exact frontmatter an OLD build produced.
@@ -1087,16 +1088,28 @@ function seedRawCard(project, state, { id, priorityLine, created = '2026-01-01T0
   ].join('\n'));
 }
 
-test('file_task defaults priority to MEDIUM when omitted', async () => {
+test('file_task leaves priority UNSET when omitted — it never invents a level', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
     const { id } = await board.fileTask({ project: 'demo', title: 'no priority given' });
     const r = await board.readTask({ project: 'demo', id });
-    assert.equal(r.task.priority, 'MEDIUM');
-    // And it is on DISK as the word, not as a number or an absent key.
+    assert.equal(r.task.priority, null);
+    // Explicitly not laundered into the middle of the ladder, which is the
+    // regression this card corrects.
+    assert.notEqual(r.task.priority, 'MEDIUM');
+    // And on DISK the key is ABSENT, not written as a word or a number.
     const raw = fs.readFileSync(path.join(stateDir('demo', 'triage'), `${id}.md`), 'utf8');
-    assert.ok(raw.includes('\npriority: MEDIUM\n'), raw);
+    assert.equal(/^priority:/m.test(raw), false, raw);
+  } finally { await cleanup(root); }
+});
+
+test('file_task treats an explicit null priority as unset, same as omitting it', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 'explicit null', priority: null });
+    assert.equal((await board.readTask({ project: 'demo', id })).task.priority, null);
   } finally { await cleanup(root); }
 });
 
@@ -1117,7 +1130,9 @@ test('file_task refuses an unrecognised priority and files no card', async () =>
   try {
     // Everything the DISK parser would tolerate must be refused here — that
     // split is the design (see .wiki/gotchas/priority-legacy-tolerance.md).
-    for (const bad of ['URGENT', 'medium', 'Critical', '', 7, 2, 0, null, ['HIGH']]) {
+    // (null is absent from this list on purpose — it is the explicit "unset"
+    // token, covered by its own test above.)
+    for (const bad of ['URGENT', 'medium', 'Critical', '', 7, 2, 0, ['HIGH']]) {
       const r = await board.fileTask({ project: 'demo', title: 'nope', priority: bad });
       assert.equal(r.ok, false, `priority ${JSON.stringify(bad)} should refuse`);
       assert.equal(r.code, 'INVALID_STATE', JSON.stringify(bad));
@@ -1151,12 +1166,15 @@ test('update_task refuses a bad priority and leaves the WHOLE card untouched', a
   } finally { await cleanup(root); }
 });
 
-test('update_task refuses every non-level value (there is no way to clear priority)', async () => {
+test('update_task refuses every non-level value except null', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
     const { id } = await board.fileTask({ project: 'demo', title: 'x', priority: 'HIGH' });
-    for (const bad of [null, '', 'high', 3, '3', undefined]) {
+    // `undefined` is included: only an explicit null clears. A mutant widening
+    // the clear token to any nullish value would let a dropped/typo'd field
+    // silently erase a judgement.
+    for (const bad of ['', 'high', 3, '3', undefined]) {
       const r = await board.updateTask({ project: 'demo', id, fields: { priority: bad } });
       assert.equal(r.ok, false, `priority ${JSON.stringify(bad)} should refuse`);
       assert.equal(r.code, 'INVALID_STATE', JSON.stringify(bad));
@@ -1165,21 +1183,65 @@ test('update_task refuses every non-level value (there is no way to clear priori
   } finally { await cleanup(root); }
 });
 
-test('list_tasks sorts CRITICAL first through LOW last within a column', async () => {
+test('update_task clears priority back to unset with null, and it ROUND-TRIPS', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
-    // Filed so that ID order CONTRADICTS priority order: ids ascend 0001..0004
-    // while priorities ascend LOW..CRITICAL. An implementation that dropped the
-    // priority key (or reversed it) cannot produce the expected sequence by
-    // falling through to the id tiebreak.
+    const { id } = await board.fileTask({ project: 'demo', title: 'judged then unjudged', priority: 'HIGH' });
+    const cardPath = path.join(stateDir('demo', 'triage'), `${id}.md`);
+    assert.ok(fs.readFileSync(cardPath, 'utf8').includes('\npriority: HIGH\n'));
+
+    const cleared = await board.updateTask({ project: 'demo', id, fields: { priority: null } });
+    assert.equal(cleared.ok, true, JSON.stringify(cleared));
+
+    // Three separate observations, because a clear can fail at three stages:
+    // 1. the value the service layer returns,
+    assert.equal((await board.readTask({ project: 'demo', id })).task.priority, null);
+    // 2. what actually reached DISK (a clear that only lived in memory would
+    //    pass step 1 and be lost on the next process),
+    const raw = fs.readFileSync(cardPath, 'utf8');
+    assert.equal(/^priority:/m.test(raw), false, raw);
+    // 3. and that re-reading that file yields unset rather than a level — the
+    //    round trip proper. It must not come back as MEDIUM.
+    const reread = (await board.readTask({ project: 'demo', id })).task;
+    assert.equal(reread.priority, null);
+    assert.notEqual(reread.priority, 'MEDIUM');
+
+    // And the card is still fully intact + re-judgeable afterwards.
+    assert.equal(reread.title, 'judged then unjudged');
+    assert.equal((await board.updateTask({ project: 'demo', id, fields: { priority: 'LOW' } })).ok, true);
+    assert.equal((await board.readTask({ project: 'demo', id })).task.priority, 'LOW');
+  } finally { await cleanup(root); }
+});
+
+test('list_tasks sorts CRITICAL first, LOW last, and UNSET after LOW', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    // Filed so that ID order CONTRADICTS priority order: ids ascend 0001..0005
+    // while ranks descend. An implementation that dropped the priority key (or
+    // reversed it) cannot produce the expected sequence by falling through to
+    // the id tiebreak.
+    //
+    // The UNSET card is filed FIRST, so it holds the LOWEST id. That is the
+    // point: it must still come last. Two distinct mutants die here —
+    //   * "unset ranks first"  -> it leads (its old integer-0 behaviour)
+    //   * "unset ranks MEDIUM" -> it lands ahead of `low`, because on a rank tie
+    //                             with `med` its smaller id wins the tiebreak.
+    const unset = (await board.fileTask({ project: 'demo', title: 'u' })).id;
     const low = (await board.fileTask({ project: 'demo', title: 'l', priority: 'LOW' })).id;
     const med = (await board.fileTask({ project: 'demo', title: 'm', priority: 'MEDIUM' })).id;
     const high = (await board.fileTask({ project: 'demo', title: 'h', priority: 'HIGH' })).id;
     const crit = (await board.fileTask({ project: 'demo', title: 'c', priority: 'CRITICAL' })).id;
-    assert.deepEqual([low, med, high, crit].sort(), [low, med, high, crit]); // ids really do ascend
+    // ids really do ascend in filing order, so the tiebreak genuinely opposes us
+    assert.deepEqual([unset, low, med, high, crit].sort(), [unset, low, med, high, crit]);
+
     const ids = (await board.listTasks({ project: 'demo' })).tasks.map((t) => t.id);
-    assert.deepEqual(ids, [crit, high, med, low]);
+    assert.deepEqual(ids, [crit, high, med, low, unset]);
+    // Stated as their own claims so a failure names the broken invariant.
+    assert.ok(ids.indexOf(low) < ids.indexOf(unset), 'unset must sort BELOW a deliberate LOW');
+    assert.ok(ids.indexOf(med) < ids.indexOf(unset), 'unset must not rank as MEDIUM');
+    assert.equal(ids.at(-1), unset, 'unset must be last');
   } finally { await cleanup(root); }
 });
 
@@ -1192,14 +1254,18 @@ test('column order dominates priority; id breaks a priority tie', async () => {
     const critDone = (await board.fileTask({ project: 'demo', title: 'crit/done', priority: 'CRITICAL', category: 'todo' })).id;
     await board.moveTask({ project: 'demo', id: critDone, to: 'in-progress' });
     await board.moveTask({ project: 'demo', id: critDone, to: 'done' });
-    // Two MEDIUM cards in one column: ascending id decides.
-    const m1 = (await board.fileTask({ project: 'demo', title: 'm1', category: 'todo' })).id;
-    const m2 = (await board.fileTask({ project: 'demo', title: 'm2', category: 'todo' })).id;
+    // Two UNSET cards in one column: ascending id decides.
+    const u1 = (await board.fileTask({ project: 'demo', title: 'u1', category: 'todo' })).id;
+    const u2 = (await board.fileTask({ project: 'demo', title: 'u2', category: 'todo' })).id;
 
     const ids = (await board.listTasks({ project: 'demo' })).tasks.map((t) => t.id);
-    assert.deepEqual(ids, [m1, m2, lowTodo, critDone]);
+    // lowTodo leads its column despite a later id — unset does not outrank LOW.
+    assert.deepEqual(ids, [lowTodo, u1, u2, critDone]);
     assert.ok(ids.indexOf(lowTodo) < ids.indexOf(critDone), 'column must dominate priority');
-    assert.ok(ids.indexOf(m1) < ids.indexOf(m2), 'equal priority falls through to ascending id');
+    assert.ok(ids.indexOf(u1) < ids.indexOf(u2), 'equal priority falls through to ascending id');
+    // An UNSET card in an earlier column still precedes a CRITICAL one further
+    // right: column dominance holds for unset too, not just for judged levels.
+    assert.ok(ids.indexOf(u1) < ids.indexOf(critDone), 'column must dominate unset as well');
   } finally { await cleanup(root); }
 });
 
@@ -1223,19 +1289,27 @@ test('a card written by the pre-enum build still loads, and sorts by its mapped 
     assert.equal(listed.length, 6);
     const byId = Object.fromEntries(listed.map((t) => [t.id, t.priority]));
     assert.deepEqual(byId, {
-      '2026-0001': 'MEDIUM',   // 0 == unset -> the default
+      '2026-0001': null,       // 0 meant "never judged" -> stays unjudged
       '2026-0002': 'CRITICAL', // 1
       '2026-0003': 'LOW',      // 4
-      '2026-0004': 'MEDIUM',   // out of range
-      '2026-0005': 'MEDIUM',   // unknown word
-      '2026-0006': 'MEDIUM',   // key absent entirely
+      '2026-0004': null,       // out of range
+      '2026-0005': null,       // unknown word
+      '2026-0006': null,       // key absent entirely
     });
-    // And they sort sanely: the mapped CRITICAL leads, the mapped LOW trails,
-    // the MEDIUMs sit between in id order. Under the OLD ascending-integer
-    // compare the unset 0 card would have led instead.
+    // The 0 card in particular is not laundered into a level. This is the shape
+    // of all 166 live cards: mapping them to MEDIUM would invent 166 judgements.
+    assert.equal(byId['2026-0001'], null);
+    assert.notEqual(byId['2026-0001'], 'MEDIUM');
+
+    // And they sort sanely: the mapped CRITICAL leads, the mapped LOW follows,
+    // and the unset cards trail in id order. Two wrong answers are excluded by
+    // this exact sequence — under the OLD ascending-integer compare the 0 card
+    // would have LED, and under a 0->MEDIUM mapping it would sit ahead of LOW.
     assert.deepEqual(listed.map((t) => t.id), [
-      '2026-0002', '2026-0001', '2026-0004', '2026-0005', '2026-0006', '2026-0003',
+      '2026-0002', '2026-0003', '2026-0001', '2026-0004', '2026-0005', '2026-0006',
     ]);
+    const order = listed.map((t) => t.id);
+    assert.ok(order.indexOf('2026-0003') < order.indexOf('2026-0001'), 'legacy 0 must sort below a mapped LOW');
   } finally { await cleanup(root); }
 });
 
@@ -1250,12 +1324,31 @@ test('touching a legacy card rewrites its priority in the new vocabulary', async
     // there is no migration script. The coercion that achieves it happens on
     // PARSE (the read side), so this test says nothing about serialize's own
     // normalisation; that invariant is owned by
-    // tests/taskfile.test.mjs::"serialize never emits a non-level, whatever it
-    // is handed", which hands junk straight to serialize and bypasses parse.
+    // tests/taskfile.test.mjs::"serialize omits the priority key entirely when
+    // the card is unset" and its judged-level twin, which hand raw objects
+    // straight to serialize and bypass parse.
     const r = await board.updateTask({ project: 'demo', id: '2026-0001', fields: { title: 'touched' } });
     assert.equal(r.ok, true);
     const raw = fs.readFileSync(path.join(stateDir('demo', 'todo'), '2026-0001.md'), 'utf8');
     assert.ok(raw.includes('\npriority: HIGH\n'), raw);
     assert.equal(raw.includes('priority: 2'), false, raw);
+  } finally { await cleanup(root); }
+});
+
+test('touching a legacy 0 card drops the key rather than stamping a level on it', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    store.ensureProjectDirs('demo');
+    seedRawCard('demo', 'todo', { id: '2026-0001', priorityLine: '0' });
+    // Same migration-on-touch path as above, for the value 166 live cards hold.
+    // The card must come out of the rewrite still unjudged: a build that wrote
+    // `priority: MEDIUM` here would silently convert the entire backlog into
+    // judgements on the next unrelated edit.
+    const r = await board.updateTask({ project: 'demo', id: '2026-0001', fields: { title: 'touched' } });
+    assert.equal(r.ok, true);
+    const raw = fs.readFileSync(path.join(stateDir('demo', 'todo'), '2026-0001.md'), 'utf8');
+    assert.equal(/^priority:/m.test(raw), false, raw);
+    assert.equal((await board.readTask({ project: 'demo', id: '2026-0001' })).task.priority, null);
   } finally { await cleanup(root); }
 });

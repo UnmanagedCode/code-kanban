@@ -11,13 +11,16 @@
 ```
 
 A task's **state is its directory** — never stored in the file; `store.js` injects it on read.
-Task files: minimal `---` frontmatter (`id, title, project, epic?, priority, created, owner?,
+Task files: minimal `---` frontmatter (`id, title, project, epic?, priority?, created, owner?,
 depends_on`) + `## Goal`, `## Acceptance` (checkboxes), `## Logbook` (append-only). Parsed by
 `src/taskfile.js` (hand-rolled, no YAML dep).
 
 `priority` is one of `src/priority.js`'s `PRIORITIES` (`CRITICAL|HIGH|MEDIUM|LOW`), written
-verbatim. It used to be an integer, and cards holding the old values still exist on disk and still
-arrive by sync — reading one never fails, and writing it back rewrites it in the new vocabulary:
+verbatim — and **optional**: an unset card has no `priority:` line at all, like `epic`/`owner`
+(`src/taskfile.js`'s `serialize`). A missing key is also what a pre-enum peer writes as `0`, so
+unset survives a round trip through one. It used to be an integer, and cards holding the old values
+still exist on disk and still arrive by sync — reading one never fails, and writing it back
+rewrites it in the new vocabulary:
 [../gotchas/priority-legacy-tolerance.md](../gotchas/priority-legacy-tolerance.md).
 
 ## Decision: the plugin does NOT write git (but does one narrow read)

@@ -362,10 +362,24 @@ test('POST /api/board/:project/tasks captures priority at filing time', async ()
     const read = await json(`/api/board/demo/tasks/${filed.body.id}`);
     assert.equal(read.body.task.priority, 'CRITICAL');
 
-    // Omitted -> MEDIUM (the GUI's New-task select defaults there too).
+    // Omitted -> unset (the GUI's New-task select opens on the unset option too,
+    // so the two filing surfaces agree).
     const bare = await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'ordinary thing' } });
     const bareRead = await json(`/api/board/demo/tasks/${bare.body.id}`);
-    assert.equal(bareRead.body.task.priority, 'MEDIUM');
+    assert.equal(bareRead.body.task.priority, null);
+    assert.notEqual(bareRead.body.task.priority, 'MEDIUM');
+  });
+});
+
+test('PATCH with priority:null clears the level over HTTP', async () => {
+  await withServer(async ({ json }) => {
+    // The GUI's edit form submits its '— unset —' option as null; this is that
+    // wire path end to end, JSON null included (which survives serialization
+    // where `undefined` would not).
+    const id = (await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'z', priority: 'HIGH' } })).body.id;
+    const patched = await json(`/api/board/demo/tasks/${id}`, { method: 'PATCH', body: { priority: null } });
+    assert.equal(patched.body.ok, true, JSON.stringify(patched.body));
+    assert.equal((await json(`/api/board/demo/tasks/${id}`)).body.task.priority, null);
   });
 });
 
