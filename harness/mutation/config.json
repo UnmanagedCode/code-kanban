@@ -1,0 +1,8 @@
+{
+  "baselineCommand": "node tests/run.mjs",
+  "testCommand": "node tests/run.mjs {tests}",
+  "runner": "node-test",
+  "isolation": "copy",
+  "preserve": ["node_modules"],
+  "baseBranch": "master"
+}
