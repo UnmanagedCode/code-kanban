@@ -21,7 +21,7 @@ const el = (tag, props = {}, children = []) => {
 };
 
 const state = {
-  meta: { states: [], transitions: [] },
+  meta: { states: [], transitions: [], priorities: [] },
   projects: [],
   current: null,
   tasks: [],
@@ -32,6 +32,21 @@ const state = {
 // 2-char rollup-pill labels. s[0] collides (triage and todo both render "t"),
 // so each state gets a distinct short label. Keys track STATES in src/paths.js.
 const ROLLUP_LABEL = { triage: 'tr', backlog: 'bk', todo: 'td', 'in-progress': 'ip', done: 'dn' };
+
+// Every card has a priority (there is no unset state), so badging all of them is
+// noise. MEDIUM — the default — renders BARE; only a deliberate departure from it
+// gets a badge. Bare does not read as "unset" because the card detail view always
+// states the level. The catalog itself comes from /api/board/meta (src/priority.js),
+// never a copy; this set only decides what is worth a badge.
+const DEFAULT_PRIORITY = 'MEDIUM';
+const badgedPriority = (p) => typeof p === 'string' && p !== DEFAULT_PRIORITY;
+
+// Priority <select> options, from the server's catalog, with `current` selected.
+function priorityOptions(current) {
+  const levels = state.meta.priorities?.length ? state.meta.priorities : [DEFAULT_PRIORITY];
+  const sel = levels.includes(current) ? current : DEFAULT_PRIORITY;
+  return levels.map((p) => el('option', { value: p, ...(p === sel ? { selected: '' } : {}) }, p));
+}
 
 // ---- api ------------------------------------------------------------------
 
@@ -186,7 +201,9 @@ function renderBoard() {
 function renderCard(t) {
   const meta = [];
   if (t.epic) meta.push(el('span', { class: 'badge epic' }, t.epic));
-  if (t.priority) meta.push(el('span', { class: 'badge prio' }, `p${t.priority}`));
+  if (badgedPriority(t.priority)) {
+    meta.push(el('span', { class: `badge prio prio-${t.priority.toLowerCase()}` }, t.priority.toLowerCase()));
+  }
   if (t.owner) meta.push(el('span', { class: 'badge owner' }, t.owner));
   if (t.plan) meta.push(el('span', { class: 'badge plan', title: t.plan }, 'plan'));
   return el('div', { class: 'card', tabindex: '0', role: 'button', onclick: () => openDetail(t.id), onkeydown: (e) => { if (e.key === 'Enter') openDetail(t.id); } }, [
@@ -311,7 +328,9 @@ function openDetailNode(t, editing = false, plan = null) {
       ? detailSection('Edit', null, renderEditForm(t, plan))
       : el('div', {}, [
           detailSection('Goal', t.goal),
-          detailSection('Priority', t.priority ? String(t.priority) : ''),
+          // Always stated, MEDIUM included — this is what makes a bare card
+          // unambiguous on the board.
+          detailSection('Priority', String(t.priority ?? DEFAULT_PRIORITY)),
           detailSection('Acceptance', null,
             t.acceptance?.length
               ? el('ul', { class: 'acceptance' }, (t.acceptance || []).map((a) => el('li', {}, [
@@ -348,7 +367,7 @@ function renderEditForm(t, plan = null) {
     el('label', { class: 'field' }, ['Title', el('input', { name: 'title', value: t.title })]),
     el('label', { class: 'field' }, ['Goal', el('textarea', { name: 'goal', rows: '3' }, t.goal || '')]),
     el('label', { class: 'field' }, ['Epic', el('select', { name: 'epic' }, epicOpts)]),
-    el('label', { class: 'field' }, ['Priority', el('input', { name: 'priority', type: 'number', value: String(t.priority ?? 0) })]),
+    el('label', { class: 'field' }, ['Priority', el('select', { name: 'priority' }, priorityOptions(t.priority))]),
     el('label', { class: 'field' }, ['Depends on (comma-separated ids)', el('input', { name: 'depends_on', value: (t.depends_on || []).join(', ') })]),
     el('div', { class: 'form-error' }, ''),
     el('div', { class: 'form-actions' }, [
@@ -367,7 +386,7 @@ async function doEdit(e, id) {
     title: fd.get('title')?.toString().trim(),
     goal: fd.get('goal')?.toString(),
     epic: fd.get('epic')?.toString() || null,
-    priority: Number.parseInt(fd.get('priority'), 10) || 0,
+    priority: fd.get('priority')?.toString(),
     depends_on: fd.get('depends_on')?.toString().split(',').map((s) => s.trim()).filter(Boolean),
   };
   if (!fields.title) { form.querySelector('.form-error').textContent = 'title is required'; return; }
@@ -411,6 +430,7 @@ function renderTaskForm() {
     el('label', { class: 'field' }, ['Goal', el('textarea', { name: 'goal', rows: '3' })]),
     el('label', { class: 'field' }, ['Acceptance (one per line)', el('textarea', { name: 'acceptance', rows: '3' })]),
     el('label', { class: 'field' }, ['Epic', el('select', { name: 'epic' }, epicOpts)]),
+    el('label', { class: 'field' }, ['Priority', el('select', { name: 'priority' }, priorityOptions(DEFAULT_PRIORITY))]),
     el('label', { class: 'field' }, ['Depends on (comma-separated ids)', el('input', { name: 'depends_on' })]),
     el('div', { class: 'form-error' }, ''),
     el('div', { class: 'form-actions' }, [
@@ -433,6 +453,7 @@ async function doFileTask(e) {
     goal: fd.get('goal')?.toString(),
     acceptance: fd.get('acceptance')?.toString().split('\n').map((s) => s.trim()).filter(Boolean),
     epic: fd.get('epic')?.toString() || undefined,
+    priority: fd.get('priority')?.toString() || undefined,
     depends_on: fd.get('depends_on')?.toString().split(',').map((s) => s.trim()).filter(Boolean),
   };
   let data;

@@ -15,6 +15,13 @@ conductor's own tool — not a team/shared surface.
 - **Plans:** a task may carry an optional **link to a plan file** (never the plan text), so work
   planned days earlier outlives the worker that planned it — a parked-with-plan card is just `todo`
   plus that link. Link grammar and refusals: `docs/protocol.md` (`update_task`).
+- **Priority:** every card carries exactly one of `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`. There is
+  **no unset level** — omitting it on `file_task` means `MEDIUM`, and "nobody has judged this yet"
+  is what the `triage` lane already says. Set it at filing time (`file_task`'s `priority`, or the
+  GUI's New-task form); change it later with `update_task`. Listings sort by **column first, then
+  priority CRITICAL→LOW, then id**. An unrecognised value from a live caller is refused
+  `INVALID_STATE`; a value read off disk is never refused — see "legacy tolerance" in
+  `docs/architecture.md`.
 - **Epics:** first-class (`goal` + a per-state rollup computed on read). A task carries an optional
   `epic` slug. Splitting an epic needs no verb — file N tasks sharing the same `epic`. An epic is
   either **project-scoped** or **cross-project** (spans ≥2 projects, rollup aggregated across all
@@ -34,13 +41,13 @@ conductor's own tool — not a team/shared surface.
 
 | Tool | Who | Effect |
 |------|-----|--------|
-| `file_task` | worker + conductor | Create a task in `triage`, or directly in `todo`/`backlog` via `category`; returns the new id. |
+| `file_task` | worker + conductor | Create a task in `triage`, or directly in `todo`/`backlog` via `category`; takes `priority` (`CRITICAL`/`HIGH`/`MEDIUM`/`LOW`, default `MEDIUM`); returns the new id. |
 | `log_progress` | worker + conductor | Append a logbook line: worker's owned in-progress card (no `id`), or conductor's target card (`id` + `project`). |
 | `list_tasks` | conductor | List tasks, optionally filtered by `state`/`epic`. |
 | `read_task` | conductor | Read one task (+ logbook, optionally last `logTail`); always returns the resolved plan path, and with `includePlan` the plan file's body. |
 | `read_progress` | conductor | Read a task's logbook only, most-recent first. |
 | `move_task` | conductor | Move between states; sets `owner` on entering `in-progress`; on landing (`→done`), stamps `commit` (given, or auto-captured from the owning worker's live worktree HEAD). |
-| `update_task` | conductor | Update `title`/`goal`/`epic`/`priority`/`depends_on`, attach or clear the `plan` link, and reassign `owner` on an in-progress card (plan worker → implementer, no lane move). |
+| `update_task` | conductor | Update `title`/`goal`/`epic`/`priority` (same four levels)/`depends_on`, attach or clear the `plan` link, and reassign `owner` on an in-progress card (plan worker → implementer, no lane move). |
 | `create_epic` | conductor | Create/refresh an epic — `project` (project-scoped) or `projects` (cross-project). |
 | `list_epics` | conductor | A project's epics + cross-project epics spanning it, with computed rollups. |
 | `read_epic` | conductor | One epic (+ rollup) and its tasks; cross-project epics aggregate across members. |
@@ -63,20 +70,26 @@ so it shares the same `board.js` service layer and per-project mutex as the MCP 
   `code-kanban:selected-project`) so a reload or revisit restores it — falling back to the first
   project if the saved pick no longer exists.
 - **Board** — five columns rendered from `STATES`; cards show id, title, epic/priority/owner/plan
-  badges (the plan badge's tooltip is the link). A **Has plan** checkbox in the top bar filters the
+  badges (the plan badge's tooltip is the link). The priority badge is shown only for `CRITICAL`,
+  `HIGH` and `LOW` — `MEDIUM`, the default, renders **bare** so a badge means a deliberate
+  judgement rather than decorating every card. A bare card is not ambiguous: the detail view always
+  states the level. A **Has plan** checkbox in the top bar filters the
   board to cards carrying a plan link (client-side, not remembered across reloads). A card's legal
   move targets come from `GET /api/board/meta` (the single source `ALLOWED_TRANSITIONS`), so the
   GUI never offers an illegal move.
-- **Card detail** — opens to a read-only view: Goal, Priority, Acceptance checklist, the
+- **Card detail** — opens to a read-only view: Goal, Priority (always stated, `MEDIUM` included),
+  Acceptance checklist, the
   append-only Logbook, (once landed) the Commit hash, and — when the card has a plan link — a Plan
   section showing the link plus the plan file's text (`(file not found)` for a dead link,
   `(truncated)` past the size cap), plus a Move control. An Edit button swaps in a form
-  (title/goal/epic/priority/depends_on); Save or Cancel returns to the read view. Acceptance,
-  Logbook, Commit and the plan link are not editable in the GUI.
+  (title/goal/epic/priority/depends_on); priority is a **select** over the four levels (never a
+  number field), populated from `GET /api/board/meta`'s `priorities`. Save or Cancel returns to the
+  read view. Acceptance, Logbook, Commit and the plan link are not editable in the GUI.
 - **Epics** — rollup table; "open" reads one epic (+ its tasks). New-epic form upserts by slug; its
   "Span projects" multi-select makes a cross-project epic when ≥2 are picked (else project-scoped).
   Cross-project epics show a badge + member list; their detail lists each task's project.
-- **New task** — files into `triage` (acceptance is one line per line → checkboxes).
+- **New task** — files into `triage` (acceptance is one line per line → checkboxes), with a
+  Priority select defaulting to `MEDIUM` so the level is captured at filing time.
 - **Sync** — opens a dialog to sync with another instance on a different machine: it shows THIS
   board's URL (copyable — share it with the peer), a field for the PEER board's URL, and a scope
   selector (this project / all projects). Clicking **Pull from peer** does a **one-way pull**: it

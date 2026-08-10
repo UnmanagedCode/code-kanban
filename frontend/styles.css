@@ -133,7 +133,12 @@ main { flex: 1; overflow: auto; padding: 12px 16px 32px; display: flex; flex-dir
 }
 .badge.epic { color: var(--triage); border-color: var(--triage); }
 .badge.owner { color: var(--progress); border-color: var(--progress); }
-.badge.prio { color: var(--accent); border-color: var(--accent); }
+/* Priority badges are graded by severity. MEDIUM is never badged (app.js), so
+   there is deliberately no .prio-medium rule. */
+.badge.prio { text-transform: uppercase; letter-spacing: .3px; }
+.badge.prio-critical { color: var(--err); border-color: var(--err); font-weight: 600; }
+.badge.prio-high { color: var(--warn); border-color: var(--warn); }
+.badge.prio-low { color: var(--ink-dim); border-color: var(--line); }
 .badge.epic-cross { color: var(--progress); border-color: var(--progress); margin-left: 6px; }
 .badge.plan { color: var(--warn); border-color: var(--warn); }
 

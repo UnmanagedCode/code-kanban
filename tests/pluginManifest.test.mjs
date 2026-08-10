@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PRIORITIES, DEFAULT_PRIORITY } from '../src/priority.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const manifest = JSON.parse(readFileSync(path.join(ROOT, 'conductor.plugin.json'), 'utf8'));
@@ -54,4 +55,18 @@ test('every tool inputSchema obeys the flat-schema subset', () => {
       assert.equal('properties' in def, false, `${tool.name}.${prop} has no nested properties`);
     }
   }
+});
+
+// The advertised priority enum is the ONE place the level catalog is duplicated
+// outside src/priority.js (the manifest is static JSON the host reads before any
+// code runs). Pin it to the code so the two can never drift.
+test('file_task advertises the priority enum + default from src/priority.js', () => {
+  const fileTask = manifest.mcp.tools.find((t) => t.name === 'file_task');
+  const prop = fileTask.inputSchema.properties.priority;
+  assert.ok(prop, 'file_task advertises a priority param');
+  assert.deepEqual(prop.enum, PRIORITIES);
+  assert.equal(prop.default, DEFAULT_PRIORITY);
+  assert.equal(prop.type, 'string');
+  // Not required — omitting it is how you get the default.
+  assert.equal(fileTask.inputSchema.required.includes('priority'), false);
 });

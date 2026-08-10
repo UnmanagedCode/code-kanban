@@ -32,7 +32,7 @@
     "tools": [
       {
         "name": "file_task",
-        "description": "File a new task for a project. Worker + conductor. Returns the server-assigned id.",
+        "description": "File a new task for a project. Worker + conductor. Returns the server-assigned id. Set `priority` here — it is the one moment the level is cheap to judge; omitting it means MEDIUM, not 'unprioritized' (that is what the triage lane says).",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -42,7 +42,8 @@
             "acceptance": { "type": "array", "items": { "type": "string" }, "description": "Acceptance criteria; each becomes an unchecked checkbox." },
             "epic": { "type": "string", "description": "Epic slug to file under; the epic must already exist (create_epic)." },
             "depends_on": { "type": "array", "items": { "type": "string" }, "description": "Task ids this task depends on." },
-            "category": { "type": "string", "enum": ["todo", "backlog"], "description": "Land directly in this lane instead of triage. Omit to file into triage (default)." }
+            "category": { "type": "string", "enum": ["todo", "backlog"], "description": "Land directly in this lane instead of triage. Omit to file into triage (default)." },
+            "priority": { "type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"], "default": "MEDIUM", "description": "How urgent this is. There is no unset level; omit for MEDIUM. An unrecognised value is refused (INVALID_STATE)." }
           },
           "required": ["project", "title"]
         }
@@ -117,13 +118,13 @@
       },
       {
         "name": "update_task",
-        "description": "Update task fields. `fields` may contain any of: title, goal, epic, priority, depends_on, plan, owner (other keys ignored). `plan` is a LINK to a plan file — `board:<rel>` (under the board's plans/ dir), `repo:<rel>` (under the project's base checkout) or a bare relative path (means board:); it must resolve to an existing file (else PLAN_UNKNOWN), and null clears it. `owner` may only be set on an in-progress card (else INVALID_STATE). Conductor.",
+        "description": "Update task fields. `fields` may contain any of: title, goal, epic, priority, depends_on, plan, owner (other keys ignored). `priority` is one of CRITICAL, HIGH, MEDIUM, LOW (no unset level; anything else is INVALID_STATE). `plan` is a LINK to a plan file — `board:<rel>` (under the board's plans/ dir), `repo:<rel>` (under the project's base checkout) or a bare relative path (means board:); it must resolve to an existing file (else PLAN_UNKNOWN), and null clears it. `owner` may only be set on an in-progress card (else INVALID_STATE). Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
             "project": { "type": "string", "minLength": 1 },
             "id": { "type": "string", "minLength": 1 },
-            "fields": { "type": "object", "description": "Subset of {title, goal, epic, priority, depends_on, plan, owner}. Advertised as an opaque object (flat-schema constraint); validated at runtime." }
+            "fields": { "type": "object", "description": "Subset of {title, goal, epic, priority (CRITICAL|HIGH|MEDIUM|LOW), depends_on, plan, owner}. Advertised as an opaque object (flat-schema constraint); validated at runtime." }
           },
           "required": ["project", "id", "fields"]
         }

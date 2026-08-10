@@ -445,10 +445,10 @@ test('update_task applies whitelisted fields and ignores others', async () => {
   useProjects(['demo']);
   try {
     const { id } = await board.fileTask({ project: 'demo', title: 'orig' });
-    await board.updateTask({ project: 'demo', id, fields: { title: 'renamed', priority: 5, bogus: 'x', commit: 'sneaky' } });
+    await board.updateTask({ project: 'demo', id, fields: { title: 'renamed', priority: 'CRITICAL', bogus: 'x', commit: 'sneaky' } });
     const r = await board.readTask({ project: 'demo', id });
     assert.equal(r.task.title, 'renamed');
-    assert.equal(r.task.priority, 5);
+    assert.equal(r.task.priority, 'CRITICAL');
     assert.equal('bogus' in r.task, false);
     assert.equal(r.task.commit, null); // commit is not in UPDATABLE — update_task can't set it
   } finally { await cleanup(root); }
@@ -1053,5 +1053,209 @@ test('list_tasks summary carries the plan link', async () => {
     const byId = Object.fromEntries(tasks.map((t) => [t.id, t]));
     assert.equal(byId[a.id].plan, 'board:p.md');
     assert.equal(tasks.filter((t) => !t.plan).length, 1);
+  } finally { await cleanup(root); }
+});
+
+// ---- priority ----------------------------------------------------------
+//
+// The field is an enum (src/priority.js) with no unset state. These pin the
+// three things a mutant can quietly break: the rank ORDER, the fact that a
+// refusal never half-writes, and that a card written by the pre-enum build
+// still loads and sorts.
+
+// Write a task file straight into a column dir, bypassing board.js entirely —
+// the only way to fabricate the exact frontmatter an OLD build produced.
+function seedRawCard(project, state, { id, priorityLine, created = '2026-01-01T00:00:00.000Z' }) {
+  const dir = stateDir(project, state);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, `${id}.md`), [
+    '---',
+    `id: ${id}`,
+    `title: legacy ${id}`,
+    `project: ${project}`,
+    ...(priorityLine === null ? [] : [`priority: ${priorityLine}`]),
+    `created: ${created}`,
+    'depends_on: []',
+    '---',
+    '',
+    '## Goal',
+    '',
+    '## Acceptance',
+    '',
+    '## Logbook',
+    '',
+  ].join('\n'));
+}
+
+test('file_task defaults priority to MEDIUM when omitted', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 'no priority given' });
+    const r = await board.readTask({ project: 'demo', id });
+    assert.equal(r.task.priority, 'MEDIUM');
+    // And it is on DISK as the word, not as a number or an absent key.
+    const raw = fs.readFileSync(path.join(stateDir('demo', 'triage'), `${id}.md`), 'utf8');
+    assert.ok(raw.includes('\npriority: MEDIUM\n'), raw);
+  } finally { await cleanup(root); }
+});
+
+test('file_task accepts an explicit priority and persists it', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    for (const level of ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']) {
+      const { id } = await board.fileTask({ project: 'demo', title: level, priority: level });
+      assert.equal((await board.readTask({ project: 'demo', id })).task.priority, level);
+    }
+  } finally { await cleanup(root); }
+});
+
+test('file_task refuses an unrecognised priority and files no card', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    // Everything the DISK parser would tolerate must be refused here — that
+    // split is the design (see .wiki/gotchas/priority-legacy-tolerance.md).
+    for (const bad of ['URGENT', 'medium', 'Critical', '', 7, 2, 0, null, ['HIGH']]) {
+      const r = await board.fileTask({ project: 'demo', title: 'nope', priority: bad });
+      assert.equal(r.ok, false, `priority ${JSON.stringify(bad)} should refuse`);
+      assert.equal(r.code, 'INVALID_STATE', JSON.stringify(bad));
+    }
+    // What this pins: a refusal performs NO store.writeTask. Nothing is listed,
+    // and the next real card still gets -0001 — the id floor is bumped by
+    // writeTask, not by store.nextId (which is a read), so a consumed id would
+    // mean a card file had been written.
+    assert.deepEqual((await board.listTasks({ project: 'demo' })).tasks, []);
+    const { id } = await board.fileTask({ project: 'demo', title: 'first real card' });
+    assert.equal(id.endsWith('-0001'), true, `a refusal wrote a card: ${id}`);
+  } finally { await cleanup(root); }
+});
+
+test('update_task refuses a bad priority and leaves the WHOLE card untouched', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 'orig', priority: 'LOW' });
+    // A valid title rides along with the bad priority, and NEITHER lands. What
+    // guarantees that is not the ordering of the checks but the single terminal
+    // store.writeTask (board.js:417-420): `task` is an in-memory parse, so any
+    // refusal path returns before anything is persisted. This pins that
+    // property — a mutant that persists mid-loop lets the title through.
+    const r = await board.updateTask({ project: 'demo', id, fields: { title: 'renamed', priority: 'URGENT' } });
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'INVALID_STATE');
+    const after = (await board.readTask({ project: 'demo', id })).task;
+    assert.equal(after.title, 'orig');
+    assert.equal(after.priority, 'LOW');
+  } finally { await cleanup(root); }
+});
+
+test('update_task refuses every non-level value (there is no way to clear priority)', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 'x', priority: 'HIGH' });
+    for (const bad of [null, '', 'high', 3, '3', undefined]) {
+      const r = await board.updateTask({ project: 'demo', id, fields: { priority: bad } });
+      assert.equal(r.ok, false, `priority ${JSON.stringify(bad)} should refuse`);
+      assert.equal(r.code, 'INVALID_STATE', JSON.stringify(bad));
+    }
+    assert.equal((await board.readTask({ project: 'demo', id })).task.priority, 'HIGH');
+  } finally { await cleanup(root); }
+});
+
+test('list_tasks sorts CRITICAL first through LOW last within a column', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    // Filed so that ID order CONTRADICTS priority order: ids ascend 0001..0004
+    // while priorities ascend LOW..CRITICAL. An implementation that dropped the
+    // priority key (or reversed it) cannot produce the expected sequence by
+    // falling through to the id tiebreak.
+    const low = (await board.fileTask({ project: 'demo', title: 'l', priority: 'LOW' })).id;
+    const med = (await board.fileTask({ project: 'demo', title: 'm', priority: 'MEDIUM' })).id;
+    const high = (await board.fileTask({ project: 'demo', title: 'h', priority: 'HIGH' })).id;
+    const crit = (await board.fileTask({ project: 'demo', title: 'c', priority: 'CRITICAL' })).id;
+    assert.deepEqual([low, med, high, crit].sort(), [low, med, high, crit]); // ids really do ascend
+    const ids = (await board.listTasks({ project: 'demo' })).tasks.map((t) => t.id);
+    assert.deepEqual(ids, [crit, high, med, low]);
+  } finally { await cleanup(root); }
+});
+
+test('column order dominates priority; id breaks a priority tie', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    // A LOW card further left must still precede a CRITICAL card further right.
+    const lowTodo = (await board.fileTask({ project: 'demo', title: 'low/todo', priority: 'LOW', category: 'todo' })).id;
+    const critDone = (await board.fileTask({ project: 'demo', title: 'crit/done', priority: 'CRITICAL', category: 'todo' })).id;
+    await board.moveTask({ project: 'demo', id: critDone, to: 'in-progress' });
+    await board.moveTask({ project: 'demo', id: critDone, to: 'done' });
+    // Two MEDIUM cards in one column: ascending id decides.
+    const m1 = (await board.fileTask({ project: 'demo', title: 'm1', category: 'todo' })).id;
+    const m2 = (await board.fileTask({ project: 'demo', title: 'm2', category: 'todo' })).id;
+
+    const ids = (await board.listTasks({ project: 'demo' })).tasks.map((t) => t.id);
+    assert.deepEqual(ids, [m1, m2, lowTodo, critDone]);
+    assert.ok(ids.indexOf(lowTodo) < ids.indexOf(critDone), 'column must dominate priority');
+    assert.ok(ids.indexOf(m1) < ids.indexOf(m2), 'equal priority falls through to ascending id');
+  } finally { await cleanup(root); }
+});
+
+test('a card written by the pre-enum build still loads, and sorts by its mapped level', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    store.ensureProjectDirs('demo');
+    // Exactly what an older build left on disk: the legacy ladder, the
+    // ubiquitous unset 0 (all 166 live cards), an out-of-range int, an unknown
+    // word, and a card with no priority key at all.
+    seedRawCard('demo', 'todo', { id: '2026-0001', priorityLine: '0' });
+    seedRawCard('demo', 'todo', { id: '2026-0002', priorityLine: '1' });
+    seedRawCard('demo', 'todo', { id: '2026-0003', priorityLine: '4' });
+    seedRawCard('demo', 'todo', { id: '2026-0004', priorityLine: '9' });
+    seedRawCard('demo', 'todo', { id: '2026-0005', priorityLine: 'URGENT' });
+    seedRawCard('demo', 'todo', { id: '2026-0006', priorityLine: null });
+
+    const listed = (await board.listTasks({ project: 'demo' })).tasks;
+    // Not one card is dropped, and nothing threw on the way.
+    assert.equal(listed.length, 6);
+    const byId = Object.fromEntries(listed.map((t) => [t.id, t.priority]));
+    assert.deepEqual(byId, {
+      '2026-0001': 'MEDIUM',   // 0 == unset -> the default
+      '2026-0002': 'CRITICAL', // 1
+      '2026-0003': 'LOW',      // 4
+      '2026-0004': 'MEDIUM',   // out of range
+      '2026-0005': 'MEDIUM',   // unknown word
+      '2026-0006': 'MEDIUM',   // key absent entirely
+    });
+    // And they sort sanely: the mapped CRITICAL leads, the mapped LOW trails,
+    // the MEDIUMs sit between in id order. Under the OLD ascending-integer
+    // compare the unset 0 card would have led instead.
+    assert.deepEqual(listed.map((t) => t.id), [
+      '2026-0002', '2026-0001', '2026-0004', '2026-0005', '2026-0006', '2026-0003',
+    ]);
+  } finally { await cleanup(root); }
+});
+
+test('touching a legacy card rewrites its priority in the new vocabulary', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    store.ensureProjectDirs('demo');
+    seedRawCard('demo', 'todo', { id: '2026-0001', priorityLine: '2' });
+    // What this pins: a legacy on-disk value does not survive being touched —
+    // any unrelated mutation rewrites it in the new vocabulary, which is why
+    // there is no migration script. The coercion that achieves it happens on
+    // PARSE (the read side), so this test says nothing about serialize's own
+    // normalisation; that invariant is owned by
+    // tests/taskfile.test.mjs::"serialize never emits a non-level, whatever it
+    // is handed", which hands junk straight to serialize and bypasses parse.
+    const r = await board.updateTask({ project: 'demo', id: '2026-0001', fields: { title: 'touched' } });
+    assert.equal(r.ok, true);
+    const raw = fs.readFileSync(path.join(stateDir('demo', 'todo'), '2026-0001.md'), 'utf8');
+    assert.ok(raw.includes('\npriority: HIGH\n'), raw);
+    assert.equal(raw.includes('priority: 2'), false, raw);
   } finally { await cleanup(root); }
 });

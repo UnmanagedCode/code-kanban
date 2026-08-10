@@ -3,6 +3,7 @@ import * as mcp from './mcp.js';
 import * as board from './board.js';
 import { STATES } from './paths.js';
 import { ALLOWED_TRANSITIONS } from './board.js';
+import { PRIORITIES } from './priority.js';
 import { listProjects } from './projects.js';
 
 // Thin HTTP layer. Exposes the health probe, the MCP tool-call bridge the
@@ -63,11 +64,13 @@ export function buildRoutes() {
     }
   });
 
-  // Column list + legal transitions, from the single source of truth, so the
-  // GUI renders only legal move targets (and still surfaces INVALID_STATE for
-  // races). transitions is the Set serialized as an array of "from>to".
+  // Column list + legal transitions + priority levels, from the single sources
+  // of truth, so the GUI renders only legal move targets (and still surfaces
+  // INVALID_STATE for races) and its priority selects can't drift from
+  // src/priority.js. transitions is the Set serialized as an array of "from>to";
+  // priorities is in rank order (highest first).
   r.get('/board/meta', (req, res) => {
-    res.json({ states: STATES, transitions: [...ALLOWED_TRANSITIONS] });
+    res.json({ states: STATES, transitions: [...ALLOWED_TRANSITIONS], priorities: PRIORITIES });
   });
 
   // List a project's cards (optionally filtered). One call returns all; the GUI
@@ -87,9 +90,9 @@ export function buildRoutes() {
 
   // File a new task into triage. acceptance is string[] -> checkboxes.
   r.post('/board/:project/tasks', wrap((req) => {
-    const { title, goal, acceptance, epic, depends_on } = req.body ?? {};
+    const { title, goal, acceptance, epic, depends_on, priority } = req.body ?? {};
     return board.fileTask({
-      project: req.params.project, title, goal, acceptance, epic, depends_on,
+      project: req.params.project, title, goal, acceptance, epic, depends_on, priority,
       sessionId: GUI_ACTOR,
     });
   }));

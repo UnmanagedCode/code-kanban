@@ -606,3 +606,39 @@ test('exportBoard carries a card plan link on the wire', async () => {
     assert.equal(dump.projects.alpha[0].plan, 'repo:docs/p.md');
   });
 });
+
+// ---- priority across a version boundary ----------------------------------
+
+test('a peer dump carrying legacy INTEGER priorities merges and maps to levels', async () => {
+  await withRoot(async () => {
+    // Exactly what a pre-enum peer's /api/sync/export emits: JSON numbers.
+    serveDump({
+      alpha: [
+        card({ id: '2026-0001', uid: 'u-A', title: 'was 1', priority: 1 }),
+        card({ id: '2026-0002', uid: 'u-B', title: 'was 0', priority: 0 }),
+        card({ id: '2026-0003', uid: 'u-C', title: 'was 4', priority: 4 }),
+      ],
+    });
+    const r = await pull('project', 'alpha');
+    assert.equal(r.ok, true);
+    // Not skipped as malformed — an unusable priority must never cost a card.
+    assert.equal(r.summary.added, 3);
+    assert.deepEqual(r.summary.skippedCards, []);
+    const levels = Object.fromEntries(
+      (await board.listTasks({ project: 'alpha' })).tasks.map((t) => [t.title, t.priority]),
+    );
+    assert.deepEqual(levels, { 'was 1': 'CRITICAL', 'was 0': 'MEDIUM', 'was 4': 'LOW' });
+    // The merge write normalises on disk too, so the card stops being legacy.
+    assert.equal(byTitle('alpha', 'was 1').priority, 'CRITICAL');
+  });
+});
+
+test('an incoming legacy card outranks a local MEDIUM once mapped', async () => {
+  await withRoot(async () => {
+    seedLocal('alpha', { id: '2026-0001', uid: 'u-local', title: 'local', priority: 'MEDIUM', state: 'todo' });
+    serveDump({ alpha: [card({ id: '2026-0002', uid: 'u-peer', title: 'peer was 1', priority: 1, state: 'todo' })] });
+    assert.equal((await pull('project', 'alpha')).ok, true);
+    const ids = (await board.listTasks({ project: 'alpha' })).tasks.map((t) => t.title);
+    assert.deepEqual(ids, ['peer was 1', 'local']);
+  });
+});

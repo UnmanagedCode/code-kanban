@@ -18,6 +18,7 @@ import { validateProject, listProjects } from './projects.js';
 import { withLock } from './mutex.js';
 import * as store from './store.js';
 import { logLine } from './taskfile.js';
+import { PRIORITIES, DEFAULT_PRIORITY, isPriority, priorityRank } from './priority.js';
 import { localNodeId, deriveUid } from './nodeId.js';
 import { headSha } from './git.js';
 import { ownerCwd } from './ownerWorktree.js';
@@ -169,11 +170,12 @@ function summary(t) {
   };
 }
 
-// Stable ordering: by column, then priority asc, then id.
+// Stable ordering: by column, then priority (CRITICAL first, LOW last), then id.
+// priorityRank is index-into-PRIORITIES, so ascending = highest priority first.
 function sortTasks(tasks) {
   return tasks.sort((a, b) =>
     STATES.indexOf(a.state) - STATES.indexOf(b.state)
-    || a.priority - b.priority
+    || priorityRank(a.priority) - priorityRank(b.priority)
     || a.id.localeCompare(b.id));
 }
 
@@ -183,7 +185,7 @@ function sortTasks(tasks) {
 // (ALLOWED_TRANSITIONS has triage>backlog, triage>todo) rather than a separate list.
 const CATEGORIES = ['todo', 'backlog'];
 
-export async function fileTask({ project, title, goal, acceptance, epic, depends_on, category, sessionId } = {}) {
+export async function fileTask({ project, title, goal, acceptance, epic, depends_on, category, priority, sessionId } = {}) {
   const bad = await requireProject(project);
   if (bad) return bad;
   if (typeof title !== 'string' || !title.trim()) {
@@ -191,6 +193,11 @@ export async function fileTask({ project, title, goal, acceptance, epic, depends
   }
   if (category !== undefined && !CATEGORIES.includes(category)) {
     return fail('INVALID_STATE', `category must be one of ${CATEGORIES.join(', ')}`);
+  }
+  // Strict at the caller surface — the tolerant mapping is for cards read off
+  // disk, never for a value an author can be told is wrong (see priority.js).
+  if (priority !== undefined && !isPriority(priority)) {
+    return fail('INVALID_STATE', `priority must be one of ${PRIORITIES.join(', ')}`);
   }
   return withLock(project, () => {
     store.ensureProjectDirs(project);
@@ -201,7 +208,7 @@ export async function fileTask({ project, title, goal, acceptance, epic, depends
     const created = nowIso();
     const task = {
       id, uid: crypto.randomUUID(), title: title.trim(), project, epic: epic ?? null,
-      priority: 0, created, updated: created, node: localNodeId(),
+      priority: priority ?? DEFAULT_PRIORITY, created, updated: created, node: localNodeId(),
       owner: null, depends_on: Array.isArray(depends_on) ? depends_on : [],
       goal: typeof goal === 'string' ? goal : '',
       acceptance: (Array.isArray(acceptance) ? acceptance : []).map((text) => ({ text, done: false })),
@@ -404,6 +411,9 @@ export async function updateTask({ project, id, fields } = {}) {
     if (fields.epic && !epicVisibleIn(project, fields.epic)) {
       return fail('EPIC_UNKNOWN', `unknown epic: ${fields.epic}`);
     }
+    if ('priority' in fields && !isPriority(fields.priority)) {
+      return fail('INVALID_STATE', `priority must be one of ${PRIORITIES.join(', ')}`);
+    }
     // plan/owner are validated up here, alongside the epic check. What actually
     // guarantees no half-applied card is that every refusal returns before the
     // single store.writeTask at the end — `task` is an in-memory parse, so
@@ -432,8 +442,7 @@ export async function updateTask({ project, id, fields } = {}) {
     for (const key of UPDATABLE) {
       if (!(key in fields) || key === 'plan' || key === 'owner') continue;
       if (key === 'depends_on') task.depends_on = Array.isArray(fields.depends_on) ? fields.depends_on : [];
-      else if (key === 'priority') task.priority = Number.parseInt(fields.priority, 10) || 0;
-      else task[key] = fields[key];
+      else task[key] = fields[key]; // priority is validated above, so it lands verbatim
     }
     if ('plan' in fields) task.plan = planNext;
     if ('owner' in fields) {

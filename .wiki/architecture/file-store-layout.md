@@ -15,6 +15,11 @@ Task files: minimal `---` frontmatter (`id, title, project, epic?, priority, cre
 depends_on`) + `## Goal`, `## Acceptance` (checkboxes), `## Logbook` (append-only). Parsed by
 `src/taskfile.js` (hand-rolled, no YAML dep).
 
+`priority` is one of `src/priority.js`'s `PRIORITIES` (`CRITICAL|HIGH|MEDIUM|LOW`), written
+verbatim. It used to be an integer, and cards holding the old values still exist on disk and still
+arrive by sync — reading one never fails, and writing it back rewrites it in the new vocabulary:
+[../gotchas/priority-legacy-tolerance.md](../gotchas/priority-legacy-tolerance.md).
+
 ## Decision: the plugin does NOT write git (but does one narrow read)
 
 Moves and edits are **plain atomic filesystem ops** (`store.js`): writes are tmp-file +

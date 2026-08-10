@@ -10,6 +10,8 @@
 // tiebreak). `uid`/`node` are stripped from MCP/GUI reads (board.readTask); only
 // /api/sync/export exposes them. See .wiki/architecture/cross-instance-sync.md.
 
+import { DEFAULT_PRIORITY, normalizePriority } from './priority.js';
+
 const SCALAR_KEYS = ['id', 'uid', 'title', 'project', 'epic', 'priority', 'created', 'updated', 'node', 'owner', 'commit', 'plan'];
 
 function serializeDependsOn(deps) {
@@ -25,6 +27,10 @@ function parseDependsOn(raw) {
 // task: {id,uid?,title,project,epic?,priority,created,updated?,node?,owner?,
 //        commit?,plan?,depends_on[], goal, acceptance:[{text,done}], logbook:[string]}
 // `plan` is a LINK to a plan file (src/planLink.js), never the plan text.
+// `priority` is one of src/priority.js's PRIORITIES. `parse` coerces a legacy
+// value to a level in memory, so any subsequent write persists the level — the
+// tolerant parse IS the migration. `serialize` normalises too, as a separate
+// guard on a card object that never came through `parse`.
 export function serialize(task) {
   const fm = [];
   fm.push(`id: ${task.id}`);
@@ -32,7 +38,7 @@ export function serialize(task) {
   fm.push(`title: ${task.title ?? ''}`);
   fm.push(`project: ${task.project}`);
   if (task.epic) fm.push(`epic: ${task.epic}`);
-  fm.push(`priority: ${Number.isFinite(task.priority) ? task.priority : 0}`);
+  fm.push(`priority: ${normalizePriority(task.priority)}`);
   fm.push(`created: ${task.created}`);
   if (task.updated) fm.push(`updated: ${task.updated}`);
   if (task.node) fm.push(`node: ${task.node}`);
@@ -68,7 +74,7 @@ export function serializeBody(task) {
 export function parse(text, { state } = {}) {
   const lines = text.split('\n');
   const task = {
-    id: null, uid: null, title: '', project: '', epic: null, priority: 0,
+    id: null, uid: null, title: '', project: '', epic: null, priority: DEFAULT_PRIORITY,
     created: null, updated: null, node: null, owner: null, commit: null, plan: null,
     depends_on: [], goal: '', acceptance: [], logbook: [], state: state ?? null,
   };
@@ -84,7 +90,7 @@ export function parse(text, { state } = {}) {
       const key = line.slice(0, idx).trim();
       const val = line.slice(idx + 1).trim();
       if (key === 'depends_on') task.depends_on = parseDependsOn(val);
-      else if (key === 'priority') task.priority = Number.parseInt(val, 10) || 0;
+      else if (key === 'priority') task.priority = normalizePriority(val);
       else if (SCALAR_KEYS.includes(key)) task[key] = val === '' ? (['epic', 'owner', 'commit', 'plan', 'uid', 'updated', 'node'].includes(key) ? null : val) : val;
     }
     i++; // skip closing fence

@@ -54,16 +54,14 @@ async function seed(base, projectsRoot) {
   await call(`/api/board/${PROJECT}/epics`, { method: 'POST', body: { slug: 'auth', title: 'Auth flow', goal: 'Sign-in + sessions' } }, 'epic auth');
   await call(`/api/board/${PROJECT}/epics`, { method: 'POST', body: { slug: 'search', title: 'Search', goal: 'Full-text search' } }, 'epic search');
 
-  // fileTask does NOT accept priority (it is 0 at filing by design); set it via
-  // updateTask below so the priority badge renders.
-  const a = await call(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Design login screen', goal: 'Email + password form', acceptance: ['Matches design spec', 'Accessible labels'], epic: 'auth' } }, 'file a');
-  const b = await call(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Hash passwords with argon2', goal: 'No plaintext at rest', epic: 'auth' } }, 'file b');
-  const c = await call(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Build search index', goal: 'Inverted index over docs', epic: 'search' } }, 'file c');
+  // fileTask now accepts priority, so the level is set at the capture point. One
+  // card per badged level (HIGH/CRITICAL/LOW) plus d, which takes the MEDIUM
+  // default and is the WITNESS that MEDIUM renders bare — without it a missing
+  // badge and a broken badge look identical in a screenshot.
+  const a = await call(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Design login screen', goal: 'Email + password form', acceptance: ['Matches design spec', 'Accessible labels'], epic: 'auth', priority: 'HIGH' } }, 'file a');
+  const b = await call(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Hash passwords with argon2', goal: 'No plaintext at rest', epic: 'auth', priority: 'CRITICAL' } }, 'file b');
+  const c = await call(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Build search index', goal: 'Inverted index over docs', epic: 'search', priority: 'LOW' } }, 'file c');
   const d = await call(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Triage: spike caching layer', goal: 'Decide redis vs in-memory' } }, 'file d');
-
-  await call(`/api/board/${PROJECT}/tasks/${a.id}`, { method: 'PATCH', body: { priority: 2 } }, 'priority a');
-  await call(`/api/board/${PROJECT}/tasks/${b.id}`, { method: 'PATCH', body: { priority: 3 } }, 'priority b');
-  await call(`/api/board/${PROJECT}/tasks/${c.id}`, { method: 'PATCH', body: { priority: 1 } }, 'priority c');
 
   // Spread cards across columns via LEGAL transitions. b reaches in-progress
   // through triage→todo→in-progress (NOT triage→in-progress, which is illegal),
@@ -224,6 +222,58 @@ async function main() {
       if (before <= 1) throw new Error(`filter proves nothing: only ${before} card(s) before filtering`);
       await page.screenshot({ path: path.join(SHOTS, 'gui-8-plan-filter.png'), fullPage: true });
       console.log(`snapped has-plan filter (${before} cards -> 1)`);
+      await page.uncheck('#plan-filter');
+      await page.waitForFunction((n) => document.querySelectorAll('.card').length === n, before, { timeout: 10_000 });
+
+      // 9. Priority badges: a/b/c were filed HIGH/CRITICAL/LOW and d took the
+      //    MEDIUM default. Exactly three badges, and NONE for MEDIUM — the
+      //    assertion is what distinguishes "MEDIUM renders bare" from "the badge
+      //    is broken", which look the same in a screenshot.
+      const prioBadges = await page.locator('.badge.prio').count();
+      if (prioBadges !== 3) throw new Error(`expected 3 priority badges (HIGH/CRITICAL/LOW), saw ${prioBadges}`);
+      const mediumBadges = await page.locator('.badge.prio-medium').count();
+      if (mediumBadges !== 0) throw new Error(`MEDIUM must render bare, saw ${mediumBadges} badge(s)`);
+      await page.screenshot({ path: path.join(SHOTS, 'gui-9-priority-badges.png'), fullPage: true });
+      console.log('snapped priority badges (3 badged, MEDIUM bare)');
+
+      // 10. The bare MEDIUM card's detail must still STATE the level — that is
+      //     what keeps "no badge" from reading as "unset".
+      await page.click(`.card:has(.card-id:text-is("${seeded.d.id}"))`);
+      await page.waitForSelector('#detail-overlay:not(.hidden) .detail-title', { timeout: 10_000 });
+      await page.waitForFunction(() => {
+        const h = [...document.querySelectorAll('#detail-overlay .detail-section h3')].find((x) => x.textContent === 'Priority');
+        return h?.parentElement?.textContent?.includes('MEDIUM');
+      }, { timeout: 10_000 });
+      await page.screenshot({ path: path.join(SHOTS, 'gui-10-medium-detail.png'), fullPage: true });
+      console.log('snapped MEDIUM card detail (level stated despite no badge)');
+
+      // 11. Edit control is a SELECT (was a number input) over the four levels,
+      //     preselected to the card's current value.
+      await page.click('#detail-overlay .detail-head button');
+      await page.waitForSelector('#detail-overlay select[name="priority"]', { timeout: 10_000 });
+      const editOpts = await page.locator('#detail-overlay select[name="priority"] option').allTextContents();
+      if (editOpts.join(',') !== 'CRITICAL,HIGH,MEDIUM,LOW') throw new Error(`edit select options: ${editOpts.join(',')}`);
+      const editValue = await page.inputValue('#detail-overlay select[name="priority"]');
+      if (editValue !== 'MEDIUM') throw new Error(`edit select should preselect the card's level, saw ${editValue}`);
+      await page.screenshot({ path: path.join(SHOTS, 'gui-11-edit-priority-select.png'), fullPage: true });
+      console.log('snapped edit form priority select');
+
+      // 12. Save a change through the select and confirm the badge appears on
+      //     the board — the golden path, not just a static render.
+      await page.selectOption('#detail-overlay select[name="priority"]', 'CRITICAL');
+      await page.click('#detail-overlay button[type="submit"]');
+      await page.waitForSelector('#detail-overlay', { state: 'hidden', timeout: 10_000 });
+      await page.waitForSelector(`.card:has(.card-id:text-is("${seeded.d.id}")) .badge.prio-critical`, { timeout: 10_000 });
+      await page.screenshot({ path: path.join(SHOTS, 'gui-12-priority-edited.png'), fullPage: true });
+      console.log('snapped board after editing MEDIUM -> CRITICAL through the select');
+
+      // 13. The capture point: the New-task form asks for a priority up front.
+      await page.click('#new-task-btn');
+      await page.waitForSelector('#form-overlay select[name="priority"]', { timeout: 10_000 });
+      const newValue = await page.inputValue('#form-overlay select[name="priority"]');
+      if (newValue !== 'MEDIUM') throw new Error(`new-task form should default to MEDIUM, saw ${newValue}`);
+      await page.screenshot({ path: path.join(SHOTS, 'gui-13-new-task-priority.png'), fullPage: true });
+      console.log('snapped new-task form priority select (defaults MEDIUM)');
     },{ headless: true, viewport: { width: 1440, height: 900 } });
   } finally {
     await srv.close();
