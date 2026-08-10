@@ -6,6 +6,7 @@ import { freshRoot, cleanup } from './_helpers.mjs';
 import { plansDir } from '../src/paths.js';
 import { _setProjectFetcher } from '../src/projects.js';
 import * as board from '../src/board.js';
+import { PRIORITIES } from '../src/priority.js';
 import { createServer } from '../server.js';
 
 // Drive the web GUI's HTTP routes end-to-end through the Express app (the same
@@ -127,12 +128,12 @@ test('move to a non-in-progress destination clears owner (no stuck gui owner)', 
 test('PATCH updates whitelisted fields; acceptance is not editable', async () => {
   await withServer(async ({ json }) => {
     const id = (await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'u', acceptance: ['x'] } })).body.id;
-    const patched = await json(`/api/board/demo/tasks/${id}`, { method: 'PATCH', body: { title: 'u2', priority: 5, acceptance: [{ text: 'y', done: true }] } });
+    const patched = await json(`/api/board/demo/tasks/${id}`, { method: 'PATCH', body: { title: 'u2', priority: 'HIGH', acceptance: [{ text: 'y', done: true }] } });
     assert.equal(patched.status, 200);
     assert.equal(patched.body.ok, true);
     const read = await json(`/api/board/demo/tasks/${id}`);
     assert.equal(read.body.task.title, 'u2');
-    assert.equal(read.body.task.priority, 5);
+    assert.equal(read.body.task.priority, 'HIGH');
     // acceptance patch ignored — still the filed value.
     assert.deepEqual(read.body.task.acceptance, [{ text: 'x', done: false }]);
   });
@@ -339,5 +340,47 @@ test('PATCH with an unresolvable plan field returns 200 PLAN_UNKNOWN', async () 
     assert.equal(res.status, 200);
     assert.equal(res.body.ok, false);
     assert.equal(res.body.code, 'PLAN_UNKNOWN');
+  });
+});
+
+// ---- priority over HTTP ---------------------------------------------------
+
+test('GET /api/board/meta advertises the priority levels in rank order', async () => {
+  await withServer(async ({ json }) => {
+    const { body } = await json('/api/board/meta');
+    // The GUI renders its priority selects from this, so it must match the
+    // server's catalog exactly — including order (highest first).
+    assert.deepEqual(body.priorities, PRIORITIES);
+    assert.deepEqual(body.priorities, ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']);
+  });
+});
+
+test('POST /api/board/:project/tasks captures priority at filing time', async () => {
+  await withServer(async ({ json }) => {
+    const filed = await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'urgent thing', priority: 'CRITICAL' } });
+    assert.equal(filed.body.ok, true);
+    const read = await json(`/api/board/demo/tasks/${filed.body.id}`);
+    assert.equal(read.body.task.priority, 'CRITICAL');
+
+    // Omitted -> MEDIUM (the GUI's New-task select defaults there too).
+    const bare = await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'ordinary thing' } });
+    const bareRead = await json(`/api/board/demo/tasks/${bare.body.id}`);
+    assert.equal(bareRead.body.task.priority, 'MEDIUM');
+  });
+});
+
+test('a bad priority is a 200 domain refusal, not a transport error', async () => {
+  await withServer(async ({ json }) => {
+    const filed = await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'x', priority: 'URGENT' } });
+    assert.equal(filed.status, 200);
+    assert.equal(filed.body.ok, false);
+    assert.equal(filed.body.code, 'INVALID_STATE');
+
+    const id = (await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'y', priority: 'LOW' } })).body.id;
+    const patched = await json(`/api/board/demo/tasks/${id}`, { method: 'PATCH', body: { priority: 3 } });
+    assert.equal(patched.status, 200);
+    assert.equal(patched.body.ok, false);
+    assert.equal(patched.body.code, 'INVALID_STATE');
+    assert.equal((await json(`/api/board/demo/tasks/${id}`)).body.task.priority, 'LOW');
   });
 });

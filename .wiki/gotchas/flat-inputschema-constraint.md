@@ -11,7 +11,10 @@ Consequences for our tools:
   opaque `{type:"object"}` and its keys validated at runtime in `board.updateTask`. (Same trick
   code-hub uses to omit `register_app.routes`.)
 - Array params (`acceptance`, `depends_on`) are fine: `{type:"array", items:{type:"string"}}`.
-- `enum` (states) and `integer`+`minimum` (`priority`, `logTail`, `limit`) are allowed.
+- `enum` is allowed and used by `move_task.to`/`list_tasks.state` (states), `file_task.category`
+  and `file_task.priority`; `default` is allowed too (`file_task.priority` pairs `enum` with
+  `default: "MEDIUM"`, `read_task.includePlan` with `default: false`).
+- `integer`+`minimum` is allowed — `read_task.logTail`, `read_progress.limit`.
 
 `tests/pluginManifest.test.mjs` guards this — it asserts the subset and that
 `manifest.version === package.json version` (the host also checks the latter).

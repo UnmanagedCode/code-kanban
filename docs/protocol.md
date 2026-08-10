@@ -52,7 +52,7 @@ malformed envelope or an unexpected exception.
 
 ## Tool signatures
 
-- `file_task({project, title, goal?, acceptance?, epic?, depends_on?, category?}) → {ok, id}` — task lands in `triage` by default; `category: 'todo'|'backlog'` lands it directly in that lane instead (mirrors triage's legal exits). An illegal `category` value → `INVALID_STATE`. `epic` must already exist → else `EPIC_UNKNOWN`.
+- `file_task({project, title, goal?, acceptance?, epic?, depends_on?, category?, priority?}) → {ok, id}` — task lands in `triage` by default; `category: 'todo'|'backlog'` lands it directly in that lane instead (mirrors triage's legal exits). An illegal `category` value → `INVALID_STATE`. `epic` must already exist → else `EPIC_UNKNOWN`. `priority` is one of `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` (advertised in the manifest as an `enum` with `default: "MEDIUM"`); omitted → `MEDIUM`; anything else → `INVALID_STATE`. All of these validate **before** the card is written, so a refusal consumes no id.
 - `log_progress({project?, id?, entry}) → {ok}` — two paths, chosen by `id`:
   - **`id` omitted (worker path):** target card resolved server-side from `caller.sessionId`
     (the owned `in-progress` card; ties broken by most-recently-modified). `project` is
@@ -112,6 +112,11 @@ malformed envelope or an unexpected exception.
   A re-land (`done→in-progress→done`) re-runs this resolution: a fresh sha overwrites the prior
   one, but an unresolvable re-land leaves the previously-stamped `commit` untouched.
 - `update_task({project, id, fields}) → {ok}` — `fields` ⊆ `{title, goal, epic, priority, depends_on, plan, owner}`; other keys ignored. `fields.epic` must exist → else `EPIC_UNKNOWN`. Every field validates **before** any mutation, so a refusal leaves the card untouched.
+  - **`priority`** — one of `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, matched **exactly** (case-sensitive).
+    There is no unset/null level, so unlike `plan`/`owner` there is nothing to clear: `null`, `''`,
+    a lowercase spelling, a legacy integer, or any unknown word → `INVALID_STATE`. Tolerant
+    coercion exists **only** on the disk-parse path, never here — see
+    `.wiki/gotchas/priority-legacy-tolerance.md`.
   - **`plan`** — a **link to a plan file**, never the plan text. Grammar (defined here, once):
     `board:<rel>` resolves under `<kanbanRoot>/projects/<project>/plans/`; `repo:<rel>` resolves
     under `<PROJECTS_ROOT>/<project>/` — the **base checkout**, never a worktree, so a `repo:` link
@@ -131,7 +136,9 @@ malformed envelope or an unexpected exception.
 - `delete_task({project, id}) → {ok}` — permanently removes the task's file; unknown id → `TASK_UNKNOWN`. Also best-effort removes the card's plan file **when the link is `board:`** — a `repo:` plan is a source-tree file and is never touched; a failed unlink leaves an orphan, never a refusal. Irreversible and not sync-aware: see "Cross-instance sync" in `docs/architecture.md`.
 
 A `summary` is `{id, title, state, project, epic, priority, owner, depends_on, created, plan}`
-(`plan` is the link, or `null`). A `rollup`
+(`plan` is the link, or `null`; `priority` is always one of the four levels, never null). Task
+lists (`list_tasks`, `read_epic`) are ordered **column (`STATES` order) → priority
+(`CRITICAL`→`HIGH`→`MEDIUM`→`LOW`) → id ascending**. A `rollup`
 is a per-state count object over `triage/backlog/todo/in-progress/done`. `file_task`/`update_task`
 accept an `epic` slug that resolves to a per-project epic in the task's project **or** a
 cross-project epic covering it → else `EPIC_UNKNOWN`. The full task object (from `read_task`)
@@ -162,10 +169,10 @@ through unchanged as the HTTP body.
 | Method + path | Delegate | Body / query | Returns |
 |---|---|---|---|
 | `GET /api/projects` | `projects.listProjects` | — | `{projects:[name]}` (502 `{error}` if the catalog fetch throws) |
-| `GET /api/board/meta` | `STATES` + `ALLOWED_TRANSITIONS` | — | `{states:[…], transitions:["from>to",…]}` |
+| `GET /api/board/meta` | `STATES` + `ALLOWED_TRANSITIONS` + `PRIORITIES` | — | `{states:[…], transitions:["from>to",…], priorities:["CRITICAL","HIGH","MEDIUM","LOW"]}` (`priorities` in rank order, highest first — the GUI's priority selects render from it rather than hardcoding a copy) |
 | `GET /api/board/:project/tasks` | `board.listTasks` | `?state`, `?epic` | `{ok, tasks:[summary]}` |
 | `GET /api/board/:project/tasks/:id` | `board.readTask` | `?includePlan=1\|true` | `{ok, task, plan_path[, plan_body, plan_truncated, plan_missing]}` (full: goal, acceptance, logbook). Any other `includePlan` value is falsy. The GUI always sends `includePlan=1` and reads `plan_body` as a field (the raw-text channel is MCP-only). |
-| `POST /api/board/:project/tasks` | `board.fileTask` | `{title, goal?, acceptance?, epic?, depends_on?}` | `{ok, id}` (lands in `triage`) |
+| `POST /api/board/:project/tasks` | `board.fileTask` | `{title, goal?, acceptance?, epic?, depends_on?, priority?}` | `{ok, id}` (lands in `triage`; `priority` omitted → `MEDIUM`) |
 | `PATCH /api/board/:project/tasks/:id` | `board.updateTask` | body **is** `fields` ⊆ `{title, goal, epic, priority, depends_on, plan, owner}` | `{ok}` (same refusals as the tool, incl. `PLAN_UNKNOWN`) |
 | `POST /api/board/:project/tasks/:id/move` | `board.moveTask` | `{to, owner?, commit?}` | `{ok, from, to}` |
 | `GET /api/board/:project/epics` | `board.listEpics` | — | `{ok, epics:[{slug, title, rollup, projects}]}` (incl. cross-project epics spanning the project) |

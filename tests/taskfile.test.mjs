@@ -5,7 +5,7 @@ import { serialize, serializeBody, parse } from '../src/taskfile.js';
 function sampleTask() {
   return {
     id: '2026-0042', uid: 'u-1', title: 'A card', project: 'demo', epic: 'reads',
-    priority: 3, created: '2026-08-06T00:00:00.000Z', updated: '2026-08-06T01:00:00.000Z',
+    priority: 'HIGH', created: '2026-08-06T00:00:00.000Z', updated: '2026-08-06T01:00:00.000Z',
     node: 'node-a', owner: 'w-1', commit: 'abc123', plan: 'board:p.md',
     depends_on: ['2026-0001', '2026-0002'],
     goal: 'Multi-line\n\ngoal prose.',
@@ -32,7 +32,7 @@ test('serialize === frontmatter block + serializeBody, byte for byte', () => {
     'title: A card',
     'project: demo',
     'epic: reads',
-    'priority: 3',
+    'priority: HIGH',
     'created: 2026-08-06T00:00:00.000Z',
     'updated: 2026-08-06T01:00:00.000Z',
     'node: node-a',
@@ -74,4 +74,62 @@ test('parse(serialize(t)) round-trips every field', () => {
   const back = parse(serialize(t), { state: 'in-progress' });
   for (const k of Object.keys(t)) assert.deepEqual(back[k], t[k], `field ${k}`);
   assert.equal(back.state, 'in-progress');
+});
+
+// ---- priority: legacy tolerance ------------------------------------------
+//
+// parse must never throw and never lose a card, because a file may have been
+// written by the pre-enum build or synced from a peer still running it. See
+// .wiki/gotchas/priority-legacy-tolerance.md.
+
+function cardText(priorityLine) {
+  return [
+    '---',
+    'id: 2026-0001',
+    'title: legacy',
+    'project: demo',
+    ...(priorityLine === null ? [] : [`priority: ${priorityLine}`]),
+    'created: 2026-01-01T00:00:00.000Z',
+    'depends_on: []',
+    '---',
+    '',
+    '## Goal',
+    'g',
+    '',
+    '## Acceptance',
+    '',
+    '## Logbook',
+    '',
+  ].join('\n');
+}
+
+test('parse maps each legacy integer frontmatter value to its level', () => {
+  const cases = [['1', 'CRITICAL'], ['2', 'HIGH'], ['3', 'MEDIUM'], ['4', 'LOW'], ['5', 'LOW']];
+  for (const [line, expected] of cases) {
+    assert.equal(parse(cardText(line), { state: 'todo' }).priority, expected, `priority: ${line}`);
+  }
+});
+
+test('parse sends 0, out-of-range, unknown and absent priority to MEDIUM', () => {
+  for (const line of ['0', '6', '99', '-1', 'URGENT', 'p3', '', null]) {
+    const t = parse(cardText(line), { state: 'todo' });
+    assert.equal(t.priority, 'MEDIUM', `priority: ${String(line)}`);
+    // Never at the cost of the card: the rest of the frontmatter still parsed.
+    assert.equal(t.id, '2026-0001', `priority: ${String(line)} lost the card`);
+    assert.equal(t.goal, 'g');
+  }
+});
+
+test('serialize(parse(legacy)) rewrites the level — the tolerant parse IS the migration', () => {
+  const rewritten = serialize(parse(cardText('2'), { state: 'todo' }));
+  assert.ok(rewritten.includes('\npriority: HIGH\n'), rewritten);
+  assert.equal(rewritten.includes('priority: 2'), false, rewritten);
+});
+
+test('serialize never emits a non-level, whatever it is handed', () => {
+  const base = sampleTask();
+  for (const [value, expected] of [[0, 'MEDIUM'], [1, 'CRITICAL'], ['low', 'LOW'], [undefined, 'MEDIUM'], [null, 'MEDIUM'], ['bogus', 'MEDIUM']]) {
+    const out = serialize({ ...base, priority: value });
+    assert.ok(out.includes(`\npriority: ${expected}\n`), `${JSON.stringify(value)} -> ${expected}\n${out}`);
+  }
 });

@@ -53,6 +53,8 @@ Board **data** lives in the conductor's tree, not here:
 - Resolves `PROJECTS_ROOT` from the injected env (falls back to the repo's parent dir).
 - Standalone port `7100` (the conductor injects `$PORT` in a supervised run).
 - Task ids: `${year}-${NNNN}`, project-wide monotonic (no per-year reset).
+- Card priority: `CRITICAL | HIGH | MEDIUM | LOW`, no unset level, `MEDIUM` when omitted; set it at
+  filing time via `file_task`. Listings sort column → priority (CRITICAL first) → id.
 - Result convention: `{ok:true,…}` / `{ok:false, code, reason}` inside the host's `{result}`
   envelope; refusals are returned, never thrown. Codes: `PROJECT_UNKNOWN`, `TASK_UNKNOWN`,
   `EPIC_UNKNOWN`, `INVALID_STATE`. See [docs/protocol.md](docs/protocol.md).

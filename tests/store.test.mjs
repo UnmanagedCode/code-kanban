@@ -7,7 +7,7 @@ import { stateDir, plansDir } from '../src/paths.js';
 
 function baseTask(id) {
   return {
-    id, title: 'A task: with colon', project: 'demo', epic: null, priority: 3,
+    id, title: 'A task: with colon', project: 'demo', epic: null, priority: 'HIGH',
     created: '2026-07-22T00:00:00.000Z', owner: null, depends_on: ['2026-0001', '2026-0002'],
     goal: 'Do the thing\nover two lines.',
     acceptance: [{ text: 'first', done: true }, { text: 'second', done: false }],
@@ -23,7 +23,7 @@ test('writeTask/readTaskById round-trips all fields', async () => {
     const t = store.readTaskById('demo', '2026-0003');
     assert.equal(t.state, 'triage');
     assert.equal(t.title, 'A task: with colon');
-    assert.equal(t.priority, 3);
+    assert.equal(t.priority, 'HIGH');
     assert.deepEqual(t.depends_on, ['2026-0001', '2026-0002']);
     assert.match(t.goal, /over two lines/);
     assert.equal(t.acceptance.length, 2);
