@@ -22,6 +22,12 @@ never a worktree (`src/paths.js`'s `projectRepoDir`). A plan written on a worker
 exist there yet, so the set refuses `PLAN_UNKNOWN` until the merge lands. Use `board:` for a plan
 that must be attachable immediately.
 
+## The host's own plan file is unlinkable — it must be copied
+
+A plan wake hands the conductor a `planPath` under `~/.claude/plans/`
+(`code-conductor/src/planFile.ts`), outside `PROJECTS_ROOT`. No scheme resolves there, so that
+file can never be linked in place — it is copied into `plansDir(project)` and linked `board:`.
+
 ## Frontmatter is one verbatim line, and plans/ is worker-writable
 
 Two guards exist for that, both worth keeping:
