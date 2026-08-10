@@ -35,3 +35,55 @@ node <path-to-code-mutant>/mutate.mjs validate
 
 No mutant catalog or canary is checked in here — `.mutation/` (gitignored) is created per review
 loop by the reviewer running `/code-mutant:prove`, not by this scaffold.
+
+## `--jobs` and parallel copy runs
+
+`--jobs N` in `copy` mode is safe for this project. Verified 2026-08-10 as part of
+code-mutant cards 2026-0010 / 2026-0029.
+
+**What was wrong.** A `--jobs 4` `/code-mutant:prove` run against this project returned two
+verdicts a serial re-run contradicted: `norm-zero-medium-str` as `SURVIVED` (11/0/0, re-ran alone as
+`KILLED`), and `filetask-null-refused` as `IMPRECISE` with spurious failures including a
+`seedRawCard` test that never calls `fileTask`. A full `--jobs 1` run was clean: 12 mutants, 12
+`KILLED`, exit 0.
+
+The cause was entirely in code-mutant's runner, not in this harness or this suite. Its worker pool
+keyed each mutant's copy on the ITEM index rather than the WORKER ordinal, so with `jobs=N` and more
+than N mutants, two mutants could occupy one copy at once. One mutant's restore then landed while
+the other was still measuring — wiping its mutation, so the suite went green and read `SURVIVED` —
+and the second restore wrote the first mutant's bytes back as permanent residue, so a later mutant
+measured against a foreign edit and failed tests that cannot reach its site. Note the direction that
+was *not* observed: the same race produces a false `KILLED` just as easily, and that would have been
+silent.
+
+**What changed in code-mutant.** The workspace is now keyed on the worker ordinal, so each worker
+owns one copy exclusively. On top of that, three checks make a concurrency-affected verdict
+impossible to report as a verdict at all — each yields `ERROR`, never `SURVIVED` and never a
+downgraded verdict, because a run whose isolation is in doubt says nothing about coverage in either
+direction:
+
+| reason | meaning |
+| --- | --- |
+| `workspace-occupied` | two mutants tried to occupy one copy |
+| `workspace-residue` | the copy holds mutation bytes from outside the current mutant |
+| `mutation-not-intact` | the mutated bytes did not survive the measured run |
+
+Copy-mode's no-trace assertion also stopped being a constant pass: a copy left holding mutation
+bytes now fails the run with **exit 3** (`RESTORE_FAILED`), which outranks both survivors (1) and
+no-verdict (5).
+
+**Why `--jobs N` is safe here specifically.** `jobs=N` runs `node tests/run.mjs` N times
+concurrently, in N copies. That is unsafe for a suite that binds a fixed TCP port, writes a fixed
+temp or data directory, shares a database or an on-disk fixture it mutates in place, writes a shared
+build/package cache, or depends on the checkout's absolute path. None applies: `routes.test.mjs` is
+the only file that binds a port, and it does so via `server.listen(0, '127.0.0.1', ...)` — port `0`,
+so the OS assigns an ephemeral port per copy and concurrent runs can't collide. The six test files
+that touch disk (`nodeId`, `mcp`, `store`, `routes`, `sync`, `board`) each open their own
+`fs.mkdtemp(os.tmpdir())` board root via `tests/_helpers.mjs::freshRoot`; the remaining four
+(`persist`, `taskfile`, `pluginManifest`, `priority`) are pure-function tests with no filesystem
+access at all. The only `preserve` entry is `node_modules`, which the suite only reads. That last
+point is the one to re-check if `preserve` ever grows: **`preserve` entries are symlinked into every
+copy**, so a preserved path is shared writable state across all workers *and* this checkout.
+
+Re-verify before trusting a parallel verdict: a `--jobs N` run whose findings a `--jobs 1` re-run
+contradicts is a code-mutant bug, not a coverage finding, and should be reported upward.
