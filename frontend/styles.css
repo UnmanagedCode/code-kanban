@@ -133,11 +133,14 @@ main { flex: 1; overflow: auto; padding: 12px 16px 32px; display: flex; flex-dir
 }
 .badge.epic { color: var(--triage); border-color: var(--triage); }
 .badge.owner { color: var(--progress); border-color: var(--progress); }
-/* Priority badges are graded by severity. MEDIUM is never badged (app.js), so
-   there is deliberately no .prio-medium rule. */
+/* Priority badges are graded by severity, and EVERY judged level has one — a
+   card with no prio badge is one nobody has judged yet (app.js). MEDIUM is
+   deliberately quieter than HIGH but brighter than LOW, so the four read as a
+   ladder rather than three alerts. */
 .badge.prio { text-transform: uppercase; letter-spacing: .3px; }
 .badge.prio-critical { color: var(--err); border-color: var(--err); font-weight: 600; }
 .badge.prio-high { color: var(--warn); border-color: var(--warn); }
+.badge.prio-medium { color: var(--ink); border-color: var(--line); }
 .badge.prio-low { color: var(--ink-dim); border-color: var(--line); }
 .badge.epic-cross { color: var(--progress); border-color: var(--progress); margin-left: 6px; }
 .badge.plan { color: var(--warn); border-color: var(--warn); }

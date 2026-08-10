@@ -54,14 +54,18 @@ async function seed(base, projectsRoot) {
   await call(`/api/board/${PROJECT}/epics`, { method: 'POST', body: { slug: 'auth', title: 'Auth flow', goal: 'Sign-in + sessions' } }, 'epic auth');
   await call(`/api/board/${PROJECT}/epics`, { method: 'POST', body: { slug: 'search', title: 'Search', goal: 'Full-text search' } }, 'epic search');
 
-  // fileTask now accepts priority, so the level is set at the capture point. One
-  // card per badged level (HIGH/CRITICAL/LOW) plus d, which takes the MEDIUM
-  // default and is the WITNESS that MEDIUM renders bare — without it a missing
-  // badge and a broken badge look identical in a screenshot.
+  // fileTask takes priority, so the level is set at the capture point. One card
+  // per level (HIGH/CRITICAL/LOW/MEDIUM), plus d, which OMITS it and is therefore
+  // unset. d and e are the load-bearing pair: e is a judged MEDIUM and d has
+  // never been judged, and the whole point of this card is that a person can
+  // tell them apart without opening either. They sit in the same column so the
+  // screenshot shows them side by side. Without both, a missing badge and a
+  // broken badge look identical in a screenshot.
   const a = await call(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Design login screen', goal: 'Email + password form', acceptance: ['Matches design spec', 'Accessible labels'], epic: 'auth', priority: 'HIGH' } }, 'file a');
   const b = await call(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Hash passwords with argon2', goal: 'No plaintext at rest', epic: 'auth', priority: 'CRITICAL' } }, 'file b');
   const c = await call(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Build search index', goal: 'Inverted index over docs', epic: 'search', priority: 'LOW' } }, 'file c');
   const d = await call(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Triage: spike caching layer', goal: 'Decide redis vs in-memory' } }, 'file d');
+  const e = await call(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Rotate the signing key', goal: 'Quarterly rotation', priority: 'MEDIUM' } }, 'file e');
 
   // Spread cards across columns via LEGAL transitions. b reaches in-progress
   // through triage→todo→in-progress (NOT triage→in-progress, which is illegal),
@@ -88,7 +92,7 @@ async function seed(base, projectsRoot) {
   await fs.writeFile(planFile, `# Plan — build the search index\n\n1. Tokenize documents.\n2. Build the inverted index.\n3. Wire the query path.\n`);
   await call(`/api/board/${PROJECT}/tasks/${c.id}`, { method: 'PATCH', body: { plan: `${c.id}.md` } }, 'plan link on c');
 
-  return { a, b, c, d };
+  return { a, b, c, d, e };
 }
 
 async function main() {
@@ -130,14 +134,19 @@ async function main() {
       await page.click('#detail-overlay .overlay-close');
       await page.waitForSelector('#detail-overlay', { state: 'hidden', timeout: 10_000 });
 
-      // 2. Card detail: click the first card, wait for the overlay.
-      await page.click('.card');
+      // 2. Card detail: open a NAMED card, wait for the overlay. Pinned to `a`
+      //    rather than `.card` (the first in DOM order) because that made this
+      //    step's subject depend on the priority sort — adding a card at a
+      //    higher level silently retargeted the move below at an unrelated card.
+      await page.click(`.card:has(.card-id:text-is("${seeded.a.id}"))`);
       await page.waitForSelector('#detail-overlay:not(.hidden) .detail-title', { timeout: 10_000 });
       await page.waitForSelector('.logbook li', { timeout: 10_000 });
       await page.screenshot({ path: path.join(SHOTS, 'gui-2-detail.png'), fullPage: true });
       console.log('snapped detail');
 
       // 3. Legal move from the detail panel: pick the first legal target, move.
+      //    (Card `a`, opened above — it starts in todo, so this also populates
+      //    In Progress, which step 4 then empties by landing b.)
       const moveSelect = await page.locator('#detail-overlay .move-row select');
       const target = await moveSelect.first().evaluate((sel) => {
         const opt = [...sel.options].find((o) => o.value);
@@ -225,55 +234,84 @@ async function main() {
       await page.uncheck('#plan-filter');
       await page.waitForFunction((n) => document.querySelectorAll('.card').length === n, before, { timeout: 10_000 });
 
-      // 9. Priority badges: a/b/c were filed HIGH/CRITICAL/LOW and d took the
-      //    MEDIUM default. Exactly three badges, and NONE for MEDIUM — the
-      //    assertion is what distinguishes "MEDIUM renders bare" from "the badge
-      //    is broken", which look the same in a screenshot.
+      // 9. Priority badges: a/b/c/e were filed HIGH/CRITICAL/LOW/MEDIUM and d was
+      //    filed with no priority at all. EVERY judged level badges, so a bare
+      //    card means exactly one thing — nobody has judged it. The pair that
+      //    matters is e (judged MEDIUM, badged) vs d (unset, bare): assert them
+      //    individually, because a global count alone would still pass if the
+      //    two rendered identically.
       const prioBadges = await page.locator('.badge.prio').count();
-      if (prioBadges !== 3) throw new Error(`expected 3 priority badges (HIGH/CRITICAL/LOW), saw ${prioBadges}`);
+      if (prioBadges !== 4) throw new Error(`expected 4 priority badges (one per judged level), saw ${prioBadges}`);
       const mediumBadges = await page.locator('.badge.prio-medium').count();
-      if (mediumBadges !== 0) throw new Error(`MEDIUM must render bare, saw ${mediumBadges} badge(s)`);
+      if (mediumBadges !== 1) throw new Error(`a judged MEDIUM must badge, saw ${mediumBadges} badge(s)`);
+      const mediumOnE = await page.locator(`.card:has(.card-id:text-is("${seeded.e.id}")) .badge.prio-medium`).count();
+      if (mediumOnE !== 1) throw new Error('the judged-MEDIUM card must carry a prio-medium badge');
+      const badgesOnD = await page.locator(`.card:has(.card-id:text-is("${seeded.d.id}")) .badge.prio`).count();
+      if (badgesOnD !== 0) throw new Error(`an unjudged card must render bare, saw ${badgesOnD} badge(s)`);
       await page.screenshot({ path: path.join(SHOTS, 'gui-9-priority-badges.png'), fullPage: true });
-      console.log('snapped priority badges (3 badged, MEDIUM bare)');
+      console.log('snapped priority badges (4 judged badged, unset bare)');
 
-      // 10. The bare MEDIUM card's detail must still STATE the level — that is
-      //     what keeps "no badge" from reading as "unset".
+      // 10. The bare card's detail must say "unset" — not blank, which would read
+      //     as "the field failed to load" rather than "nobody judged this".
       await page.click(`.card:has(.card-id:text-is("${seeded.d.id}"))`);
       await page.waitForSelector('#detail-overlay:not(.hidden) .detail-title', { timeout: 10_000 });
       await page.waitForFunction(() => {
         const h = [...document.querySelectorAll('#detail-overlay .detail-section h3')].find((x) => x.textContent === 'Priority');
-        return h?.parentElement?.textContent?.includes('MEDIUM');
+        return h?.parentElement?.textContent?.includes('unset');
       }, { timeout: 10_000 });
-      await page.screenshot({ path: path.join(SHOTS, 'gui-10-medium-detail.png'), fullPage: true });
-      console.log('snapped MEDIUM card detail (level stated despite no badge)');
+      await page.screenshot({ path: path.join(SHOTS, 'gui-10-unset-detail.png'), fullPage: true });
+      console.log('snapped unset card detail (states "unset", not blank)');
 
-      // 11. Edit control is a SELECT (was a number input) over the four levels,
-      //     preselected to the card's current value.
+      // 11. Edit control is a SELECT over the four levels, led by an unset option
+      //     whose LABEL does the prompting ('— unset —' reads as an unfinished
+      //     choice). On an unjudged card it is the unset option that is selected,
+      //     not a pre-filled level.
       await page.click('#detail-overlay .detail-head button');
       await page.waitForSelector('#detail-overlay select[name="priority"]', { timeout: 10_000 });
       const editOpts = await page.locator('#detail-overlay select[name="priority"] option').allTextContents();
-      if (editOpts.join(',') !== 'CRITICAL,HIGH,MEDIUM,LOW') throw new Error(`edit select options: ${editOpts.join(',')}`);
+      if (editOpts.join(',') !== '— unset —,CRITICAL,HIGH,MEDIUM,LOW') throw new Error(`edit select options: ${editOpts.join(',')}`);
       const editValue = await page.inputValue('#detail-overlay select[name="priority"]');
-      if (editValue !== 'MEDIUM') throw new Error(`edit select should preselect the card's level, saw ${editValue}`);
+      if (editValue !== '') throw new Error(`an unjudged card must preselect the unset option, saw ${editValue}`);
       await page.screenshot({ path: path.join(SHOTS, 'gui-11-edit-priority-select.png'), fullPage: true });
-      console.log('snapped edit form priority select');
+      console.log('snapped edit form priority select (unset preselected)');
 
-      // 12. Save a change through the select and confirm the badge appears on
-      //     the board — the golden path, not just a static render.
+      // 12. Judge the unjudged card through the select and confirm the badge
+      //     appears on the board — the golden path, not just a static render.
       await page.selectOption('#detail-overlay select[name="priority"]', 'CRITICAL');
       await page.click('#detail-overlay button[type="submit"]');
       await page.waitForSelector('#detail-overlay', { state: 'hidden', timeout: 10_000 });
       await page.waitForSelector(`.card:has(.card-id:text-is("${seeded.d.id}")) .badge.prio-critical`, { timeout: 10_000 });
       await page.screenshot({ path: path.join(SHOTS, 'gui-12-priority-edited.png'), fullPage: true });
-      console.log('snapped board after editing MEDIUM -> CRITICAL through the select');
+      console.log('snapped board after judging an unset card CRITICAL through the select');
 
-      // 13. The capture point: the New-task form asks for a priority up front.
+      // 12b. And the reverse: clearing a judged card back to unset must remove
+      //      its badge. Drives the GUI half of the clear-to-unset round trip
+      //      (the '' option submits as null), on e — the judged MEDIUM.
+      await page.click(`.card:has(.card-id:text-is("${seeded.e.id}"))`);
+      await page.waitForSelector('#detail-overlay:not(.hidden) .detail-title', { timeout: 10_000 });
+      await page.click('#detail-overlay .detail-head button');
+      await page.waitForSelector('#detail-overlay select[name="priority"]', { timeout: 10_000 });
+      const eValue = await page.inputValue('#detail-overlay select[name="priority"]');
+      if (eValue !== 'MEDIUM') throw new Error(`a judged card must preselect its level, saw ${eValue}`);
+      await page.selectOption('#detail-overlay select[name="priority"]', '');
+      await page.click('#detail-overlay button[type="submit"]');
+      await page.waitForSelector('#detail-overlay', { state: 'hidden', timeout: 10_000 });
+      await page.waitForFunction((id) => {
+        const card = [...document.querySelectorAll('.card')].find((c) => c.querySelector('.card-id')?.textContent === id);
+        return card && card.querySelectorAll('.badge.prio').length === 0;
+      }, seeded.e.id, { timeout: 10_000 });
+      await page.screenshot({ path: path.join(SHOTS, 'gui-12b-priority-cleared.png'), fullPage: true });
+      console.log('snapped board after clearing MEDIUM -> unset (badge removed)');
+
+      // 13. The capture point: the New-task form asks for a priority up front,
+      //     but does NOT pre-answer it — a pre-selected MEDIUM would be the same
+      //     fabrication as a server-side default, just through a different door.
       await page.click('#new-task-btn');
       await page.waitForSelector('#form-overlay select[name="priority"]', { timeout: 10_000 });
       const newValue = await page.inputValue('#form-overlay select[name="priority"]');
-      if (newValue !== 'MEDIUM') throw new Error(`new-task form should default to MEDIUM, saw ${newValue}`);
+      if (newValue !== '') throw new Error(`new-task form must open on the unset option, saw ${newValue}`);
       await page.screenshot({ path: path.join(SHOTS, 'gui-13-new-task-priority.png'), fullPage: true });
-      console.log('snapped new-task form priority select (defaults MEDIUM)');
+      console.log('snapped new-task form priority select (opens unset)');
     },{ headless: true, viewport: { width: 1440, height: 900 } });
   } finally {
     await srv.close();

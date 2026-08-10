@@ -6,6 +6,8 @@ workflow, not a replacement for it.
 - **When to file.** `file_task` for a non-trivial, multi-step piece of work; skip conversational
   one-offs and trivial single-turn fixes. Pass `category: 'todo'|'backlog'` to skip triage when the
   lane is already known; omit it to land in triage (the default).
+- **Priority.** Give every card you file a judged level rather than omitting it — unset means nobody
+  has judged the card yet and sorts below `LOW`, so "do this last" is `LOW`, not omission.
 - **Deleting.** `delete_task` is permanent — no undo, no history, not sync-aware. Prefer it only
   for genuine mistakes/duplicates, not for closing out finished work (`move_task` to `done`).
 - **Lifecycle.** `in-progress` = a worker spawned on it — `owner` is that worker's `sessionId`;

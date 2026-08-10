@@ -12,8 +12,10 @@ Consequences for our tools:
   code-hub uses to omit `register_app.routes`.)
 - Array params (`acceptance`, `depends_on`) are fine: `{type:"array", items:{type:"string"}}`.
 - `enum` is allowed and used by `move_task.to`/`list_tasks.state` (states), `file_task.category`
-  and `file_task.priority`; `default` is allowed too (`file_task.priority` pairs `enum` with
-  `default: "MEDIUM"`, `read_task.includePlan` with `default: false`).
+  and `file_task.priority`; `default` is allowed too (`read_task.includePlan` pairs it with
+  `default: false`). `file_task.priority` deliberately carries `enum` and **no** `default` — a
+  default there would have the host's schema layer fill in a level nobody chose (see
+  [priority-legacy-tolerance.md](priority-legacy-tolerance.md)).
 - `integer`+`minimum` is allowed — `read_task.logTail`, `read_progress.limit`.
 
 `tests/pluginManifest.test.mjs` guards this — it asserts the subset and that

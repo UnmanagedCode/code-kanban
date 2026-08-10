@@ -12,7 +12,7 @@ Durable, hard-to-re-derive knowledge for code-kanban. Read this before planning,
 - [gotchas/result-envelope-vs-ok-shape.md](gotchas/result-envelope-vs-ok-shape.md) — `{result}` outer envelope vs `{ok}` domain payload; refusals are never thrown; the host's `{meta,text}` raw-text channel (every prose-bearing read) and what it costs `body.result` readers.
 - [gotchas/owner-from-caller-sessionid.md](gotchas/owner-from-caller-sessionid.md) — `log_progress` resolves the card from the session; optional `project` scans all projects; tie-break rule; cross-project scan locking; conductor's `id`-based path bypasses ownership (requires `project`).
 - [gotchas/plan-link-and-sync-gap.md](gotchas/plan-link-and-sync-gap.md) — the plan LINK syncs but the body doesn't (dead links, and why re-setting one refuses `PLAN_UNKNOWN`); `repo:` needs the merge first; the host's own `~/.claude/plans/` file is unlinkable and must be copied in; the newline + realpath guards on a worker-writable `plans/`.
-- [gotchas/priority-legacy-tolerance.md](gotchas/priority-legacy-tolerance.md) — strict on caller input vs tolerant on disk reads, the legacy int map, and why a pre-enum sync peer silently degrades every card it touches to MEDIUM.
+- [gotchas/priority-legacy-tolerance.md](gotchas/priority-legacy-tolerance.md) — strict on caller input vs tolerant on disk reads, why legacy `0` maps to unset (and nothing defaults), and how a pre-enum sync peer strips levels *and* sorts unset to the opposite end of the column.
 - [gotchas/detail-overlay-close-button-stacking.md](gotchas/detail-overlay-close-button-stacking.md) — `#detail-overlay`'s close ✕ always paints over `.detail-head` content; new right-aligned buttons there need clearance padding.
 
 ## Architecture / decisions

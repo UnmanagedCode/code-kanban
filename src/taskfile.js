@@ -10,7 +10,7 @@
 // tiebreak). `uid`/`node` are stripped from MCP/GUI reads (board.readTask); only
 // /api/sync/export exposes them. See .wiki/architecture/cross-instance-sync.md.
 
-import { DEFAULT_PRIORITY, normalizePriority } from './priority.js';
+import { normalizePriority } from './priority.js';
 
 const SCALAR_KEYS = ['id', 'uid', 'title', 'project', 'epic', 'priority', 'created', 'updated', 'node', 'owner', 'commit', 'plan'];
 
@@ -27,10 +27,13 @@ function parseDependsOn(raw) {
 // task: {id,uid?,title,project,epic?,priority,created,updated?,node?,owner?,
 //        commit?,plan?,depends_on[], goal, acceptance:[{text,done}], logbook:[string]}
 // `plan` is a LINK to a plan file (src/planLink.js), never the plan text.
-// `priority` is one of src/priority.js's PRIORITIES. `parse` coerces a legacy
-// value to a level in memory, so any subsequent write persists the level — the
-// tolerant parse IS the migration. `serialize` normalises too, as a separate
-// guard on a card object that never came through `parse`.
+// `priority` is one of src/priority.js's PRIORITIES, or `null` for unset — and
+// when unset the key is ABSENT from the frontmatter, like epic/owner/commit/plan.
+// (A missing key is also what a pre-enum peer writes as `0`, so unset survives a
+// round trip through one.) `parse` coerces a legacy value in memory, so any
+// subsequent write persists it — the tolerant parse IS the migration.
+// `serialize` normalises too, as a separate guard on a card object that never
+// came through `parse`.
 export function serialize(task) {
   const fm = [];
   fm.push(`id: ${task.id}`);
@@ -38,7 +41,8 @@ export function serialize(task) {
   fm.push(`title: ${task.title ?? ''}`);
   fm.push(`project: ${task.project}`);
   if (task.epic) fm.push(`epic: ${task.epic}`);
-  fm.push(`priority: ${normalizePriority(task.priority)}`);
+  const priority = normalizePriority(task.priority);
+  if (priority) fm.push(`priority: ${priority}`);
   fm.push(`created: ${task.created}`);
   if (task.updated) fm.push(`updated: ${task.updated}`);
   if (task.node) fm.push(`node: ${task.node}`);
@@ -74,7 +78,7 @@ export function serializeBody(task) {
 export function parse(text, { state } = {}) {
   const lines = text.split('\n');
   const task = {
-    id: null, uid: null, title: '', project: '', epic: null, priority: DEFAULT_PRIORITY,
+    id: null, uid: null, title: '', project: '', epic: null, priority: null,
     created: null, updated: null, node: null, owner: null, commit: null, plan: null,
     depends_on: [], goal: '', acceptance: [], logbook: [], state: state ?? null,
   };

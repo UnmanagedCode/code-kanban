@@ -18,7 +18,7 @@ import { validateProject, listProjects } from './projects.js';
 import { withLock } from './mutex.js';
 import * as store from './store.js';
 import { logLine } from './taskfile.js';
-import { PRIORITIES, DEFAULT_PRIORITY, isPriority, priorityRank } from './priority.js';
+import { PRIORITIES, isPriority, priorityRank } from './priority.js';
 import { localNodeId, deriveUid } from './nodeId.js';
 import { headSha } from './git.js';
 import { ownerCwd } from './ownerWorktree.js';
@@ -170,8 +170,10 @@ function summary(t) {
   };
 }
 
-// Stable ordering: by column, then priority (CRITICAL first, LOW last), then id.
-// priorityRank is index-into-PRIORITIES, so ascending = highest priority first.
+// Stable ordering: by column, then priority (CRITICAL first, LOW last, unset
+// after LOW), then id. priorityRank is index-into-PRIORITIES, so ascending =
+// highest priority first, and unset ranks past the end — an unjudged card never
+// outranks a judged one.
 function sortTasks(tasks) {
   return tasks.sort((a, b) =>
     STATES.indexOf(a.state) - STATES.indexOf(b.state)
@@ -196,8 +198,10 @@ export async function fileTask({ project, title, goal, acceptance, epic, depends
   }
   // Strict at the caller surface — the tolerant mapping is for cards read off
   // disk, never for a value an author can be told is wrong (see priority.js).
-  if (priority !== undefined && !isPriority(priority)) {
-    return fail('INVALID_STATE', `priority must be one of ${PRIORITIES.join(', ')}`);
+  // Omitted and explicit null both mean unset: the card is simply unjudged, and
+  // nothing here invents a level for it.
+  if (priority != null && !isPriority(priority)) {
+    return fail('INVALID_STATE', `priority must be one of ${PRIORITIES.join(', ')}, or null for unset`);
   }
   return withLock(project, () => {
     store.ensureProjectDirs(project);
@@ -208,7 +212,7 @@ export async function fileTask({ project, title, goal, acceptance, epic, depends
     const created = nowIso();
     const task = {
       id, uid: crypto.randomUUID(), title: title.trim(), project, epic: epic ?? null,
-      priority: priority ?? DEFAULT_PRIORITY, created, updated: created, node: localNodeId(),
+      priority: priority ?? null, created, updated: created, node: localNodeId(),
       owner: null, depends_on: Array.isArray(depends_on) ? depends_on : [],
       goal: typeof goal === 'string' ? goal : '',
       acceptance: (Array.isArray(acceptance) ? acceptance : []).map((text) => ({ text, done: false })),
@@ -411,8 +415,10 @@ export async function updateTask({ project, id, fields } = {}) {
     if (fields.epic && !epicVisibleIn(project, fields.epic)) {
       return fail('EPIC_UNKNOWN', `unknown epic: ${fields.epic}`);
     }
-    if ('priority' in fields && !isPriority(fields.priority)) {
-      return fail('INVALID_STATE', `priority must be one of ${PRIORITIES.join(', ')}`);
+    // null clears the level back to unset (and round-trips: serialize then drops
+    // the frontmatter key entirely). Anything else non-canonical is a caller bug.
+    if ('priority' in fields && fields.priority !== null && !isPriority(fields.priority)) {
+      return fail('INVALID_STATE', `priority must be one of ${PRIORITIES.join(', ')}, or null for unset`);
     }
     // plan/owner are validated up here, alongside the epic check. What actually
     // guarantees no half-applied card is that every refusal returns before the
@@ -442,7 +448,7 @@ export async function updateTask({ project, id, fields } = {}) {
     for (const key of UPDATABLE) {
       if (!(key in fields) || key === 'plan' || key === 'owner') continue;
       if (key === 'depends_on') task.depends_on = Array.isArray(fields.depends_on) ? fields.depends_on : [];
-      else task[key] = fields[key]; // priority is validated above, so it lands verbatim
+      else task[key] = fields[key]; // priority is validated above, so it lands verbatim (incl. null)
     }
     if ('plan' in fields) task.plan = planNext;
     if ('owner' in fields) {

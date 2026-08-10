@@ -110,26 +110,59 @@ test('parse maps each legacy integer frontmatter value to its level', () => {
   }
 });
 
-test('parse sends 0, out-of-range, unknown and absent priority to MEDIUM', () => {
+// PARSE stage. Observes only what a card file becomes in memory.
+test('parse sends 0, out-of-range, unknown and absent priority to unset', () => {
   for (const line of ['0', '6', '99', '-1', 'URGENT', 'p3', '', null]) {
     const t = parse(cardText(line), { state: 'todo' });
-    assert.equal(t.priority, 'MEDIUM', `priority: ${String(line)}`);
+    assert.equal(t.priority, null, `priority: ${String(line)}`);
     // Never at the cost of the card: the rest of the frontmatter still parsed.
     assert.equal(t.id, '2026-0001', `priority: ${String(line)} lost the card`);
     assert.equal(t.goal, 'g');
   }
+  // `0` is unset while `3` is a genuine MEDIUM — the legacy ladder's "never
+  // judged" value must not be laundered into a judgement.
+  assert.equal(parse(cardText('0'), { state: 'todo' }).priority, null);
+  assert.equal(parse(cardText('3'), { state: 'todo' }).priority, 'MEDIUM');
+});
+
+// SERIALIZE stage, and deliberately NOT via parse: every input here is a raw
+// object literal that never went through parse, so nothing has pre-coerced the
+// value in memory. (Feeding parse's output in would pin parse-normalisation a
+// second time and prove nothing about the serializer.)
+test('serialize omits the priority key entirely when the card is unset', () => {
+  const base = sampleTask();
+  for (const value of [null, undefined, 0, '0', 'bogus', 6, '']) {
+    const out = serialize({ ...base, priority: value });
+    assert.equal(/^priority:/m.test(out), false, `${JSON.stringify(value)} must emit no priority line\n${out}`);
+    // The card itself is intact — omitting the key is not dropping the card.
+    assert.ok(out.includes('\nid: 2026-0042\n'), out);
+    assert.ok(out.includes('\ndepends_on: [2026-0001, 2026-0002]\n'), out);
+  }
+});
+
+test('serialize writes the level verbatim when the card is judged', () => {
+  const base = sampleTask();
+  for (const [value, expected] of [[1, 'CRITICAL'], ['low', 'LOW'], ['MEDIUM', 'MEDIUM'], ['HIGH', 'HIGH']]) {
+    const out = serialize({ ...base, priority: value });
+    assert.ok(out.includes(`\npriority: ${expected}\n`), `${JSON.stringify(value)} -> ${expected}\n${out}`);
+  }
 });
 
 test('serialize(parse(legacy)) rewrites the level — the tolerant parse IS the migration', () => {
+  // Both stages together, which is what actually lands on disk. `2` becomes a
+  // level; `0` becomes an absent key rather than a fabricated one.
   const rewritten = serialize(parse(cardText('2'), { state: 'todo' }));
   assert.ok(rewritten.includes('\npriority: HIGH\n'), rewritten);
   assert.equal(rewritten.includes('priority: 2'), false, rewritten);
+
+  const cleared = serialize(parse(cardText('0'), { state: 'todo' }));
+  assert.equal(/^priority:/m.test(cleared), false, cleared);
 });
 
-test('serialize never emits a non-level, whatever it is handed', () => {
+test('parse(serialize(t)) round-trips every level AND unset', () => {
   const base = sampleTask();
-  for (const [value, expected] of [[0, 'MEDIUM'], [1, 'CRITICAL'], ['low', 'LOW'], [undefined, 'MEDIUM'], [null, 'MEDIUM'], ['bogus', 'MEDIUM']]) {
-    const out = serialize({ ...base, priority: value });
-    assert.ok(out.includes(`\npriority: ${expected}\n`), `${JSON.stringify(value)} -> ${expected}\n${out}`);
+  for (const level of ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', null]) {
+    const back = parse(serialize({ ...base, priority: level }), { state: 'todo' });
+    assert.equal(back.priority, level, `${String(level)} did not round-trip`);
   }
 });
