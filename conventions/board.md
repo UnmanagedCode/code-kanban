@@ -14,9 +14,12 @@ workflow, not a replacement for it.
 - **Landing commit.** `move_task` to `done` stamps `commit`: pass it explicitly for a squash/merge
   sha, otherwise the owning worker's live worktree HEAD is auto-captured (unset if that worktree
   can't be resolved).
-- **Plans.** `update_task` can attach `plan`, a link to a plan file. A
-  planned-but-unstarted card is `todo` with a plan link; there is no plan lane. Pull the text with
-  `read_task({includePlan:true})` only when you actually need it.
+- **Plans.** On a plan wake, attach the plan to the card. Copy it into the board rather than
+  re-authoring it: `cp <planPath> .conduct/kanban/projects/<project>/plans/<id>.md`, then
+  `update_task({fields:{plan:'board:<id>.md'}})`. When the plan instead lives in the project tree,
+  attach `repo:<rel>` once the merge lands. A card may be planned but unstarted — `todo` plus a
+  plan link. Pull the text back with `read_task({includePlan:true})` only when you actually need
+  it.
 - **Handoff.** `update_task` can reassign `owner` on an `in-progress` card (plan worker ->
   implementer) with no lane move.
 - **Don't brief workers to mutate.** Never ask a worker to move or update a card.
