@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { freshRoot, cleanup } from './_helpers.mjs';
 import { plansDir } from '../src/paths.js';
@@ -85,6 +86,27 @@ test('caller.sessionId is threaded into owner-scoped tools', async () => {
     const log = await mcp.handle({ tool: 'read_progress', arguments: { project: 'demo', id } });
     assert.match(log.body.text[0], /via-mcp/);
   } finally { await cleanup(root); }
+});
+
+// file_task's dispatch spreads `...a`, so a new argument needs no mcp.js edit —
+// this pins that the `plan` param actually survives the spread and that the
+// result (incl. the new `plan` key) rides the plain {result} envelope.
+test('file_task via mcp: an absolute plan is ingested and reported in {result}', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  const srcDir = fs.mkdtempSync(path.join(os.tmpdir(), 'code-kanban-src-'));
+  try {
+    const source = path.join(srcDir, 'wake.md');
+    fs.writeFileSync(source, '# plan from the wake\n');
+    const res = await mcp.handle({ tool: 'file_task', arguments: { project: 'demo', title: 't', plan: source } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.error, undefined);
+    const { ok, id, plan } = res.body.result;
+    assert.equal(ok, true);
+    assert.ok(id);
+    assert.equal(plan, `board:${id}.md`);
+    assert.equal(fs.readFileSync(path.join(plansDir('demo'), `${id}.md`), 'utf8'), '# plan from the wake\n');
+  } finally { fs.rmSync(srcDir, { recursive: true, force: true }); await cleanup(root); }
 });
 
 test('delete_task via mcp: happy path removes the card, unknown id rides in {result:{ok:false}}', async () => {

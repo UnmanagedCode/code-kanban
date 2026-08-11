@@ -52,7 +52,7 @@ malformed envelope or an unexpected exception.
 
 ## Tool signatures
 
-- `file_task({project, title, goal?, acceptance?, epic?, depends_on?, category?, priority?}) → {ok, id}` — task lands in `triage` by default; `category: 'todo'|'backlog'` lands it directly in that lane instead (mirrors triage's legal exits). An illegal `category` value → `INVALID_STATE`. `epic` must already exist → else `EPIC_UNKNOWN`. `priority` is one of `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` (advertised in the manifest as an `enum` with **no `default`**); omitted or `null` → unset; anything else → `INVALID_STATE`. All of these validate **before** the card is written, so a refusal consumes no id.
+- `file_task({project, title, goal?, acceptance?, epic?, depends_on?, category?, priority?, plan?}) → {ok, id[, plan]}` — task lands in `triage` by default; `category: 'todo'|'backlog'` lands it directly in that lane instead (mirrors triage's legal exits). An illegal `category` value → `INVALID_STATE`. `epic` must already exist → else `EPIC_UNKNOWN`. `priority` is one of `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` (advertised in the manifest as an `enum` with **no `default`**); omitted or `null` → unset; anything else → `INVALID_STATE`. `plan` takes the same three input forms as `update_task`'s `fields.plan` (below) and is resolved against the card's freshly-minted id, so an **absolute** path is copied to `plans/<id>.md`; the stored link comes back as `plan` in the result. All of these validate **before** the card is written, so a refusal consumes no id — including a `PLAN_UNKNOWN` plan: no card is created and the next `file_task` gets that same id.
 - `log_progress({project?, id?, entry}) → {ok}` — two paths, chosen by `id`:
   - **`id` omitted (worker path):** target card resolved server-side from `caller.sessionId`
     (the owned `in-progress` card; ties broken by most-recently-modified). `project` is
@@ -111,22 +111,33 @@ malformed envelope or an unexpected exception.
   resolve either way is not an error — the move still succeeds and `commit` is simply left unset.
   A re-land (`done→in-progress→done`) re-runs this resolution: a fresh sha overwrites the prior
   one, but an unresolvable re-land leaves the previously-stamped `commit` untouched.
-- `update_task({project, id, fields}) → {ok}` — `fields` ⊆ `{title, goal, epic, priority, depends_on, plan, owner}`; other keys ignored. `fields.epic` must exist → else `EPIC_UNKNOWN`. Every field validates **before** any mutation, so a refusal leaves the card untouched.
+- `update_task({project, id, fields}) → {ok[, plan]}` (`plan` — the stored link, or `null` — is returned when `fields.plan` was part of the call) — `fields` ⊆ `{title, goal, epic, priority, depends_on, plan, owner}`; other keys ignored. `fields.epic` must exist → else `EPIC_UNKNOWN`. Every field validates **before** any mutation, so a refusal leaves the card untouched.
   - **`priority`** — one of `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, matched **exactly** (case-sensitive),
     **or `null` to clear the card back to unset** (like `plan`). Everything else — `''`, a lowercase
     spelling, a legacy integer, `undefined`, any unknown word → `INVALID_STATE`. Only an explicit
     `null` clears, so a dropped or misspelled value cannot silently erase a judgement. Tolerant
     coercion exists **only** on the disk-parse path, never here — see
     `.wiki/gotchas/priority-legacy-tolerance.md`.
-  - **`plan`** — a **link to a plan file**, never the plan text. Grammar (defined here, once):
-    `board:<rel>` resolves under `<kanbanRoot>/projects/<project>/plans/`; `repo:<rel>` resolves
+  - **`plan`** — a **link to a plan file**, never the plan text. Grammar (defined here, once).
+    **Input forms (3)** — `board:<rel>` / `repo:<rel>` (a typed **pointer**, validated by stat,
+    **never copied**): `board:` resolves under `<kanbanRoot>/projects/<project>/plans/`, `repo:`
     under `<PROJECTS_ROOT>/<project>/` — the **base checkout**, never a worktree, so a `repo:` link
-    only resolves once the plan is merged; a **bare** `<rel>` means `board:` and is stored
-    normalised to the explicit `board:<rel>` form. Refused `INVALID_STATE`: an empty value, a
-    non-string, an embedded newline (frontmatter is one verbatim line), any other scheme
-    (`file:`, `http:`, `C:\…`), an **absolute** path (breaks cross-instance sync), and `../`
-    escaping the base. Refused `PLAN_UNKNOWN` when the link is grammatical but resolves to no
-    regular file inside its base (incl. via a symlink out of it). `plan: null` clears it.
+    only resolves once the plan is merged; a bare `<rel>` (means `board:`, normalised on store);
+    and an **absolute path** (**ingested**: copied to
+    `<kanbanRoot>/projects/<project>/plans/<id>.md`, `plans/` created if absent, an existing copy
+    overwritten — last write wins, no versioning; the source is never moved or modified).
+    **Stored form (1)** — always `board:<rel>` or `repo:<rel>`. Unchanged by this feature, so
+    reads, sync, `delete_task`'s unlink and the GUI all see one grammar.
+    An absolute path pointing at an in-tree file yields a board **snapshot**, not a live `repo:`
+    pointer — pass `repo:<rel>` explicitly for that. Both `update_task` and `file_task` return the
+    resolved `plan` link when the field was part of the call.
+    Refused `INVALID_STATE`: an empty value, a non-string, an embedded newline (frontmatter is one
+    verbatim line), any other scheme (`file:`, `http:`, `C:\…`), an absolute path **after an
+    explicit scheme** (`board:/abs` — the scheme makes it a pointer, and a pointer must be
+    relative), and `../` escaping a base. Refused `PLAN_UNKNOWN` when a **pointer** is grammatical
+    but resolves to no regular file inside its base (incl. via a symlink out of it), **and** when
+    an absolute source is missing, a directory, not a regular file, or cannot be read/copied — the
+    card's `plan` is left unchanged. `plan: null` clears it.
   - **`owner`** — only settable on an **`in-progress`** card → else `INVALID_STATE` (a plan-worker →
     implementer handoff needs no lane move). Must be a non-empty single token with no whitespace;
     `null` clears it. A real change stamps a logbook line `owner <from> -> <to>` (`none` for an
@@ -175,8 +186,8 @@ through unchanged as the HTTP body.
 | `GET /api/board/meta` | `STATES` + `ALLOWED_TRANSITIONS` + `PRIORITIES` | — | `{states:[…], transitions:["from>to",…], priorities:["CRITICAL","HIGH","MEDIUM","LOW"]}` (`priorities` in rank order, highest first — the GUI's priority selects render from it rather than hardcoding a copy) |
 | `GET /api/board/:project/tasks` | `board.listTasks` | `?state`, `?epic` | `{ok, tasks:[summary]}` |
 | `GET /api/board/:project/tasks/:id` | `board.readTask` | `?includePlan=1\|true` | `{ok, task, plan_path[, plan_body, plan_truncated, plan_missing]}` (full: goal, acceptance, logbook). Any other `includePlan` value is falsy. The GUI always sends `includePlan=1` and reads `plan_body` as a field (the raw-text channel is MCP-only). |
-| `POST /api/board/:project/tasks` | `board.fileTask` | `{title, goal?, acceptance?, epic?, depends_on?, priority?}` | `{ok, id}` (lands in `triage`; `priority` omitted or `null` → unset) |
-| `PATCH /api/board/:project/tasks/:id` | `board.updateTask` | body **is** `fields` ⊆ `{title, goal, epic, priority, depends_on, plan, owner}` | `{ok}` (same refusals as the tool, incl. `PLAN_UNKNOWN`) |
+| `POST /api/board/:project/tasks` | `board.fileTask` | `{title, goal?, acceptance?, epic?, depends_on?, priority?}` | `{ok, id}` (lands in `triage`; `priority` omitted or `null` → unset). The route destructures a fixed field list and deliberately does **not** pass `plan` — the GUI has no file picker and documents the plan link as non-editable. |
+| `PATCH /api/board/:project/tasks/:id` | `board.updateTask` | body **is** `fields` ⊆ `{title, goal, epic, priority, depends_on, plan, owner}` | `{ok[, plan]}` (same refusals as the tool, incl. `PLAN_UNKNOWN`; an absolute `plan` is ingested here too — the copy lives in `board.js`, not at a surface) |
 | `POST /api/board/:project/tasks/:id/move` | `board.moveTask` | `{to, owner?, commit?}` | `{ok, from, to}` |
 | `GET /api/board/:project/epics` | `board.listEpics` | — | `{ok, epics:[{slug, title, rollup, projects}]}` (incl. cross-project epics spanning the project) |
 | `GET /api/board/:project/epics/:slug` | `board.readEpic` | — | `{ok, epic, tasks:[summary]}` (resolves a cross-project epic the project belongs to) |

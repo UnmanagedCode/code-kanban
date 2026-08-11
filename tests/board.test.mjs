@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { freshRoot, cleanup } from './_helpers.mjs';
 import * as board from '../src/board.js';
@@ -739,6 +740,26 @@ function writeRepoPlan(project, rel, body) {
   return file;
 }
 
+// A source dir OUTSIDE PROJECTS_ROOT (its own mkdtemp — freshRoot's dir is a
+// tmpdir too, so "outside" has to be a sibling), mirroring the ~/.claude/plans/
+// location that ingest exists for. Cleaned up by the caller.
+function outsideSources() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'code-kanban-src-'));
+  return {
+    dir,
+    write(name, body) {
+      const file = path.join(dir, name);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, body);
+      return file;
+    },
+    cleanup() { fs.rmSync(dir, { recursive: true, force: true }); },
+  };
+}
+
+// The board's ingest destination for a card.
+function ingestDest(project, id) { return path.join(plansDir(project), `${id}.md`); }
+
 test('update_task sets a board: plan link; read_task returns plan_path', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
@@ -802,16 +823,60 @@ test('update_task plan via a symlink out of plans/ -> PLAN_UNKNOWN (no arbitrary
   } finally { await cleanup(root); }
 });
 
-test('update_task plan with an absolute path -> INVALID_STATE', async () => {
+// NO LOCATION SNIFFING: an absolute path INSIDE plans/ is copied like any other
+// source, rather than being normalised back to a board: pointer at itself.
+test('update_task plan: an absolute path inside plans/ is copied like any other source', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
     const { id } = await board.fileTask({ project: 'demo', title: 't' });
-    const abs = writeBoardPlan('demo', 'p.md', 'plan'); // exists — refused on grammar, not existence
+    const abs = writeBoardPlan('demo', 'p.md', 'the p.md plan');
     const r = await board.updateTask({ project: 'demo', id, fields: { plan: abs } });
-    assert.equal(r.code, 'INVALID_STATE');
-    assert.match(r.reason, /relative/);
+    assert.equal(r.ok, true);
+    assert.equal(r.plan, `board:${id}.md`);
+    assert.equal((await board.readTask({ project: 'demo', id })).task.plan, `board:${id}.md`);
+    assert.equal(fs.readFileSync(ingestDest('demo', id), 'utf8'), 'the p.md plan');
+    assert.equal(fs.readFileSync(abs, 'utf8'), 'the p.md plan'); // the source survives
   } finally { await cleanup(root); }
+});
+
+// OUTCOME test, not proof of the guard. Re-attaching plans/<id>.md by absolute
+// path must succeed, store the link, and leave the content intact. It does NOT
+// demonstrate that ingestPlanFile's self-copy guard is load-bearing: with the
+// guard removed, libuv's same-inode short-circuit keeps this green too, so the
+// assertions below pass either way (see the guard's comment in src/board.js).
+test('update_task plan: an absolute path AT the destination succeeds with the content intact', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    const abs = writeBoardPlan('demo', `${id}.md`, 'SELF');
+    const r = await board.updateTask({ project: 'demo', id, fields: { plan: abs } });
+    assert.equal(r.ok, true);
+    assert.equal(r.plan, `board:${id}.md`);
+    assert.equal(fs.readFileSync(abs, 'utf8'), 'SELF'); // intact
+    assert.equal((await board.readTask({ project: 'demo', id, includePlan: true })).plan_body, 'SELF');
+  } finally { await cleanup(root); }
+});
+
+// The symlink form of the same OUTCOME: as strings source !== dest, so only the
+// guard's realpath comparison recognises it — but, like the test above, this
+// asserts the outcome and cannot prove the guard (libuv no-ops a same-inode copy
+// regardless). Both mutants on the guard are waived expected survivors.
+test('update_task plan: an absolute SYMLINK to the destination succeeds with the content intact', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  const src = outsideSources();
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    const dest = writeBoardPlan('demo', `${id}.md`, 'SELF VIA SYMLINK');
+    const link = path.join(src.dir, 'alias.md');
+    fs.symlinkSync(dest, link);
+    const r = await board.updateTask({ project: 'demo', id, fields: { plan: link } });
+    assert.equal(r.ok, true);
+    assert.equal(r.plan, `board:${id}.md`);
+    assert.equal(fs.readFileSync(dest, 'utf8'), 'SELF VIA SYMLINK'); // intact
+  } finally { src.cleanup(); await cleanup(root); }
 });
 
 test('update_task plan with ../ traversal -> INVALID_STATE', async () => {
@@ -835,7 +900,9 @@ test('update_task plan: null clears the link', async () => {
     const { id } = await board.fileTask({ project: 'demo', title: 't' });
     writeBoardPlan('demo', 'p.md', 'plan');
     await board.updateTask({ project: 'demo', id, fields: { plan: 'p.md' } });
-    assert.equal((await board.updateTask({ project: 'demo', id, fields: { plan: null } })).ok, true);
+    const cleared = await board.updateTask({ project: 'demo', id, fields: { plan: null } });
+    assert.equal(cleared.ok, true);
+    assert.equal(cleared.plan, null); // reported, because fields.plan was in the call
     const r = await board.readTask({ project: 'demo', id });
     assert.equal(r.task.plan, null);
     assert.equal(r.plan_path, null);
@@ -856,6 +923,266 @@ test('update_task repo: plan link fails while unmerged -> PLAN_UNKNOWN, passes o
     assert.equal(r.task.plan, link);
     assert.equal(r.plan_path, file);
     assert.equal(r.plan_body, '# merged plan');
+  } finally { await cleanup(root); }
+});
+
+// ---- plan ingest (a bare ABSOLUTE input is copied into the board) ----
+
+test('update_task plan: an absolute path outside PROJECTS_ROOT is ingested as board:<id>.md', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  const src = outsideSources();
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 'planned' });
+    const source = src.write('deep-dive.md', '# the host plan\nbody\n');
+    const u = await board.updateTask({ project: 'demo', id, fields: { plan: source } });
+    assert.equal(u.ok, true);
+    // Named from the CARD's id, not the source basename.
+    assert.equal(u.plan, `board:${id}.md`);
+    assert.equal((await board.readTask({ project: 'demo', id })).task.plan, `board:${id}.md`);
+    assert.equal(fs.existsSync(path.join(plansDir('demo'), 'deep-dive.md')), false);
+    // The copy is a real byte-for-byte copy, and readable through read_task.
+    assert.equal(fs.readFileSync(ingestDest('demo', id), 'utf8'), '# the host plan\nbody\n');
+    const r = await board.readTask({ project: 'demo', id, includePlan: true });
+    assert.equal(r.plan_body, '# the host plan\nbody\n');
+    assert.equal(r.plan_missing, false);
+    // COPY, not move: the source is untouched.
+    assert.equal(fs.existsSync(source), true);
+    assert.equal(fs.readFileSync(source, 'utf8'), '# the host plan\nbody\n');
+  } finally { src.cleanup(); await cleanup(root); }
+});
+
+test('update_task plan ingest creates plans/ when the project dir predates it', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  const src = outsideSources();
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    fs.rmSync(plansDir('demo'), { recursive: true, force: true }); // no plans/ at all
+    assert.equal(fs.existsSync(plansDir('demo')), false);
+    const source = src.write('p.md', 'made the dir');
+    assert.equal((await board.updateTask({ project: 'demo', id, fields: { plan: source } })).ok, true);
+    assert.equal(fs.readFileSync(ingestDest('demo', id), 'utf8'), 'made the dir');
+  } finally { src.cleanup(); await cleanup(root); }
+});
+
+test('update_task plan ingest of a revised plan OVERWRITES the board copy (no versioning)', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  const src = outsideSources();
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    const a = src.write('a.md', 'FIRST');
+    const b = src.write('b.md', 'SECOND');
+    assert.equal((await board.updateTask({ project: 'demo', id, fields: { plan: a } })).ok, true);
+    const second = await board.updateTask({ project: 'demo', id, fields: { plan: b } });
+    assert.equal(second.plan, `board:${id}.md`);
+    assert.equal(fs.readFileSync(ingestDest('demo', id), 'utf8'), 'SECOND');
+    // Last write wins into ONE file — no suffixed sibling, no skip-if-exists.
+    assert.deepEqual(fs.readdirSync(plansDir('demo')), [`${id}.md`]);
+  } finally { src.cleanup(); await cleanup(root); }
+});
+
+test('update_task plan: a board: POINTER is never copied and never clobbers plans/<id>.md', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    const other = writeBoardPlan('demo', 'other.md', 'X');
+    const dest = writeBoardPlan('demo', `${id}.md`, 'SENTINEL');
+    const u = await board.updateTask({ project: 'demo', id, fields: { plan: 'board:other.md' } });
+    assert.equal(u.ok, true);
+    assert.equal(u.plan, 'board:other.md');
+    assert.equal((await board.readTask({ project: 'demo', id })).task.plan, 'board:other.md');
+    assert.equal(fs.readFileSync(other, 'utf8'), 'X');
+    assert.equal(fs.readFileSync(dest, 'utf8'), 'SENTINEL'); // untouched
+  } finally { await cleanup(root); }
+});
+
+test('update_task plan: a repo: POINTER is never copied into the board', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    const repoFile = writeRepoPlan('demo', 'docs/plans/x.md', '# in-tree plan');
+    const u = await board.updateTask({ project: 'demo', id, fields: { plan: 'repo:docs/plans/x.md' } });
+    assert.equal(u.plan, 'repo:docs/plans/x.md');
+    assert.equal(fs.readFileSync(repoFile, 'utf8'), '# in-tree plan');
+    assert.equal(fs.existsSync(ingestDest('demo', id)), false);
+  } finally { await cleanup(root); }
+});
+
+test('update_task plan: a BARE RELATIVE path is a pointer, not an ingest', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    writeBoardPlan('demo', 'p.md', 'plan');
+    const u = await board.updateTask({ project: 'demo', id, fields: { plan: 'p.md' } });
+    assert.equal(u.plan, 'board:p.md');
+    assert.equal(fs.existsSync(ingestDest('demo', id)), false); // nothing copied
+  } finally { await cleanup(root); }
+});
+
+// The real-world common case: the plan file lives in the worker's WORKTREE, which
+// `repo:` (the base checkout) cannot reach. Ingest copies it — and the worktree
+// dir is never mistaken for the project itself.
+test('update_task plan: an absolute path inside a WORKTREE is copied in', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    const wt = path.join(root, 'demo_worktree_ab12');
+    fs.mkdirSync(wt, { recursive: true });
+    const source = path.join(wt, 'plan.md');
+    fs.writeFileSync(source, '# worktree plan');
+    const u = await board.updateTask({ project: 'demo', id, fields: { plan: source } });
+    assert.equal(u.plan, `board:${id}.md`);
+    assert.equal(fs.readFileSync(ingestDest('demo', id), 'utf8'), '# worktree plan');
+    assert.equal(fs.readFileSync(source, 'utf8'), '# worktree plan');
+  } finally { await cleanup(root); }
+});
+
+test('update_task plan: a MISSING absolute source -> PLAN_UNKNOWN, card unchanged', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  const src = outsideSources();
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    writeBoardPlan('demo', 'p.md', 'the earlier plan');
+    assert.equal((await board.updateTask({ project: 'demo', id, fields: { plan: 'board:p.md' } })).ok, true);
+    const r = await board.updateTask({ project: 'demo', id, fields: { plan: path.join(src.dir, 'nope.md') } });
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'PLAN_UNKNOWN');
+    // Validation precedes mutation: the earlier link stands and nothing was written.
+    assert.equal((await board.readTask({ project: 'demo', id })).task.plan, 'board:p.md');
+    assert.equal(fs.existsSync(ingestDest('demo', id)), false);
+  } finally { src.cleanup(); await cleanup(root); }
+});
+
+test('update_task plan: a DIRECTORY as the absolute source -> PLAN_UNKNOWN, refused by the stat', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  const src = outsideSources();
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    const dir = path.join(src.dir, 'adir');
+    fs.mkdirSync(dir, { recursive: true });
+    const r = await board.updateTask({ project: 'demo', id, fields: { plan: dir } });
+    assert.equal(r.code, 'PLAN_UNKNOWN');
+    // The isFile() check refuses it, NOT a failed copy: without that check the
+    // copy would refuse too (EISDIR), so pin which guard spoke.
+    assert.match(r.reason, /not a regular file/);
+    assert.equal(fs.existsSync(ingestDest('demo', id)), false);
+  } finally { src.cleanup(); await cleanup(root); }
+});
+
+// The case the isFile() check is really load-bearing for: a source copyFileSync
+// would happily accept, silently ingesting a bogus plan (an empty one, here).
+test('update_task plan: a NON-REGULAR absolute source (character device) -> PLAN_UNKNOWN', async (t) => {
+  if (!fs.existsSync('/dev/null')) return t.skip('no /dev/null on this platform');
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    const r = await board.updateTask({ project: 'demo', id, fields: { plan: '/dev/null' } });
+    assert.equal(r.code, 'PLAN_UNKNOWN');
+    assert.match(r.reason, /not a regular file/);
+    assert.equal(fs.existsSync(ingestDest('demo', id)), false);
+    assert.equal((await board.readTask({ project: 'demo', id })).task.plan, null);
+  } finally { await cleanup(root); }
+});
+
+test('update_task plan: a DANGLING SYMLINK as the absolute source -> PLAN_UNKNOWN', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  const src = outsideSources();
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    const link = path.join(src.dir, 'dangling.md');
+    fs.symlinkSync(path.join(src.dir, 'gone.md'), link); // statSync follows -> ENOENT
+    const r = await board.updateTask({ project: 'demo', id, fields: { plan: link } });
+    assert.equal(r.code, 'PLAN_UNKNOWN');
+    assert.equal(fs.existsSync(ingestDest('demo', id)), false);
+  } finally { src.cleanup(); await cleanup(root); }
+});
+
+// ---- file_task's plan param (same three input forms, same validator) ----
+
+test('file_task ingests an absolute plan into the CARD\'s own id', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  const src = outsideSources();
+  try {
+    const source = src.write('wake-plan.md', '# filed with a plan');
+    const f = await board.fileTask({ project: 'demo', title: 't', plan: source });
+    assert.equal(f.ok, true);
+    assert.equal(f.plan, `board:${f.id}.md`);
+    assert.equal(fs.readFileSync(ingestDest('demo', f.id), 'utf8'), '# filed with a plan');
+    const r = await board.readTask({ project: 'demo', id: f.id, includePlan: true });
+    assert.equal(r.task.plan, `board:${f.id}.md`);
+    assert.equal(r.plan_body, '# filed with a plan');
+  } finally { src.cleanup(); await cleanup(root); }
+});
+
+test('file_task with an unreadable absolute plan -> PLAN_UNKNOWN: no card, no id burned', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const r = await board.fileTask({ project: 'demo', title: 't', plan: '/nope/definitely-not-here.md' });
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'PLAN_UNKNOWN');
+    assert.equal(r.id, undefined);
+    // Copy-then-write: nothing was created...
+    assert.deepEqual((await board.listTasks({ project: 'demo' })).tasks, []);
+    // ...and nextId consumed nothing, so the next filing gets the first id.
+    const next = await board.fileTask({ project: 'demo', title: 'after' });
+    assert.equal(next.id, `${new Date().getFullYear()}-0001`);
+  } finally { await cleanup(root); }
+});
+
+test('file_task with a board: pointer at a missing file -> PLAN_UNKNOWN, no card', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const r = await board.fileTask({ project: 'demo', title: 't', plan: 'board:ghost.md' });
+    assert.equal(r.code, 'PLAN_UNKNOWN');
+    assert.deepEqual((await board.listTasks({ project: 'demo' })).tasks, []);
+  } finally { await cleanup(root); }
+});
+
+test('file_task with a malformed plan -> INVALID_STATE before the lock, no card', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const r = await board.fileTask({ project: 'demo', title: 't', plan: 'board:/abs/p.md' });
+    assert.equal(r.code, 'INVALID_STATE');
+    assert.match(r.reason, /relative/);
+    assert.deepEqual((await board.listTasks({ project: 'demo' })).tasks, []);
+  } finally { await cleanup(root); }
+});
+
+test('file_task with a POINTER plan copies nothing', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    writeBoardPlan('demo', 'other.md', 'shared plan');
+    const f = await board.fileTask({ project: 'demo', title: 't', plan: 'board:other.md' });
+    assert.equal(f.plan, 'board:other.md');
+    assert.equal(fs.existsSync(ingestDest('demo', f.id)), false);
+    assert.deepEqual(fs.readdirSync(plansDir('demo')), ['other.md']);
+  } finally { await cleanup(root); }
+});
+
+test('file_task without a plan reports no plan key (response shape unchanged)', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const f = await board.fileTask({ project: 'demo', title: 't' });
+    assert.equal('plan' in f, false);
+    assert.equal((await board.readTask({ project: 'demo', id: f.id })).task.plan, null);
+    const u = await board.updateTask({ project: 'demo', id: f.id, fields: { title: 'u' } });
+    assert.equal('plan' in u, false); // only reported when fields.plan was in the call
   } finally { await cleanup(root); }
 });
 

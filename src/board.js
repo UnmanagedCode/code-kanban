@@ -12,8 +12,9 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
-import { STATES } from './paths.js';
-import { resolvePlanLink, planBaseDir, isContained } from './planLink.js';
+import path from 'node:path';
+import { STATES, plansDir } from './paths.js';
+import { resolvePlanLink, classifyPlanInput, planBaseDir, isContained } from './planLink.js';
 import { validateProject, listProjects } from './projects.js';
 import { withLock } from './mutex.js';
 import * as store from './store.js';
@@ -83,14 +84,65 @@ function safePlanFile(project, resolved) {
   }
 }
 
-// Resolve + stat a plan link for a SET. -> {link, scheme, path} | a fail().
-function resolvePlanForSet(project, link) {
-  const resolved = resolvePlanLink(project, link);
-  if (resolved.error) return fail(resolved.error.code, resolved.error.reason);
-  if (!safePlanFile(project, resolved)) {
-    return fail('PLAN_UNKNOWN', `no plan file at ${resolved.link} (resolved to ${resolved.path})`);
+// Ingest: copy an absolute source INTO the board as this card's plan file and
+// return the stored `board:<id>.md` link. Copy, never move — the source (a plan
+// wake's ~/.claude/plans/<slug>.md, typically) is never touched or modified. An
+// existing destination is overwritten: last write wins, no versioning, so
+// re-attaching a revised plan simply replaces the board's copy.
+// -> {link} | a fail('PLAN_UNKNOWN', …)
+function ingestPlanFile(project, id, source) {
+  let stat;
+  try { stat = fs.statSync(source); } // follows symlinks
+  catch (e) { return fail('PLAN_UNKNOWN', `cannot read plan file at ${source}: ${e.message}`); }
+  if (!stat.isFile()) return fail('PLAN_UNKNOWN', `plan source is not a regular file: ${source}`);
+
+  const dir = plansDir(project);
+  const dest = path.join(dir, `${id}.md`);
+  const link = `board:${id}.md`;
+  // Self-copy guard — the only special case: re-attaching plans/<id>.md by
+  // absolute path, or via a symlink to it, must be a no-op success. Compared by
+  // REALPATH, not string, since only that catches the symlink form.
+  //
+  // Deliberately kept even though it is (measurably) unobservable here: with the
+  // guard removed, fs.copyFileSync(dest, dest) does NOT damage the file — libuv
+  // opens the destination O_WRONLY|O_CREAT with NO O_TRUNC, compares st_dev/
+  // st_ino and returns success without writing (strace'd on Node v24.18.0). But
+  // that short-circuit is a libuv INTERNAL: node's fs.copyFile docs promise only
+  // that an existing destination is overwritten and say nothing about a source
+  // and destination that are the same file. Betting a data-loss-critical path on
+  // a third-party library's unspecified behaviour is worse than three explicit
+  // lines — in the self-copy case the destination IS the only copy of the plan.
+  // Consequence for coverage: no test can kill the removal of this guard on
+  // Linux/libuv, so that mutant is a WAIVED expected survivor (owner's decision
+  // — see .wiki/gotchas/plan-link-and-sync-gap.md and harness/mutation/README.md).
+  try {
+    if (fs.existsSync(dest) && fs.realpathSync(source) === fs.realpathSync(dest)) return { link };
+  } catch { /* either side unresolvable -> not the same file; fall through */ }
+
+  try {
+    // store.ensureProjectDirs creates plans/, but updateTask never calls it —
+    // a project dir predating that function has none.
+    fs.mkdirSync(dir, { recursive: true });
+    fs.copyFileSync(source, dest);
+  } catch (e) {
+    return fail('PLAN_UNKNOWN', `could not copy plan file from ${source}: ${e.message}`);
   }
-  return resolved;
+  return { link };
+}
+
+// The single set-time validator for a caller-supplied plan value, shared by
+// update_task, file_task and the GUI's PATCH route. -> {link} | a fail().
+// A pointer (`board:`/`repo:`/bare relative) is stat-validated and NOTHING is
+// written; a bare absolute path is ingested (copied in). `id` names the
+// destination, so the copy always lands on the card's own plan file.
+function resolvePlanForSet(project, value, id) {
+  const c = classifyPlanInput(project, value);
+  if (c.error) return fail(c.error.code, c.error.reason);
+  if (c.kind === 'ingest') return ingestPlanFile(project, id, c.source);
+  if (!safePlanFile(project, c)) {
+    return fail('PLAN_UNKNOWN', `no plan file at ${c.link} (resolved to ${c.path})`);
+  }
+  return { link: c.link };
 }
 
 // Bounded read of a plan body -> {body, truncated} | null (unreadable).
@@ -187,7 +239,7 @@ function sortTasks(tasks) {
 // (ALLOWED_TRANSITIONS has triage>backlog, triage>todo) rather than a separate list.
 const CATEGORIES = ['todo', 'backlog'];
 
-export async function fileTask({ project, title, goal, acceptance, epic, depends_on, category, priority, sessionId } = {}) {
+export async function fileTask({ project, title, goal, acceptance, epic, depends_on, category, priority, plan, sessionId } = {}) {
   const bad = await requireProject(project);
   if (bad) return bad;
   if (typeof title !== 'string' || !title.trim()) {
@@ -203,23 +255,41 @@ export async function fileTask({ project, title, goal, acceptance, epic, depends
   if (priority != null && !isPriority(priority)) {
     return fail('INVALID_STATE', `priority must be one of ${PRIORITIES.join(', ')}, or null for unset`);
   }
+  // Grammar-only pre-check, alongside the other cheap refusals: a malformed plan
+  // value consumes nothing. The value is RESOLVED (stat/copy) inside the lock,
+  // where the card's own id exists to name an ingest's destination.
+  if (plan != null) {
+    const c = classifyPlanInput(project, plan);
+    if (c.error) return fail(c.error.code, c.error.reason);
+  }
   return withLock(project, () => {
     store.ensureProjectDirs(project);
     if (epic && !epicVisibleIn(project, epic)) {
       return fail('EPIC_UNKNOWN', `unknown epic: ${epic} (create it first with create_epic)`);
     }
     const id = store.nextId(project);
+    // Copy-then-write: a refused plan returns BEFORE store.writeTask, so no card
+    // is created and no id is burned (the floor is bumped by writeTask, not
+    // nextId — so the next file_task gets this same id).
+    let planLink = null;
+    if (plan != null) {
+      const resolved = resolvePlanForSet(project, plan, id);
+      if (resolved.ok === false) return resolved;
+      planLink = resolved.link;
+    }
     const created = nowIso();
     const task = {
       id, uid: crypto.randomUUID(), title: title.trim(), project, epic: epic ?? null,
       priority: priority ?? null, created, updated: created, node: localNodeId(),
-      owner: null, depends_on: Array.isArray(depends_on) ? depends_on : [],
+      owner: null, plan: planLink, depends_on: Array.isArray(depends_on) ? depends_on : [],
       goal: typeof goal === 'string' ? goal : '',
       acceptance: (Array.isArray(acceptance) ? acceptance : []).map((text) => ({ text, done: false })),
       logbook: [logLine(created, sessionId, 'filed')],
     };
     store.writeTask(project, category ?? 'triage', task);
-    return { ok: true, id };
+    // Report the resolved link only when `plan` was part of the call, so no
+    // existing response shape changes.
+    return plan != null ? { ok: true, id, plan: planLink } : { ok: true, id };
   });
 }
 
@@ -428,9 +498,9 @@ export async function updateTask({ project, id, fields } = {}) {
     if ('plan' in fields) {
       if (fields.plan === null) planNext = null;
       else {
-        const resolved = resolvePlanForSet(project, fields.plan);
+        const resolved = resolvePlanForSet(project, fields.plan, id);
         if (resolved.ok === false) return resolved;
-        planNext = resolved.link; // the NORMALISED link (a bare path gains board:)
+        planNext = resolved.link; // the NORMALISED link (a bare path gains board:, an absolute path is ingested)
       }
     }
     let ownerNext;
@@ -461,7 +531,9 @@ export async function updateTask({ project, id, fields } = {}) {
       }
     }
     store.writeTask(project, task.state, touch(task));
-    return { ok: true };
+    // Report the stored link (an ingest's destination is `board:<id>.md`, which
+    // the caller would otherwise have to infer) only when `plan` was in the call.
+    return 'plan' in fields ? { ok: true, plan: planNext } : { ok: true };
   });
 }
 

@@ -36,6 +36,27 @@ node <path-to-code-mutant>/mutate.mjs validate
 No mutant catalog or canary is checked in here — `.mutation/` (gitignored) is created per review
 loop by the reviewer running `/code-mutant:prove`, not by this scaffold.
 
+## Standing waivers (expected survivors)
+
+No catalog is checked in, so a waiver can't be pre-annotated in a file the runner reads. Carry these
+forward as `waived: { reason }` on the matching catalog entry (`mutants.schema.md`) — waived mutants
+still run and report, but don't affect the exit code.
+
+| mutant | site | why unkillable |
+| --- | --- | --- |
+| drop the self-copy guard | `ingestPlanFile`, `src/board.js` | With or without the guard, **nothing is written**: libuv opens the destination `O_WRONLY\|O_CREAT` (no `O_TRUNC`), compares `st_dev`/`st_ino` and returns success. Verified by `strace` on Node v24.18.0, Linux. |
+| `source === dest` string compare instead of realpaths | same | Same reason — the string compare misses the symlink form, but the copy it then performs is still a no-op. |
+
+Waiver reason to record: *"owner 2026-08-11: guard kept as insurance against libuv's UNSPECIFIED
+same-inode behaviour (node's fs.copyFile docs promise nothing about it) on an unrecoverable path —
+the destination is the only copy of the plan. Behaviourally unobservable on Linux/libuv, so no test
+can kill it. See .wiki/gotchas/plan-link-and-sync-gap.md."*
+
+Everything else on that feature must die — notably: drop the `mkdirSync`; `renameSync` instead of
+`copyFileSync`; name the destination from the source basename; skip the copy when the destination
+exists; ingest a `board:`/`repo:` pointer; treat a bare relative path as an ingest; set `task.plan`
+before the source is validated; write the card before the copy in `fileTask`.
+
 ## `--jobs` and parallel copy runs
 
 `--jobs N` in `copy` mode is safe for this project. Verified 2026-08-10 as part of

@@ -18,7 +18,7 @@ Env this plugin reads: `PORT`, `HOST` (`server.js`), `PROJECTS_ROOT` (`src/paths
 | `src/store.js` | File store: state dirs, atomic writes, moves, id sequence, epic files. **No git.** |
 | `src/taskfile.js` | Task markdown ⇄ object (frontmatter + Goal/Acceptance/Logbook). |
 | `src/paths.js` | Resolve `PROJECTS_ROOT` → `.conduct/kanban/...` paths (incl. each scheme's plan base dir). Ordered `STATES`. |
-| `src/planLink.js` | Plan-link grammar (`board:`/`repo:`/bare) + the one containment guard. Pure — no fs; `board.js` owns stat-ing and every refusal shape. |
+| `src/planLink.js` | Plan-link grammar (`board:`/`repo:`/bare) + the one containment guard, and `classifyPlanInput` — pointer vs **ingest** (a bare absolute input) discrimination. Pure — no fs; `board.js` owns stat-ing, the copy and every refusal shape. |
 | `src/projects.js` | `validateProject` — shape check + live list via `CONDUCTOR_URL/api/projects` (scan fallback standalone). `listProjects` — same source, for the GUI selector. |
 | `src/mutex.js` | Per-project async mutex — the one serialized write path. |
 | `src/mcp.js` | Thin tool dispatch → `board.js`; MCP envelope. |
@@ -38,7 +38,12 @@ Board DATA lives in the conductor's tree, not this repo:
   projects/<project>/
     triage/ backlog/ todo/ in-progress/ done/  # one <id>.md per task
     epics/<slug>.md                            # project-scoped epic; goal only
-    plans/<rel>                                # base for a card's `board:` plan link
+    plans/<rel>                                # base for a card's `board:` plan link;
+                                               #   plans/<id>.md is the INGEST destination
+                                               #   (an absolute `plan` input is copied there
+                                               #   by board.js's ingestPlanFile, which also
+                                               #   creates plans/ if the project predates
+                                               #   store.ensureProjectDirs)
 ```
 
 - **No git writes from the plugin** (decision — see `.wiki/architecture/file-store-layout.md`).
@@ -81,7 +86,9 @@ export/pull under whole-card LWW like `owner`/`commit`, but plan **bodies** are 
 `exportBoard`/`syncPull`, so a synced card can carry a dead link. It degrades — `read_task` returns
 `plan_missing`, `delete_task`'s unlink is a no-op, the GUI shows "(file not found)", and re-setting
 that same link on this machine refuses `PLAN_UNKNOWN` — but never crashes. Also accepted (YAGNI);
-not fixed. Details + rationale: `.wiki/architecture/cross-instance-sync.md`,
+not fixed. Plan **ingest** (an absolute `plan` input copied to `plans/<id>.md`) makes `board:` the
+common scheme, so this gap is hit more often, not less: a pulled card carries a dead `board:` link
+whose body never shipped. Details + rationale: `.wiki/architecture/cross-instance-sync.md`,
 `.wiki/gotchas/plan-link-and-sync-gap.md`.
 
 - **Hidden identity.** Cards carry three sync-only frontmatter fields (`src/taskfile.js`):

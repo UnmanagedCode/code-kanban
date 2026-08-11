@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { freshRoot, cleanup } from './_helpers.mjs';
 import { plansDir } from '../src/paths.js';
@@ -340,6 +341,27 @@ test('PATCH with an unresolvable plan field returns 200 PLAN_UNKNOWN', async () 
     assert.equal(res.status, 200);
     assert.equal(res.body.ok, false);
     assert.equal(res.body.code, 'PLAN_UNKNOWN');
+  });
+});
+
+// The ingest lives in board.js, NOT at a surface — so the GUI's PATCH seam gets
+// it for free (routes.js passes req.body through as `fields`, zero edits).
+test('PATCH with an ABSOLUTE plan path ingests the file and returns the board: link', async () => {
+  await withServer(async ({ json }) => {
+    const id = (await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'planned' } })).body.id;
+    const srcDir = fs.mkdtempSync(path.join(os.tmpdir(), 'code-kanban-src-'));
+    try {
+      const source = path.join(srcDir, 'host-plan.md');
+      fs.writeFileSync(source, '# ingested over HTTP\n');
+      const res = await json(`/api/board/demo/tasks/${id}`, { method: 'PATCH', body: { plan: source } });
+      assert.equal(res.status, 200);
+      assert.equal(res.body.ok, true);
+      assert.equal(res.body.plan, `board:${id}.md`);
+      assert.equal(fs.readFileSync(path.join(plansDir('demo'), `${id}.md`), 'utf8'), '# ingested over HTTP\n');
+      const read = await json(`/api/board/demo/tasks/${id}?includePlan=1`);
+      assert.equal(read.body.task.plan, `board:${id}.md`);
+      assert.equal(read.body.plan_body, '# ingested over HTTP\n');
+    } finally { fs.rmSync(srcDir, { recursive: true, force: true }); }
   });
 });
 

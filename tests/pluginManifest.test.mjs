@@ -57,6 +57,19 @@ test('every tool inputSchema obeys the flat-schema subset', () => {
   }
 });
 
+// The advertised surface must match the implemented one: file_task accepts a
+// `plan` param, optional, and the description has to state the absolute-path
+// (ingest) form — that is the form a caller cannot guess from the grammar.
+test('file_task advertises an optional string `plan` param covering the absolute form', () => {
+  const fileTask = manifest.mcp.tools.find((t) => t.name === 'file_task');
+  const prop = fileTask.inputSchema.properties.plan;
+  assert.ok(prop, 'file_task advertises a plan param');
+  assert.equal(prop.type, 'string');
+  assert.equal(fileTask.inputSchema.required.includes('plan'), false, 'plan must not be required');
+  assert.match(prop.description, /absolute/i);
+  assert.match(prop.description, /board:/);
+});
+
 // The advertised priority enum is the ONE place the level catalog is duplicated
 // outside src/priority.js (the manifest is static JSON the host reads before any
 // code runs). Pin it to the code so the two can never drift.
