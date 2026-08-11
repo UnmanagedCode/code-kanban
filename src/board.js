@@ -99,10 +99,22 @@ function ingestPlanFile(project, id, source) {
   const dir = plansDir(project);
   const dest = path.join(dir, `${id}.md`);
   const link = `board:${id}.md`;
-  // Self-copy guard — the only special case. fs.copyFileSync(x, x) opens the
-  // destination O_TRUNC and would ZERO the file, so re-attaching plans/<id>.md
-  // by absolute path (or via a symlink to it) must be a no-op success. Compared
-  // by REALPATH, not string: only that catches the symlink form.
+  // Self-copy guard — the only special case: re-attaching plans/<id>.md by
+  // absolute path, or via a symlink to it, must be a no-op success. Compared by
+  // REALPATH, not string, since only that catches the symlink form.
+  //
+  // Deliberately kept even though it is (measurably) unobservable here: with the
+  // guard removed, fs.copyFileSync(dest, dest) does NOT damage the file — libuv
+  // opens the destination O_WRONLY|O_CREAT with NO O_TRUNC, compares st_dev/
+  // st_ino and returns success without writing (strace'd on Node v24.18.0). But
+  // that short-circuit is a libuv INTERNAL: node's fs.copyFile docs promise only
+  // that an existing destination is overwritten and say nothing about a source
+  // and destination that are the same file. Betting a data-loss-critical path on
+  // a third-party library's unspecified behaviour is worse than three explicit
+  // lines — in the self-copy case the destination IS the only copy of the plan.
+  // Consequence for coverage: no test can kill the removal of this guard on
+  // Linux/libuv, so that mutant is a WAIVED expected survivor (owner's decision
+  // — see .wiki/gotchas/plan-link-and-sync-gap.md and harness/mutation/README.md).
   try {
     if (fs.existsSync(dest) && fs.realpathSync(source) === fs.realpathSync(dest)) return { link };
   } catch { /* either side unresolvable -> not the same file; fall through */ }

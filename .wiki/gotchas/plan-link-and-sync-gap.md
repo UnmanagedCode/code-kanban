@@ -48,10 +48,30 @@ between the two input forms.
 
 Two sharp edges of the copy:
 
-- **The self-copy guard compares REALPATHS, not strings.** `fs.copyFileSync(x, x)` opens the
-  destination `O_TRUNC` and **zeroes the file**. Re-attaching `plans/<id>.md` by absolute path hits
-  this, and so does an absolute path that is a *symlink* to it — the second is caught only by
-  `fs.realpathSync` on both sides. Same-file → no-op success, nothing copied.
+- **The self-copy guard compares REALPATHS, not strings** — and is insurance against *unspecified*
+  behaviour, not against a demonstrated bug. `ingestPlanFile` returns a no-op success when
+  `fs.realpathSync(source) === fs.realpathSync(dest)`; string comparison would miss the reachable
+  second form, an absolute path that is a *symlink* to `plans/<id>.md`.
+
+  **Measured, 2026-08-11 (Node v24.18.0, Linux):** removing the guard does **not** corrupt anything.
+  `fs.copyFileSync(dest, dest)` leaves content, size and mtime untouched — `strace` shows libuv
+  opening the destination `O_WRONLY|O_CREAT` with **no `O_TRUNC`**, then comparing `st_dev`/`st_ino`
+  and returning success without writing. Do not repeat the claim that the file would be zeroed; it
+  is false here.
+
+  **Why the guard stays anyway (owner's decision, 2026-08-11):** that short-circuit is a libuv
+  internal. Node's `fs.copyFile` docs promise only that an existing destination is overwritten and
+  say nothing about a source and destination that are the same file. The failure it guards is
+  unrecoverable — in the self-copy case the destination **is** the only copy of the plan — so three
+  explicit lines beat depending on a third party's unspecified behaviour.
+
+  **Coverage consequence (waived).** No test can kill the guard's removal on Linux/libuv: with or
+  without it, nothing is written. So two mutants are **expected survivors, waived by the owner** —
+  *drop the self-copy guard* and *compare `source === dest` as strings instead of realpaths*. Every
+  other mutant on this feature still has to die (see `harness/mutation/README.md`). The two tests
+  named `…AT the destination…` / `…SYMLINK to the destination…` in `tests/board.test.mjs` pin the
+  observable outcome (no-op success, link stored, content intact) and are **not** coverage of the
+  guard — do not read them as such.
 - **Arbitrary-source read, accepted.** `file_task` is worker-callable, so ingest lets any caller have
   the server copy any readable absolute path into the board and read it back via
   `read_task({includePlan:true})`. Previously the server only read under `plansDir` (realpath-guarded)

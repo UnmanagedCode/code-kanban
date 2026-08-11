@@ -95,8 +95,9 @@ export function resolvePlanLink(project, link) {
 // scheme is always a pointer — `board:/abs` still refuses "must be relative".
 // Every refusal comes from resolvePlanLink, so there is one set of reasons.
 // `path.resolve` normalises the source LEXICALLY only: symlinks are deliberately
-// not resolved here (that is fs work, and it is why board.js's self-copy guard
-// compares realpaths rather than strings).
+// not resolved here (that is fs work). Hence board.js's self-copy guard compares
+// realpaths, not strings — a source that is a symlink to the destination reaches
+// it unresolved.
 export function classifyPlanInput(project, value) {
   const trimmed = typeof value === 'string' ? value.trim() : null;
   if (trimmed && !/[\n\r]/.test(value) && !SCHEME_RE.test(trimmed) && path.isAbsolute(trimmed)) {

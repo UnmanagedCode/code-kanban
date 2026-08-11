@@ -840,10 +840,12 @@ test('update_task plan: an absolute path inside plans/ is copied like any other 
   } finally { await cleanup(root); }
 });
 
-// The SELF-COPY guard: fs.copyFileSync(x, x) opens the destination O_TRUNC and
-// would zero the file. Re-attaching plans/<id>.md by absolute path must be a
-// no-op success with the content intact.
-test('update_task plan: an absolute path AT the destination is a no-op, not a truncation', async () => {
+// OUTCOME test, not proof of the guard. Re-attaching plans/<id>.md by absolute
+// path must succeed, store the link, and leave the content intact. It does NOT
+// demonstrate that ingestPlanFile's self-copy guard is load-bearing: with the
+// guard removed, libuv's same-inode short-circuit keeps this green too, so the
+// assertions below pass either way (see the guard's comment in src/board.js).
+test('update_task plan: an absolute path AT the destination succeeds with the content intact', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
@@ -852,13 +854,16 @@ test('update_task plan: an absolute path AT the destination is a no-op, not a tr
     const r = await board.updateTask({ project: 'demo', id, fields: { plan: abs } });
     assert.equal(r.ok, true);
     assert.equal(r.plan, `board:${id}.md`);
-    assert.equal(fs.readFileSync(abs, 'utf8'), 'SELF'); // NOT zeroed
+    assert.equal(fs.readFileSync(abs, 'utf8'), 'SELF'); // intact
     assert.equal((await board.readTask({ project: 'demo', id, includePlan: true })).plan_body, 'SELF');
   } finally { await cleanup(root); }
 });
 
-// Only a REALPATH comparison catches this: as strings, source !== dest.
-test('update_task plan: an absolute SYMLINK to the destination is a no-op, not a truncation', async () => {
+// The symlink form of the same OUTCOME: as strings source !== dest, so only the
+// guard's realpath comparison recognises it — but, like the test above, this
+// asserts the outcome and cannot prove the guard (libuv no-ops a same-inode copy
+// regardless). Both mutants on the guard are waived expected survivors.
+test('update_task plan: an absolute SYMLINK to the destination succeeds with the content intact', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   const src = outsideSources();
@@ -870,7 +875,7 @@ test('update_task plan: an absolute SYMLINK to the destination is a no-op, not a
     const r = await board.updateTask({ project: 'demo', id, fields: { plan: link } });
     assert.equal(r.ok, true);
     assert.equal(r.plan, `board:${id}.md`);
-    assert.equal(fs.readFileSync(dest, 'utf8'), 'SELF VIA SYMLINK'); // NOT zeroed
+    assert.equal(fs.readFileSync(dest, 'utf8'), 'SELF VIA SYMLINK'); // intact
   } finally { src.cleanup(); await cleanup(root); }
 });
 
@@ -1055,7 +1060,7 @@ test('update_task plan: a MISSING absolute source -> PLAN_UNKNOWN, card unchange
   } finally { src.cleanup(); await cleanup(root); }
 });
 
-test('update_task plan: a DIRECTORY as the absolute source -> PLAN_UNKNOWN', async () => {
+test('update_task plan: a DIRECTORY as the absolute source -> PLAN_UNKNOWN, refused by the stat', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   const src = outsideSources();
@@ -1065,8 +1070,27 @@ test('update_task plan: a DIRECTORY as the absolute source -> PLAN_UNKNOWN', asy
     fs.mkdirSync(dir, { recursive: true });
     const r = await board.updateTask({ project: 'demo', id, fields: { plan: dir } });
     assert.equal(r.code, 'PLAN_UNKNOWN');
+    // The isFile() check refuses it, NOT a failed copy: without that check the
+    // copy would refuse too (EISDIR), so pin which guard spoke.
+    assert.match(r.reason, /not a regular file/);
     assert.equal(fs.existsSync(ingestDest('demo', id)), false);
   } finally { src.cleanup(); await cleanup(root); }
+});
+
+// The case the isFile() check is really load-bearing for: a source copyFileSync
+// would happily accept, silently ingesting a bogus plan (an empty one, here).
+test('update_task plan: a NON-REGULAR absolute source (character device) -> PLAN_UNKNOWN', async (t) => {
+  if (!fs.existsSync('/dev/null')) return t.skip('no /dev/null on this platform');
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't' });
+    const r = await board.updateTask({ project: 'demo', id, fields: { plan: '/dev/null' } });
+    assert.equal(r.code, 'PLAN_UNKNOWN');
+    assert.match(r.reason, /not a regular file/);
+    assert.equal(fs.existsSync(ingestDest('demo', id)), false);
+    assert.equal((await board.readTask({ project: 'demo', id })).task.plan, null);
+  } finally { await cleanup(root); }
 });
 
 test('update_task plan: a DANGLING SYMLINK as the absolute source -> PLAN_UNKNOWN', async () => {
