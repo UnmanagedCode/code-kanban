@@ -22,11 +22,41 @@ never a worktree (`src/paths.js`'s `projectRepoDir`). A plan written on a worker
 exist there yet, so the set refuses `PLAN_UNKNOWN` until the merge lands. Use `board:` for a plan
 that must be attachable immediately.
 
-## The host's own plan file is unlinkable — it must be copied
+## An absolute plan path is INGESTED (copied in) — the tool does it, not the caller
 
 A plan wake hands the conductor a `planPath` under `~/.claude/plans/`
-(`code-conductor/src/planFile.ts`), outside `PROJECTS_ROOT`. No scheme resolves there, so that
-file can never be linked in place — it is copied into `plansDir(project)` and linked `board:`.
+(`code-conductor/src/planFile.ts`), outside `PROJECTS_ROOT`. **No scheme resolves there**, so it can
+never be linked in place. It no longer has to be copied by hand: passing that **bare absolute path**
+as `plan` (to `update_task` or `file_task`) makes the tool copy it to `plansDir(project)/<id>.md` and
+store `board:<id>.md` (`classifyPlanInput` in `src/planLink.js` → `ingestPlanFile` in
+`src/board.js`).
+
+The rule is uniform, with **no location sniffing** (owner's decision):
+
+- An **explicit scheme** (`board:`/`repo:`) is a **pointer** — stat-validated, never copied, never
+  clobbering anything. `board:/abs` still refuses `INVALID_STATE` ("must be relative"): the scheme
+  made it a pointer.
+- A **bare absolute path** is an **ingest** — always copied, wherever it lives: outside
+  `PROJECTS_ROOT`, inside it, inside a worktree, inside `plans/` itself.
+
+Location-based normalisation (absolute-inside-repo → `repo:`) was **rejected**: the absolute paths
+actually handed over live in *worktrees*, and `repo:` stats the **base checkout**
+(`src/paths.js`'s `projectRepoDir`), so normalising them yields a `PLAN_UNKNOWN` or a link that stays
+dead until the merge lands. The cost of always-copying: an absolute path at an in-tree file gives a
+**snapshot**, not a live pointer. Pass `repo:<rel>` for the live one — that is the whole distinction
+between the two input forms.
+
+Two sharp edges of the copy:
+
+- **The self-copy guard compares REALPATHS, not strings.** `fs.copyFileSync(x, x)` opens the
+  destination `O_TRUNC` and **zeroes the file**. Re-attaching `plans/<id>.md` by absolute path hits
+  this, and so does an absolute path that is a *symlink* to it — the second is caught only by
+  `fs.realpathSync` on both sides. Same-file → no-op success, nothing copied.
+- **Arbitrary-source read, accepted.** `file_task` is worker-callable, so ingest lets any caller have
+  the server copy any readable absolute path into the board and read it back via
+  `read_task({includePlan:true})`. Previously the server only read under `plansDir` (realpath-guarded)
+  or `projectRepoDir`. Accepted deliberately — workers already have full local fs access and the
+  plugin runs as the same user. **No ACL**; do not add one without a new decision.
 
 ## Frontmatter is one verbatim line, and plans/ is worker-writable
 

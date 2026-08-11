@@ -8,6 +8,11 @@
 //                   plan is merged)
 //   <rel>        -> bare, means board:
 //
+// A card's STORED plan is always one of the two typed forms above. Set-time
+// INPUT has a third form: a bare ABSOLUTE path, which is not a pointer at all —
+// it is an ingest source that board.js copies to plans/<id>.md and then stores
+// as `board:<id>.md` (see classifyPlanInput below and ingestPlanFile there).
+//
 // Pure: no fs here. Grammar + containment only; board.js owns stat-ing the file
 // and every refusal shape (see resolvePlanForSet there).
 
@@ -77,4 +82,27 @@ export function resolvePlanLink(project, link) {
     return bad('plan link must stay inside its base directory (no ../ traversal)');
   }
   return { link: `${scheme}:${rel}`, scheme, rel, path: abs };
+}
+
+// classifyPlanInput(project, value) — the ONE entry point board.js calls for a
+// plan value a caller supplied:
+//   -> {kind:'pointer', link, scheme, rel, path}   (resolvePlanLink's result)
+//   -> {kind:'ingest', source:<abs>}               (a BARE absolute path: copy it in)
+//   -> {error:{code, reason}}
+//
+// Only a bare absolute path diverts; SCHEME_RE is tested BEFORE isAbsolute, so a
+// Windows drive letter (`C:\x`) stays an unknown-scheme refusal and an explicit
+// scheme is always a pointer — `board:/abs` still refuses "must be relative".
+// Every refusal comes from resolvePlanLink, so there is one set of reasons.
+// `path.resolve` normalises the source LEXICALLY only: symlinks are deliberately
+// not resolved here (that is fs work, and it is why board.js's self-copy guard
+// compares realpaths rather than strings).
+export function classifyPlanInput(project, value) {
+  const trimmed = typeof value === 'string' ? value.trim() : null;
+  if (trimmed && !/[\n\r]/.test(value) && !SCHEME_RE.test(trimmed) && path.isAbsolute(trimmed)) {
+    return { kind: 'ingest', source: path.resolve(trimmed) };
+  }
+  const resolved = resolvePlanLink(project, value);
+  if (resolved.error) return resolved;
+  return { kind: 'pointer', ...resolved };
 }

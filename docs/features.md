@@ -14,7 +14,14 @@ conductor's own tool — not a team/shared surface.
   Logbook. IDs are server-assigned, per-project, sortable (`2026-0042`).
 - **Plans:** a task may carry an optional **link to a plan file** (never the plan text), so work
   planned days earlier outlives the worker that planned it — a parked-with-plan card is just `todo`
-  plus that link. Link grammar and refusals: `docs/protocol.md` (`update_task`).
+  plus that link. Set it at filing time (`file_task`'s `plan`) or later with `update_task`. Two
+  kinds of input: a **typed pointer** (`board:<rel>`/`repo:<rel>`, or a bare relative path meaning
+  `board:`) is validated and linked in place, never copied; an **absolute path** is **ingested** —
+  the file is copied into the board as `plans/<id>.md` and the card stores `board:<id>.md`. Ingest
+  is what makes a plan the host wrote outside the projects tree (a plan wake's
+  `~/.claude/plans/<slug>.md`) attachable in one call, with no hand-run `cp`. It is a **snapshot**:
+  an absolute path at an in-tree file copies it rather than tracking it — pass `repo:<rel>` for a
+  live pointer. Input forms, the stored form and refusals: `docs/protocol.md` (`update_task`).
 - **Priority:** a card carries one of `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, or is **unset**. Unset is
   not a level — it means *nobody has judged this card yet*, which is the honest state of a
   worker-filed card until someone reviews it. Omitting `priority` on `file_task` leaves the card
@@ -44,13 +51,13 @@ conductor's own tool — not a team/shared surface.
 
 | Tool | Who | Effect |
 |------|-----|--------|
-| `file_task` | worker + conductor | Create a task in `triage`, or directly in `todo`/`backlog` via `category`; takes `priority` (`CRITICAL`/`HIGH`/`MEDIUM`/`LOW`; omit to leave it unset — no default); returns the new id. |
+| `file_task` | worker + conductor | Create a task in `triage`, or directly in `todo`/`backlog` via `category`; takes `priority` (`CRITICAL`/`HIGH`/`MEDIUM`/`LOW`; omit to leave it unset — no default) and an optional `plan` (pointer or an absolute path copied in as `plans/<id>.md`); returns the new id (plus the stored `plan` link when given). |
 | `log_progress` | worker + conductor | Append a logbook line: worker's owned in-progress card (no `id`), or conductor's target card (`id` + `project`). |
 | `list_tasks` | conductor | List tasks, optionally filtered by `state`/`epic`. |
 | `read_task` | conductor | Read one task (+ logbook, optionally last `logTail`); always returns the resolved plan path, and with `includePlan` the plan file's body. |
 | `read_progress` | conductor | Read a task's logbook only, most-recent first. |
 | `move_task` | conductor | Move between states; sets `owner` on entering `in-progress`; on landing (`→done`), stamps `commit` (given, or auto-captured from the owning worker's live worktree HEAD). |
-| `update_task` | conductor | Update `title`/`goal`/`epic`/`priority` (same four levels, or `null` to clear back to unset)/`depends_on`, attach or clear the `plan` link, and reassign `owner` on an in-progress card (plan worker → implementer, no lane move). |
+| `update_task` | conductor | Update `title`/`goal`/`epic`/`priority` (same four levels, or `null` to clear back to unset)/`depends_on`, attach or clear the `plan` link (pointer, or an absolute path copied in as `plans/<id>.md`; the stored link comes back in the result), and reassign `owner` on an in-progress card (plan worker → implementer, no lane move). |
 | `create_epic` | conductor | Create/refresh an epic — `project` (project-scoped) or `projects` (cross-project). |
 | `list_epics` | conductor | A project's epics + cross-project epics spanning it, with computed rollups. |
 | `read_epic` | conductor | One epic (+ rollup) and its tasks; cross-project epics aggregate across members. |
