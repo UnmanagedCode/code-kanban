@@ -379,6 +379,53 @@ test('list_tasks stays pure JSON — a table of summaries is data, not prose', a
 // what keeps a refusal in {result}. Without it the {ok:false,code} object moves
 // into `meta` with no `result` key, breaking any consumer branching on
 // `body.result.code`.
+// 2026-0020: update_task's fields.acceptance nested op object over the MCP
+// envelope. fields is spread verbatim (no host-side schema coercion — see
+// .wiki/gotchas/flat-inputschema-constraint.md), so the nested shape must
+// survive untouched, and an edited list must render as real checkboxes in the
+// raw-text card body.
+test('update_task acceptance ops over the MCP surface render as real checkboxes on read_task', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const f = await mcp.handle({ tool: 'file_task', arguments: { project: 'demo', title: 't', acceptance: ['a', 'b'] } });
+    const id = f.body.result.id;
+    const u = await mcp.handle({
+      tool: 'update_task',
+      arguments: {
+        project: 'demo', id,
+        fields: { acceptance: { ops: [{ op: 'done', index: 0, done: true }, { op: 'add', text: 'c' }] } },
+      },
+    });
+    assert.equal(u.body.result.ok, true);
+
+    const r = await mcp.handle({ tool: 'read_task', arguments: { project: 'demo', id } });
+    assert.equal(r.body.text.length, 1);
+    const body = r.body.text[0];
+    assert.ok(body.includes('- [x] a'), body);
+    assert.ok(body.includes('- [ ] b'), body);
+    assert.ok(body.includes('- [ ] c'), body);
+  } finally { await cleanup(root); }
+});
+
+test('an acceptance refusal rides in {result:{ok:false}}, not {error}', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const f = await mcp.handle({ tool: 'file_task', arguments: { project: 'demo', title: 't', acceptance: ['a'] } });
+    const id = f.body.result.id;
+    const r = await mcp.handle({
+      tool: 'update_task',
+      arguments: { project: 'demo', id, fields: { acceptance: ['a', 'b'] } }, // the bare-array guess
+    });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.error, undefined);
+    assert.equal(r.body.result.ok, false);
+    assert.equal(r.body.result.code, 'INVALID_STATE');
+    assert.equal(r.body.result.reason, 'acceptance must be {ops:[…]}, {replace:[…]}, or null');
+  } finally { await cleanup(root); }
+});
+
 test('a refusal on any raw-text tool keeps the plain {result} path', async () => {
   const root = await freshRoot();
   useProjects(['demo']);

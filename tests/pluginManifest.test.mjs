@@ -73,6 +73,24 @@ test('file_task advertises an optional string `plan` param covering the absolute
 // The advertised priority enum is the ONE place the level catalog is duplicated
 // outside src/priority.js (the manifest is static JSON the host reads before any
 // code runs). Pin it to the code so the two can never drift.
+// The advertised update_task surface must not drift from the implemented op
+// shapes (2026-0020) — mirrors the file_task.plan description test above.
+test('update_task advertises the acceptance op shapes', () => {
+  const updateTask = manifest.mcp.tools.find((t) => t.name === 'update_task');
+  const desc = updateTask.description;
+  assert.match(desc, /ops/);
+  assert.match(desc, /replace/);
+  assert.match(desc, /null/);
+  for (const op of ['add', 'remove', 'rename', 'done']) {
+    assert.match(desc, new RegExp(op), `description mentions op "${op}"`);
+  }
+  const fieldsProp = updateTask.inputSchema.properties.fields;
+  assert.match(fieldsProp.description, /acceptance/);
+  // The flat-schema constraint still holds: fields stays an opaque object with
+  // no nested `properties`, even though its acceptance value is itself nested.
+  assert.equal('properties' in fieldsProp, false);
+});
+
 test('file_task advertises the priority enum from src/priority.js, with NO default', () => {
   const fileTask = manifest.mcp.tools.find((t) => t.name === 'file_task');
   const prop = fileTask.inputSchema.properties.priority;

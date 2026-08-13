@@ -441,17 +441,21 @@ test('read_task logTail keeps only the last N entries (0/1/2)', async () => {
   } finally { await cleanup(root); }
 });
 
-test('update_task applies whitelisted fields and ignores others', async () => {
+test('update_task applies whitelisted fields (incl. acceptance) and ignores others', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
-    const { id } = await board.fileTask({ project: 'demo', title: 'orig' });
-    await board.updateTask({ project: 'demo', id, fields: { title: 'renamed', priority: 'CRITICAL', bogus: 'x', commit: 'sneaky' } });
+    const { id } = await board.fileTask({ project: 'demo', title: 'orig', acceptance: ['a'] });
+    await board.updateTask({
+      project: 'demo', id,
+      fields: { title: 'renamed', priority: 'CRITICAL', bogus: 'x', commit: 'sneaky', acceptance: { replace: ['b'] } },
+    });
     const r = await board.readTask({ project: 'demo', id });
     assert.equal(r.task.title, 'renamed');
     assert.equal(r.task.priority, 'CRITICAL');
     assert.equal('bogus' in r.task, false);
     assert.equal(r.task.commit, null); // commit is not in UPDATABLE — update_task can't set it
+    assert.deepEqual(r.task.acceptance, [{ text: 'b', done: false }]); // acceptance joined UPDATABLE
   } finally { await cleanup(root); }
 });
 
@@ -1677,5 +1681,307 @@ test('touching a legacy 0 card drops the key rather than stamping a level on it'
     const raw = fs.readFileSync(path.join(stateDir('demo', 'todo'), '2026-0001.md'), 'utf8');
     assert.equal(/^priority:/m.test(raw), false, raw);
     assert.equal((await board.readTask({ project: 'demo', id: '2026-0001' })).task.priority, null);
+  } finally { await cleanup(root); }
+});
+
+// ---- acceptance (2026-0020) ------------------------------------------------
+//
+// update_task's fields.acceptance: three shapes ({ops:[...]}, {replace:[...]},
+// null), four ops (add/remove/rename/done), single-pass pre-edit index
+// resolution, and a closed refusal table. See docs/protocol.md's `acceptance`
+// sub-bullet and .wiki/gotchas/acceptance-line-round-trip.md.
+
+test('update_task acceptance: ops resolve against PRE-EDIT indices in a single pass', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't', acceptance: ['a', 'b', 'c'] });
+    // A walk-and-splice implementation deletes index 0 first, shifts, and then
+    // "index 2" lands on the wrong (or an out-of-range) item.
+    const r = await board.updateTask({
+      project: 'demo', id,
+      fields: { acceptance: { ops: [{ op: 'remove', index: 0 }, { op: 'remove', index: 2 }] } },
+    });
+    assert.equal(r.ok, true);
+    assert.deepEqual((await board.readTask({ project: 'demo', id })).task.acceptance, [{ text: 'b', done: false }]);
+  } finally { await cleanup(root); }
+});
+
+test('update_task acceptance: a remove and a rename in one call each hit their pre-edit index', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't', acceptance: ['a', 'b', 'c'] });
+    const r = await board.updateTask({
+      project: 'demo', id,
+      fields: { acceptance: { ops: [{ op: 'remove', index: 0 }, { op: 'rename', index: 1, text: 'B' }] } },
+    });
+    assert.equal(r.ok, true);
+    // If rename resolved against the POST-remove list, pre-edit index 1 ('b')
+    // would have already shifted to index 0 and 'c' would be renamed instead.
+    assert.deepEqual((await board.readTask({ project: 'demo', id })).task.acceptance,
+      [{ text: 'B', done: false }, { text: 'c', done: false }]);
+  } finally { await cleanup(root); }
+});
+
+test('update_task acceptance: add appends after survivors, in ops order', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't', acceptance: ['a', 'b'] });
+    const r = await board.updateTask({
+      project: 'demo', id,
+      fields: { acceptance: { ops: [{ op: 'add', text: 'c' }, { op: 'remove', index: 0 }, { op: 'add', text: 'd' }] } },
+    });
+    assert.equal(r.ok, true);
+    assert.deepEqual((await board.readTask({ project: 'demo', id })).task.acceptance, [
+      { text: 'b', done: false }, { text: 'c', done: false }, { text: 'd', done: false },
+    ]);
+  } finally { await cleanup(root); }
+});
+
+test('update_task acceptance: done:false unticks (kills a truthiness read)', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't', acceptance: ['a'] });
+    await board.updateTask({ project: 'demo', id, fields: { acceptance: { ops: [{ op: 'done', index: 0, done: true }] } } });
+    assert.equal((await board.readTask({ project: 'demo', id })).task.acceptance[0].done, true);
+    const r = await board.updateTask({ project: 'demo', id, fields: { acceptance: { ops: [{ op: 'done', index: 0, done: false }] } } });
+    assert.equal(r.ok, true);
+    assert.equal((await board.readTask({ project: 'demo', id })).task.acceptance[0].done, false);
+  } finally { await cleanup(root); }
+});
+
+test('update_task acceptance: done:true ticks and survives a re-read (serializer/parser path)', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't', acceptance: ['a', 'b'] });
+    const r = await board.updateTask({ project: 'demo', id, fields: { acceptance: { ops: [{ op: 'done', index: 1, done: true }] } } });
+    assert.equal(r.ok, true);
+    const raw = fs.readFileSync(path.join(stateDir('demo', 'triage'), `${id}.md`), 'utf8');
+    assert.ok(raw.includes('- [ ] a'), raw);
+    assert.ok(raw.includes('- [x] b'), raw);
+    assert.deepEqual((await board.readTask({ project: 'demo', id })).task.acceptance,
+      [{ text: 'a', done: false }, { text: 'b', done: true }]);
+  } finally { await cleanup(root); }
+});
+
+test('update_task acceptance: rename changes text and PRESERVES done', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't', acceptance: ['a'] });
+    await board.updateTask({ project: 'demo', id, fields: { acceptance: { ops: [{ op: 'done', index: 0, done: true }] } } });
+    const r = await board.updateTask({ project: 'demo', id, fields: { acceptance: { ops: [{ op: 'rename', index: 0, text: 'renamed' }] } } });
+    assert.equal(r.ok, true);
+    assert.deepEqual((await board.readTask({ project: 'demo', id })).task.acceptance, [{ text: 'renamed', done: true }]);
+  } finally { await cleanup(root); }
+});
+
+// One test per refusal-table row. Each fires alongside a valid `title` change
+// and asserts (a) ok:false, (b) code, (c) the EXACT reason string, (d) the
+// card is UNCHANGED — old title AND old acceptance list. Clause (d) kills
+// moving the acceptance resolve after the generic loop, or writing before
+// validating (pattern copied from the refused-plan/refused-priority tests
+// above).
+async function expectAcceptanceRefusal(t, badValue, expectedReason) {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 'orig', acceptance: ['x'] });
+    const r = await board.updateTask({ project: 'demo', id, fields: { title: 'renamed', acceptance: badValue } });
+    assert.equal(r.ok, false, `${JSON.stringify(badValue)} should refuse`);
+    assert.equal(r.code, 'INVALID_STATE', JSON.stringify(badValue));
+    assert.equal(r.reason, expectedReason, JSON.stringify(badValue));
+    const after = (await board.readTask({ project: 'demo', id })).task;
+    assert.equal(after.title, 'orig', `title leaked through for ${JSON.stringify(badValue)}`);
+    assert.deepEqual(after.acceptance, [{ text: 'x', done: false }], `acceptance leaked through for ${JSON.stringify(badValue)}`);
+  } finally { await cleanup(root); }
+}
+
+test('update_task acceptance refusal: not an object (array/string/number/boolean) names all three shapes', async (t) => {
+  const reason = 'acceptance must be {ops:[…]}, {replace:[…]}, or null';
+  // The array case is load-bearing: a caller who sends the natural `string[]`
+  // guess (file_task's shape) must learn the right shape from this alone.
+  for (const bad of [['x'], 'nope', 5, true]) await expectAcceptanceRefusal(t, bad, reason);
+});
+
+test('update_task acceptance refusal: both ops and replace present', async (t) => {
+  await expectAcceptanceRefusal(t, { ops: [], replace: [] }, 'acceptance takes exactly one of ops or replace');
+});
+
+test('update_task acceptance refusal: neither ops nor replace present', async (t) => {
+  await expectAcceptanceRefusal(t, {}, 'acceptance takes exactly one of ops or replace');
+});
+
+test('update_task acceptance refusal: ops is not an array', async (t) => {
+  await expectAcceptanceRefusal(t, { ops: 'nope' }, 'acceptance.ops must be an array');
+});
+
+test('update_task acceptance refusal: replace is not an array', async (t) => {
+  await expectAcceptanceRefusal(t, { replace: 'nope' }, 'acceptance.replace must be an array of strings');
+});
+
+test('update_task acceptance refusal: an op is not an object', async (t) => {
+  const reason = 'acceptance.ops[0]: each op must be an object with an op field';
+  for (const bad of [null, 'x', 5, []]) await expectAcceptanceRefusal(t, { ops: [bad] }, reason);
+});
+
+test('update_task acceptance refusal: unknown op value names it and lists the four legal ops', async (t) => {
+  await expectAcceptanceRefusal(t, { ops: [{ op: 'bogus' }] }, 'acceptance.ops[0]: unknown op "bogus" (add, remove, rename, done)');
+});
+
+test('update_task acceptance refusal: non-integer index on remove/rename/done', async (t) => {
+  const reason = 'acceptance.ops[0] (remove): index must be an integer';
+  await expectAcceptanceRefusal(t, { ops: [{ op: 'remove', index: '0' }] }, reason);
+  await expectAcceptanceRefusal(t, { ops: [{ op: 'remove', index: 1.5 }] }, reason);
+  await expectAcceptanceRefusal(t, { ops: [{ op: 'remove', index: NaN }] }, reason);
+  await expectAcceptanceRefusal(t, { ops: [{ op: 'remove' }] }, reason); // absent
+});
+
+test('update_task acceptance refusal: out-of-range index', async (t) => {
+  // The card carries exactly 1 criterion, so length is 1 — index 1 (== length)
+  // and -1 (negative) and 5 (well beyond) are all out of range.
+  await expectAcceptanceRefusal(t, { ops: [{ op: 'remove', index: -1 }] },
+    'acceptance.ops[0] (remove): index -1 is out of range (list has 1 items)');
+  await expectAcceptanceRefusal(t, { ops: [{ op: 'remove', index: 1 }] },
+    'acceptance.ops[0] (remove): index 1 is out of range (list has 1 items)');
+  await expectAcceptanceRefusal(t, { ops: [{ op: 'remove', index: 5 }] },
+    'acceptance.ops[0] (remove): index 5 is out of range (list has 1 items)');
+});
+
+test('update_task acceptance refusal: non-boolean done', async (t) => {
+  const reason = 'acceptance.ops[0] (done): done must be true or false';
+  await expectAcceptanceRefusal(t, { ops: [{ op: 'done', index: 0, done: 'true' }] }, reason);
+  await expectAcceptanceRefusal(t, { ops: [{ op: 'done', index: 0, done: 1 }] }, reason);
+  await expectAcceptanceRefusal(t, { ops: [{ op: 'done', index: 0 }] }, reason); // absent
+});
+
+test('update_task acceptance refusal: non-string text on add/rename', async (t) => {
+  await expectAcceptanceRefusal(t, { ops: [{ op: 'add', text: 42 }] }, 'acceptance.ops[0] (add): text must be a string');
+  await expectAcceptanceRefusal(t, { ops: [{ op: 'add', text: null }] }, 'acceptance.ops[0] (add): text must be a string');
+  await expectAcceptanceRefusal(t, { ops: [{ op: 'add' }] }, 'acceptance.ops[0] (add): text must be a string'); // absent
+  await expectAcceptanceRefusal(t, { ops: [{ op: 'rename', index: 0, text: 42 }] }, 'acceptance.ops[0] (rename): text must be a string');
+});
+
+test('update_task acceptance refusal: text with an embedded newline on add/rename', async (t) => {
+  await expectAcceptanceRefusal(t, { ops: [{ op: 'add', text: 'a\nb' }] }, 'acceptance.ops[0] (add): text must not contain a newline');
+  await expectAcceptanceRefusal(t, { ops: [{ op: 'rename', index: 0, text: 'a\rb' }] }, 'acceptance.ops[0] (rename): text must not contain a newline');
+});
+
+test('update_task acceptance refusal: text empty after trim on add/rename', async (t) => {
+  await expectAcceptanceRefusal(t, { ops: [{ op: 'add', text: '   ' }] }, 'acceptance.ops[0] (add): text must be non-empty');
+  await expectAcceptanceRefusal(t, { ops: [{ op: 'rename', index: 0, text: '' }] }, 'acceptance.ops[0] (rename): text must be non-empty');
+});
+
+test('update_task acceptance refusal: the same three text failures inside replace', async (t) => {
+  await expectAcceptanceRefusal(t, { replace: [42] }, 'acceptance.replace[0]: text must be a string');
+  await expectAcceptanceRefusal(t, { replace: ['a\nb'] }, 'acceptance.replace[0]: text must not contain a newline');
+  await expectAcceptanceRefusal(t, { replace: ['   '] }, 'acceptance.replace[0]: text must be non-empty');
+});
+
+test('update_task acceptance: replace preserves done by TEXT, not index', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't', acceptance: ['a', 'b'] });
+    await board.updateTask({ project: 'demo', id, fields: { acceptance: { ops: [{ op: 'done', index: 0, done: true }] } } });
+    const r = await board.updateTask({ project: 'demo', id, fields: { acceptance: { replace: ['b', 'a', 'c'] } } });
+    assert.equal(r.ok, true);
+    assert.deepEqual((await board.readTask({ project: 'demo', id })).task.acceptance, [
+      { text: 'b', done: false }, { text: 'a', done: true }, { text: 'c', done: false },
+    ]);
+  } finally { await cleanup(root); }
+});
+
+test('update_task acceptance: replace trims, and the TRIMMED value is what matches', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't', acceptance: ['a'] });
+    await board.updateTask({ project: 'demo', id, fields: { acceptance: { ops: [{ op: 'done', index: 0, done: true }] } } });
+    const r = await board.updateTask({ project: 'demo', id, fields: { acceptance: { replace: ['  a  '] } } });
+    assert.equal(r.ok, true);
+    assert.deepEqual((await board.readTask({ project: 'demo', id })).task.acceptance, [{ text: 'a', done: true }]);
+  } finally { await cleanup(root); }
+});
+
+test('update_task acceptance: replace with duplicate pre-edit texts — the FIRST occurrence wins', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't', acceptance: ['dup', 'dup'] });
+    // Tick only the FIRST 'dup' (index 0); the second stays unticked.
+    await board.updateTask({ project: 'demo', id, fields: { acceptance: { ops: [{ op: 'done', index: 0, done: true }] } } });
+    const r = await board.updateTask({ project: 'demo', id, fields: { acceptance: { replace: ['dup'] } } });
+    assert.equal(r.ok, true);
+    assert.deepEqual((await board.readTask({ project: 'demo', id })).task.acceptance, [{ text: 'dup', done: true }]);
+  } finally { await cleanup(root); }
+});
+
+test('update_task acceptance: {replace: []} and null both clear the list', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't', acceptance: ['a', 'b'] });
+    const r1 = await board.updateTask({ project: 'demo', id, fields: { acceptance: { replace: [] } } });
+    assert.equal(r1.ok, true);
+    assert.deepEqual((await board.readTask({ project: 'demo', id })).task.acceptance, []);
+
+    await board.updateTask({ project: 'demo', id, fields: { acceptance: { replace: ['x'] } } });
+    const r2 = await board.updateTask({ project: 'demo', id, fields: { acceptance: null } });
+    assert.equal(r2.ok, true);
+    assert.deepEqual((await board.readTask({ project: 'demo', id })).task.acceptance, []);
+  } finally { await cleanup(root); }
+});
+
+test('update_task acceptance: same-index ops are last-write-wins; remove is terminal', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't', acceptance: ['a'] });
+    const r1 = await board.updateTask({
+      project: 'demo', id,
+      fields: { acceptance: { ops: [{ op: 'rename', index: 0, text: 'first' }, { op: 'rename', index: 0, text: 'second' }] } },
+    });
+    assert.equal(r1.ok, true);
+    assert.deepEqual((await board.readTask({ project: 'demo', id })).task.acceptance, [{ text: 'second', done: false }]);
+
+    const { id: id2 } = await board.fileTask({ project: 'demo', title: 't2', acceptance: ['a'] });
+    const r2 = await board.updateTask({
+      project: 'demo', id: id2,
+      fields: { acceptance: { ops: [{ op: 'remove', index: 0 }, { op: 'rename', index: 0, text: 'ghost' }] } },
+    });
+    assert.equal(r2.ok, true); // remove-then-rename on the same index is NOT a refusal
+    assert.deepEqual((await board.readTask({ project: 'demo', id: id2 })).task.acceptance, []);
+
+    const { id: id3 } = await board.fileTask({ project: 'demo', title: 't3', acceptance: ['a'] });
+    const r3 = await board.updateTask({
+      project: 'demo', id: id3,
+      fields: { acceptance: { ops: [{ op: 'rename', index: 0, text: 'ghost' }, { op: 'remove', index: 0 }] } },
+    });
+    assert.equal(r3.ok, true); // rename-then-remove: remove still wins regardless of order
+    assert.deepEqual((await board.readTask({ project: 'demo', id: id3 })).task.acceptance, []);
+  } finally { await cleanup(root); }
+});
+
+test('update_task acceptance: an edit writes NO logbook line', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileTask({ project: 'demo', title: 't', acceptance: ['a'] });
+    const before = (await board.readTask({ project: 'demo', id })).task.logbook.length;
+    const r = await board.updateTask({
+      project: 'demo', id,
+      fields: { acceptance: { ops: [{ op: 'add', text: 'b' }, { op: 'done', index: 0, done: true }] } },
+    });
+    assert.equal(r.ok, true);
+    const after = await board.readTask({ project: 'demo', id });
+    // The edit must have actually landed — otherwise a no-op (e.g. acceptance
+    // still being silently ignored) would trivially pass the logbook check too.
+    assert.deepEqual(after.task.acceptance, [{ text: 'a', done: true }, { text: 'b', done: false }]);
+    assert.equal(after.task.logbook.length, before);
   } finally { await cleanup(root); }
 });

@@ -47,13 +47,19 @@ task.owner = to === 'in-progress' ? (owner ?? null) : null;
 target is `in-progress` — it can never leave a stuck `gui` owner on a non-`in-progress` card. The
 `move to a non-in-progress destination clears owner` test pins this. Related: [[owner-from-caller-sessionid]].
 
-## Read-only logbook / acceptance
+## Read-only logbook; editable acceptance
 
-The GUI renders the Logbook and the Acceptance checklist as **read-only** — there is no route to
-append a log line or toggle an acceptance item. `log_progress` stays worker/conductor-only (it
-resolves the card from `caller.sessionId`, which the GUI cannot supply). Acceptance is set at
-`file_task` time and not in `update_task`'s `UPDATABLE` set, so the PATCH route silently ignores
-any `acceptance` key — the GUI doesn't send one.
+The Logbook stays **read-only, append-only-by-worker**: there is no route to append a log line.
+`log_progress` stays worker/conductor-only — it resolves the card from `caller.sessionId`, which
+the GUI cannot supply.
+
+Acceptance, by contrast, **is** PATCHable: the Edit form's textarea sends
+`{acceptance: {replace: [...]}}` (2026-0020), and `update_task`'s `acceptance` validator
+(`resolveAcceptanceForSet` in `src/board.js`) is in `UPDATABLE`, so a PATCH lands it like any other
+field. The read-view checkboxes stay `disabled` regardless — there is no **per-item toggle** route
+in the GUI (no way to tick one box without resubmitting the whole textarea); `{op:'done'}` covers
+that over MCP. See `.wiki/gotchas/acceptance-line-round-trip.md` for the text-cleaning rules the
+validator enforces.
 
 ## `createEpic` is an upsert, not create-or-refuse
 

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
 import { freshRoot, cleanup } from './_helpers.mjs';
 import * as store from '../src/store.js';
 import { stateDir, plansDir } from '../src/paths.js';
@@ -30,6 +31,28 @@ test('writeTask/readTaskById round-trips all fields', async () => {
     assert.equal(t.acceptance[0].done, true);
     assert.equal(t.acceptance[1].done, false);
     assert.equal(t.logbook.length, 1);
+  } finally { await cleanup(root); }
+});
+
+// This writes an ALREADY-TRIMMED text straight through store.writeTask,
+// bypassing update_task's validator entirely — it does NOT exercise
+// cleanAcceptanceText's trim-before-persist behavior (that's
+// tests/board.test.mjs's "replace trims, and the TRIMMED value is what
+// matches", which drives it through the real validator). What this pins is
+// narrower: store/taskfile is a faithful pass-through — it introduces no
+// padding on write and no trimming of its own on read — so a value the
+// validator hands over already trimmed is what actually lands in the file
+// (see .wiki/gotchas/acceptance-line-round-trip.md).
+test('a renamed acceptance text is stored TRIMMED (no padding in the file) and reads back trimmed', async () => {
+  const root = await freshRoot();
+  try {
+    store.ensureProjectDirs('demo');
+    const id = '2026-0004';
+    store.writeTask('demo', 'triage', { ...baseTask(id), id, acceptance: [{ text: 'trimmed value', done: true }] });
+    const raw = fs.readFileSync(path.join(stateDir('demo', 'triage'), `${id}.md`), 'utf8');
+    assert.ok(raw.includes('- [x] trimmed value\n'), raw); // exactly one separating space, no leading/trailing padding
+    const t = store.readTaskById('demo', id);
+    assert.deepEqual(t.acceptance, [{ text: 'trimmed value', done: true }]);
   } finally { await cleanup(root); }
 });
 

@@ -607,6 +607,29 @@ test('exportBoard carries a card plan link on the wire', async () => {
   });
 });
 
+// 2026-0020: an acceptance edit has NO sync-specific code path (§7 of the
+// plan) — it is an ordinary field edit that bumps `updated`/`node` via
+// touch(), making the card a normal LWW candidate. This pins that the EDITED
+// list (not the filed one) is what exportBoard serves, and that the version
+// stamp is present — never a wall-clock comparison, which would be flaky.
+test('an acceptance-edited card exports its edited list and stays an ordinary LWW candidate', async () => {
+  await withRoot(async () => {
+    const { id } = await board.fileTask({ project: 'alpha', title: 'edited-acceptance', acceptance: ['a', 'b'] });
+    const r = await board.updateTask({
+      project: 'alpha', id,
+      fields: { acceptance: { ops: [{ op: 'done', index: 0, done: true }, { op: 'remove', index: 1 }, { op: 'add', text: 'c' }] } },
+    });
+    assert.equal(r.ok, true);
+
+    const dump = await board.exportBoard({ scope: 'project', project: 'alpha' });
+    const exported = dump.projects.alpha.find((c) => c.id === id);
+    assert.deepEqual(exported.acceptance, [{ text: 'a', done: true }, { text: 'c', done: false }]);
+    assert.ok(exported.uid);
+    assert.ok(exported.updated);
+    assert.ok(exported.node);
+  });
+});
+
 // ---- priority across a version boundary ----------------------------------
 
 test('a peer dump carrying legacy INTEGER priorities merges and maps to levels', async () => {
