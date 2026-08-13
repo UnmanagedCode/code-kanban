@@ -9,6 +9,7 @@ import { _setProjectFetcher } from '../src/projects.js';
 import * as board from '../src/board.js';
 import { PRIORITIES } from '../src/priority.js';
 import { createServer } from '../server.js';
+import { acceptanceFieldForEdit } from '../frontend/acceptanceEdit.js';
 
 // Drive the web GUI's HTTP routes end-to-end through the Express app (the same
 // path the browser uses), asserting the {ok} envelope contract: domain
@@ -181,6 +182,49 @@ test('PATCH {acceptance:null} clears the list over HTTP', async () => {
     assert.equal(patched.body.ok, true);
     const read = await json(`/api/board/demo/tasks/${id}`);
     assert.deepEqual(read.body.task.acceptance, []);
+  });
+});
+
+// A GUI edit that never touched the acceptance textarea must not rewrite it.
+// Reproduces the exact failing scenario: a card with DUPLICATE-TEXT criteria
+// carrying DIFFERENT `done` flags — reachable via {ops:[{op:'add',...}x2,
+// {op:'done',...}]} — where replaceAcceptance's by-text, first-occurrence-wins
+// preservation would otherwise let a title-only edit silently retick the
+// second entry. acceptanceFieldForEdit is the REAL function doEdit calls; this
+// pins that it decides to omit the field when the textarea is untouched, and
+// that omitting it is what keeps the list byte-identical end to end.
+test('a title-only GUI edit (acceptance textarea untouched) leaves a duplicate-text, mixed-done list byte-identical', async () => {
+  await withServer(async ({ json }) => {
+    const id = (await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'orig' } })).body.id;
+    // Two ops.add calls (a single-call `ops` batch resolves against the
+    // PRE-EDIT snapshot, so 'done' couldn't target index 0 in the same call
+    // that adds it — it would be out of range against the still-empty list).
+    await json(`/api/board/demo/tasks/${id}`, {
+      method: 'PATCH',
+      body: { acceptance: { ops: [{ op: 'add', text: 'a' }, { op: 'add', text: 'a' }] } },
+    });
+    await json(`/api/board/demo/tasks/${id}`, {
+      method: 'PATCH',
+      body: { acceptance: { ops: [{ op: 'done', index: 0, done: true }] } },
+    });
+    const before = (await json(`/api/board/demo/tasks/${id}`)).body.task.acceptance;
+    assert.deepEqual(before, [{ text: 'a', done: true }, { text: 'a', done: false }]);
+
+    // What renderEditForm prefilled the textarea with, and what the user left
+    // it as (untouched) for a title-only edit.
+    const prefill = before.map((c) => c.text).join('\n'); // 'a\na'
+    const acceptanceField = acceptanceFieldForEdit(prefill, prefill);
+    assert.equal(acceptanceField, undefined); // the field must be OMITTED, not re-sent
+
+    const fields = { title: 'renamed' };
+    if (acceptanceField !== undefined) fields.acceptance = acceptanceField;
+    const patched = await json(`/api/board/demo/tasks/${id}`, { method: 'PATCH', body: fields });
+    assert.equal(patched.body.ok, true);
+
+    const after = (await json(`/api/board/demo/tasks/${id}`)).body.task;
+    assert.equal(after.title, 'renamed');
+    // Literal expected list — not derived from replaceAcceptance's own rule.
+    assert.deepEqual(after.acceptance, [{ text: 'a', done: true }, { text: 'a', done: false }]);
   });
 });
 

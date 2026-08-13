@@ -3,6 +3,7 @@
 // (the single writer). Domain refusals come back as 200 {ok:false,code,reason}
 // and are surfaced here rather than worked around. See docs/protocol.md.
 import { readSelectedProject, writeSelectedProject, resolveInitialProject } from './persist.js';
+import { acceptanceFieldForEdit } from './acceptanceEdit.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const el = (tag, props = {}, children = []) => {
@@ -367,11 +368,14 @@ function renderLogLine(line) {
 // here — it is set by the conductor / plan worker, never typed into the GUI.
 function renderEditForm(t, plan = null) {
   const epicOpts = [el('option', { value: '' }, '— none —'), ...state.epics.map((e) => el('option', { value: e.slug, ...(t.epic === e.slug ? { selected: '' } : {}) }, e.slug))];
+  // Captured now (form-build time) so doEdit can tell an untouched textarea
+  // from an edited one at submit time — see acceptanceEdit.js.
+  const acceptancePrefill = (t.acceptance || []).map((a) => a.text).join('\n');
   const f = el('form', { class: 'form-grid', onsubmit: (e) => doEdit(e, t.id) }, [
     el('label', { class: 'field' }, ['Title', el('input', { name: 'title', value: t.title })]),
     el('label', { class: 'field' }, ['Goal', el('textarea', { name: 'goal', rows: '3' }, t.goal || '')]),
     el('label', { class: 'field' }, ['Acceptance (one per line)',
-      el('textarea', { name: 'acceptance', rows: '3' }, (t.acceptance || []).map((a) => a.text).join('\n'))]),
+      el('textarea', { name: 'acceptance', rows: '3', dataset: { prefill: acceptancePrefill } }, acceptancePrefill)]),
     el('p', { class: 'hint' }, 'Ticked criteria keep their tick when the text is unchanged. Empty clears the list.'),
     el('label', { class: 'field' }, ['Epic', el('select', { name: 'epic' }, epicOpts)]),
     el('label', { class: 'field' }, ['Priority', el('select', { name: 'priority' }, priorityOptions(t.priority))]),
@@ -395,8 +399,10 @@ async function doEdit(e, id) {
     epic: fd.get('epic')?.toString() || null,
     priority: fd.get('priority')?.toString() || null, // '' is the unset option -> clear it
     depends_on: fd.get('depends_on')?.toString().split(',').map((s) => s.trim()).filter(Boolean),
-    acceptance: { replace: fd.get('acceptance')?.toString().split('\n').map((s) => s.trim()).filter(Boolean) },
   };
+  const acceptanceEl = form.querySelector('textarea[name="acceptance"]');
+  const acceptanceField = acceptanceFieldForEdit(acceptanceEl.value, acceptanceEl.dataset.prefill);
+  if (acceptanceField !== undefined) fields.acceptance = acceptanceField;
   if (!fields.title) { form.querySelector('.form-error').textContent = 'title is required'; return; }
   let data;
   try { data = await api(`api/board/${encodeURIComponent(state.current)}/tasks/${encodeURIComponent(id)}`, { method: 'PATCH', body: fields }); }

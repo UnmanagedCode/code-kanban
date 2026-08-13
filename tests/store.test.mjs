@@ -34,11 +34,15 @@ test('writeTask/readTaskById round-trips all fields', async () => {
   } finally { await cleanup(root); }
 });
 
-// update_task's acceptance validator (src/board.js's cleanAcceptanceText) trims
-// text BEFORE it ever reaches store.writeTask — trimming is not something
-// store/taskfile does on write or on read. This pins that a value handed to
-// store already trimmed lands in the on-disk checkbox line with no padding and
-// reads back exactly as given (see .wiki/gotchas/acceptance-line-round-trip.md).
+// This writes an ALREADY-TRIMMED text straight through store.writeTask,
+// bypassing update_task's validator entirely — it does NOT exercise
+// cleanAcceptanceText's trim-before-persist behavior (that's
+// tests/board.test.mjs's "replace trims, and the TRIMMED value is what
+// matches", which drives it through the real validator). What this pins is
+// narrower: store/taskfile is a faithful pass-through — it introduces no
+// padding on write and no trimming of its own on read — so a value the
+// validator hands over already trimmed is what actually lands in the file
+// (see .wiki/gotchas/acceptance-line-round-trip.md).
 test('a renamed acceptance text is stored TRIMMED (no padding in the file) and reads back trimmed', async () => {
   const root = await freshRoot();
   try {

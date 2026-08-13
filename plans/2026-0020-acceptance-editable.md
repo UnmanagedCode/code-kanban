@@ -406,7 +406,8 @@ if any survives, the gap is in the tests, not the mutant:
 | `rename` resets `done` | B6 |
 | index bound `<=` length, or `Number(op.index)` coercion instead of `Number.isInteger` | B7 (out-of-range, non-integer) |
 | `hasOps \|\| hasReplace` instead of `===` | B7 (both-present, neither-present) |
-| resolve acceptance **after** the generic loop, or write before validating | B7 clause (d), every row |
+| insert `store.writeTask` after the generic loop but before the acceptance resolve | B7 clause (d), every row |
+| move the acceptance resolve to after the generic loop (leaving the single `store.writeTask` where it is) | **not pinned — measured, unkillable.** `store.writeTask` is the only persistence point and still sits after both the loop and the resolve, so a bad-acceptance + good-title call never reaches disk either way; clause (d) passes under both orderings. Confirmed by running the full suite with this exact mutant applied: 268/0/0. This is a deliberate, permanently-unkillable stylistic choice — it mirrors how `plan`/`owner` validate up top (`src/board.js:599-602`'s comment states the reason: nothing is persisted on a refusal path regardless of ordering). A future reader should not "fix" this ordering believing it's load-bearing, or chase this survivor with a new test. |
 | drop the newline guard / drop the empty-after-trim guard | B7 + T2 |
 | preserve `done` by index instead of text; `?? false` → `?? true` | B8 |
 | match untrimmed text in `replace` | B9 |
