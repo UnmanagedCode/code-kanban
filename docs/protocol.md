@@ -111,7 +111,7 @@ malformed envelope or an unexpected exception.
   resolve either way is not an error — the move still succeeds and `commit` is simply left unset.
   A re-land (`done→in-progress→done`) re-runs this resolution: a fresh sha overwrites the prior
   one, but an unresolvable re-land leaves the previously-stamped `commit` untouched.
-- `update_task({project, id, fields}) → {ok[, plan]}` (`plan` — the stored link, or `null` — is returned when `fields.plan` was part of the call) — `fields` ⊆ `{title, goal, epic, priority, depends_on, plan, owner}`; other keys ignored. `fields.epic` must exist → else `EPIC_UNKNOWN`. Every field validates **before** any mutation, so a refusal leaves the card untouched.
+- `update_task({project, id, fields}) → {ok[, plan]}` (`plan` — the stored link, or `null` — is returned when `fields.plan` was part of the call) — `fields` ⊆ `{title, goal, epic, priority, depends_on, plan, owner, acceptance}`; other keys ignored. `fields.epic` must exist → else `EPIC_UNKNOWN`. Every field validates **before** any mutation, so a refusal leaves the card untouched.
   - **`priority`** — one of `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, matched **exactly** (case-sensitive),
     **or `null` to clear the card back to unset** (like `plan`). Everything else — `''`, a lowercase
     spelling, a legacy integer, `undefined`, any unknown word → `INVALID_STATE`. Only an explicit
@@ -142,6 +142,40 @@ malformed envelope or an unexpected exception.
     implementer handoff needs no lane move). Must be a non-empty single token with no whitespace;
     `null` clears it. A real change stamps a logbook line `owner <from> -> <to>` (`none` for an
     absent side); a no-op set logs nothing.
+  - **`acceptance`** — accepts exactly **one** of three shapes:
+    `{ops:[…]}`, `{replace:[…]}`, or `null` (clears the list). Both `ops` and `replace` present, or
+    neither, → `INVALID_STATE`; any other shape (incl. a bare array — the natural `string[]` guess,
+    since that is `file_task`'s form) → `INVALID_STATE` naming all three accepted shapes.
+    `file_task`'s `acceptance: string[]` **filing-time** input form is a **different, unchanged**
+    shape — the two are deliberately not unified.
+
+    **`{ops:[…]}`** — each op is one of `{op:'add', text}`, `{op:'remove', index}`,
+    `{op:'rename', index, text}`, `{op:'done', index, done}`; every op is **total** (no optional
+    payload fields — `done` always carries an explicit boolean so unticking is reachable). `index`
+    is the **0-based position in the card's acceptance list as `read_task` returns it**. Every op
+    resolves against that single **pre-edit snapshot in one pass**: index `i` always means the
+    `i`-th pre-edit item, so two `remove`s in one call never shift each other. Survivors keep their
+    pre-edit relative order; `add`s are **appended after all survivors**, in the order the `add` ops
+    appear in `ops`. Conflicting ops on the same index are **last-write-wins within the pass**
+    (two `rename`s on index 0 → the later text), except that a `remove` on index `i` is **terminal**
+    — the item is absent from the result regardless of op order, and a later `rename`/`done` on that
+    same index is then a silent no-op, not a refusal. An unknown `op`, a non-integer or out-of-range
+    `index`, a non-boolean `done`, or (for `add`/`rename`) a non-string/newline-bearing/
+    empty-after-trim `text` → `INVALID_STATE` naming the offending op's index and name.
+
+    **`{replace:[…]}`** — sets the list from strings (the shape the GUI's edit-form textarea sends),
+    preserving each item's `done` flag when the new **trimmed** text exactly matches a **pre-edit**
+    item's stored text — first pre-edit occurrence wins on a duplicate pre-edit text; a duplicate new
+    text is a lookup, not a consumption, so every occurrence inherits the same flag. Unmatched items
+    start unchecked. Same text refusals as `add`/`rename` above, reported as
+    `acceptance.replace[i]: …`.
+
+    Stored criterion text is always the **trimmed** value: a criterion is one `- [ ] <text>` line on
+    disk and the parser trims before matching, so an untrimmed newline or empty-after-trim text would
+    silently lose data on the next read — refused here instead (see
+    `.wiki/gotchas/acceptance-line-round-trip.md`). No logbook line is written for an acceptance edit
+    (unlike `owner`, this is an edit, not a handoff). The edited list is **not** echoed back in the
+    result — `read_task` is the read path.
 - `create_epic({project?, projects?, slug, title, goal?}) → {ok}` — `slug` matches `^[a-z0-9._-]+$`; idempotent upsert (re-creating refreshes title/goal, preserves `created`; for a cross-project epic it also **replaces the member `projects` list** — membership is mutable). Give **exactly one** of `project` (project-scoped) or `projects` (a cross-project epic spanning ≥2 members) → else `INVALID_STATE`. A slug may not be both a cross-project epic and a per-project epic in one of its members → `EPIC_CONFLICT` (guarded in both create orders).
 - `list_epics({project}) → {ok, epics:[{slug, title, rollup, projects}]}` — the project's own epics (`projects:null`) plus cross-project epics spanning it (`projects:[…]`, `rollup` aggregated over all members).
 - `read_epic({project?, slug}) → {ok, epic:{slug,title,goal,rollup[,projects]}, tasks:[summary]}` — with `project`, a project-scoped epic resolves first, else a cross-project epic covering it. Omit `project` to read a cross-project epic by slug; its `rollup` and `tasks` aggregate across all member projects and `epic.projects` lists them. **Over MCP:** metadata block `{ok, epic:{slug,title,rollup[,projects]}, tasks:[summary]}` plus `epic.goal` as one raw markdown block (omitted when the goal is empty); `tasks` stays JSON — a table of summaries is data.
@@ -158,14 +192,19 @@ accept an `epic` slug that resolves to a per-project epic in the task's project 
 cross-project epic covering it → else `EPIC_UNKNOWN`. The full task object (from `read_task`)
 additionally carries an optional `commit` field, set once the task lands; `commit` is not in
 `update_task`'s `UPDATABLE` set — it's stamped only by `move_task`. `plan`, by contrast, **is** in
-`UPDATABLE` — it is the one card field a caller sets directly.
+`UPDATABLE` — it is the one card field a caller sets directly. `acceptance` is now the **second**
+caller-set field with its own set-time validator (`resolveAcceptanceForSet` in `src/board.js`,
+alongside `resolvePlanForSet`).
 
 ## Manifest / schema constraints
 
 `conductor.plugin.json` tool `inputSchema`s must be a **flat object schema** (host-enforced):
 no `$ref/oneOf/anyOf/allOf/not`, no nested `properties`. Consequence: `update_task.fields` is
-advertised as an opaque `{type:"object"}` and validated at runtime. Array params
-(`acceptance`, `depends_on`) use `{type:"array", items:{type:"string"}}`.
+advertised as an opaque `{type:"object"}` and validated at runtime — `fields.acceptance`'s nested
+op object (`{ops:[…]}` / `{replace:[…]}`) is simply one level deeper inside that same opaque value,
+runtime-validated for the same reason. Array params (`acceptance`, `depends_on`) use
+`{type:"array", items:{type:"string"}}` — this is `file_task`'s flat top-level `acceptance: string[]`
+param, unrelated to `update_task.fields.acceptance`'s nested shape.
 
 ## Web GUI HTTP routes
 
@@ -187,7 +226,7 @@ through unchanged as the HTTP body.
 | `GET /api/board/:project/tasks` | `board.listTasks` | `?state`, `?epic` | `{ok, tasks:[summary]}` |
 | `GET /api/board/:project/tasks/:id` | `board.readTask` | `?includePlan=1\|true` | `{ok, task, plan_path[, plan_body, plan_truncated, plan_missing]}` (full: goal, acceptance, logbook). Any other `includePlan` value is falsy. The GUI always sends `includePlan=1` and reads `plan_body` as a field (the raw-text channel is MCP-only). |
 | `POST /api/board/:project/tasks` | `board.fileTask` | `{title, goal?, acceptance?, epic?, depends_on?, priority?}` | `{ok, id}` (lands in `triage`; `priority` omitted or `null` → unset). The route destructures a fixed field list and deliberately does **not** pass `plan` — the GUI has no file picker and documents the plan link as non-editable. |
-| `PATCH /api/board/:project/tasks/:id` | `board.updateTask` | body **is** `fields` ⊆ `{title, goal, epic, priority, depends_on, plan, owner}` | `{ok[, plan]}` (same refusals as the tool, incl. `PLAN_UNKNOWN`; an absolute `plan` is ingested here too — the copy lives in `board.js`, not at a surface) |
+| `PATCH /api/board/:project/tasks/:id` | `board.updateTask` | body **is** `fields` ⊆ `{title, goal, epic, priority, depends_on, plan, owner, acceptance}` | `{ok[, plan]}` (same refusals as the tool, incl. `PLAN_UNKNOWN`; an absolute `plan` is ingested here too — the copy lives in `board.js`, not at a surface; a bare `acceptance` array — e.g. `[{text,done}]` — is refused `INVALID_STATE`, not silently ignored: it must be `{ops:[…]}`, `{replace:[…]}`, or `null`) |
 | `POST /api/board/:project/tasks/:id/move` | `board.moveTask` | `{to, owner?, commit?}` | `{ok, from, to}` |
 | `GET /api/board/:project/epics` | `board.listEpics` | — | `{ok, epics:[{slug, title, rollup, projects}]}` (incl. cross-project epics spanning the project) |
 | `GET /api/board/:project/epics/:slug` | `board.readEpic` | — | `{ok, epic, tasks:[summary]}` (resolves a cross-project epic the project belongs to) |

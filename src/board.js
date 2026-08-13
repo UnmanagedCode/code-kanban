@@ -145,6 +145,112 @@ function resolvePlanForSet(project, value, id) {
   return { link: c.link };
 }
 
+const ACCEPTANCE_OPS = ['add', 'remove', 'rename', 'done'];
+
+// The single set-time validator for update_task's fields.acceptance. Pure:
+// (PRE-EDIT list, caller value) -> {list} | a fail(). Nothing here writes —
+// updateTask's one store.writeTask stays the only mutation, so every refusal
+// below leaves the card untouched. file_task's string[] form is separate and
+// deliberately not routed through here.
+function resolveAcceptanceForSet(current, value) {
+  if (value === null) return { list: [] };
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    return fail('INVALID_STATE', 'acceptance must be {ops:[…]}, {replace:[…]}, or null');
+  }
+  const hasOps = 'ops' in value;
+  const hasReplace = 'replace' in value;
+  if (hasOps === hasReplace) {
+    return fail('INVALID_STATE', 'acceptance takes exactly one of ops or replace');
+  }
+  return hasReplace ? replaceAcceptance(current, value.replace) : applyAcceptanceOps(current, value.ops);
+}
+
+// A criterion is ONE `- [ ] <text>` line in the card file
+// (taskfile.serializeBody), and taskfile.parse trims the line before matching.
+// So text with a newline splits into a line the parser DROPS, and
+// empty-after-trim fails the regex's `\s+` and vanishes. Both are silent data
+// loss on the next read, so both are refused here and the stored value is the
+// TRIMMED text.
+function cleanAcceptanceText(text, prefix) {
+  if (typeof text !== 'string') return { error: fail('INVALID_STATE', `${prefix}: text must be a string`) };
+  if (/[\n\r]/.test(text)) return { error: fail('INVALID_STATE', `${prefix}: text must not contain a newline`) };
+  const trimmed = text.trim();
+  if (!trimmed) return { error: fail('INVALID_STATE', `${prefix}: text must be non-empty`) };
+  return { text: trimmed };
+}
+
+// Pass 1 (validate against the PRE-EDIT snapshot, normalise into `checked` —
+// never mutates the caller's op objects, since `fields` is caller-owned) then
+// Pass 2 (build the result via a tombstone Set, never an in-place splice) —
+// this two-pass shape is what makes single-pass pre-edit index resolution true.
+function applyAcceptanceOps(current, ops) {
+  if (!Array.isArray(ops)) return fail('INVALID_STATE', 'acceptance.ops must be an array');
+  const checked = [];
+  for (let i = 0; i < ops.length; i++) {
+    const op = ops[i];
+    if (!op || typeof op !== 'object' || Array.isArray(op)) {
+      return fail('INVALID_STATE', `acceptance.ops[${i}]: each op must be an object with an op field`);
+    }
+    if (!ACCEPTANCE_OPS.includes(op.op)) {
+      return fail('INVALID_STATE', `acceptance.ops[${i}]: unknown op "${op.op}" (add, remove, rename, done)`);
+    }
+    if (op.op === 'add') {
+      const cleaned = cleanAcceptanceText(op.text, `acceptance.ops[${i}] (add)`);
+      if (cleaned.error) return cleaned.error;
+      checked.push({ kind: 'add', text: cleaned.text });
+      continue;
+    }
+    if (!Number.isInteger(op.index)) {
+      return fail('INVALID_STATE', `acceptance.ops[${i}] (${op.op}): index must be an integer`);
+    }
+    if (op.index < 0 || op.index >= current.length) {
+      return fail('INVALID_STATE', `acceptance.ops[${i}] (${op.op}): index ${op.index} is out of range (list has ${current.length} items)`);
+    }
+    if (op.op === 'remove') {
+      checked.push({ kind: 'remove', index: op.index });
+    } else if (op.op === 'rename') {
+      const cleaned = cleanAcceptanceText(op.text, `acceptance.ops[${i}] (rename)`);
+      if (cleaned.error) return cleaned.error;
+      checked.push({ kind: 'rename', index: op.index, text: cleaned.text });
+    } else {
+      if (typeof op.done !== 'boolean') {
+        return fail('INVALID_STATE', `acceptance.ops[${i}] (done): done must be true or false`);
+      }
+      checked.push({ kind: 'done', index: op.index, done: op.done });
+    }
+  }
+  const next = current.map((a) => ({ text: a.text, done: a.done })); // copy; never alias the parsed card
+  const removed = new Set();
+  const appended = [];
+  for (const op of checked) {
+    if (op.kind === 'add') appended.push(op.text);
+    else if (op.kind === 'remove') removed.add(op.index);
+    else if (op.kind === 'rename') next[op.index].text = op.text;
+    else next[op.index].done = op.done;
+  }
+  return {
+    list: [...next.filter((_, i) => !removed.has(i)),
+      ...appended.map((text) => ({ text, done: false }))],
+  };
+}
+
+// Preserves ticks by TEXT, not index — first pre-edit occurrence wins on a
+// duplicate pre-edit text; duplicate new texts all inherit the same flag (a
+// Map lookup, not a consumption). The match is on the trimmed new text
+// against the stored pre-edit text (already trimmed-equivalent).
+function replaceAcceptance(current, replace) {
+  if (!Array.isArray(replace)) return fail('INVALID_STATE', 'acceptance.replace must be an array of strings');
+  const doneByText = new Map();
+  for (const a of current) if (!doneByText.has(a.text)) doneByText.set(a.text, a.done);
+  const list = [];
+  for (let i = 0; i < replace.length; i++) {
+    const cleaned = cleanAcceptanceText(replace[i], `acceptance.replace[${i}]`);
+    if (cleaned.error) return cleaned.error;
+    list.push({ text: cleaned.text, done: doneByText.get(cleaned.text) ?? false });
+  }
+  return { list };
+}
+
 // Bounded read of a plan body -> {body, truncated} | null (unreadable).
 // All fs in this repo is sync; read at most PLAN_MAX_BYTES.
 function readPlanBody(file) {
@@ -473,7 +579,7 @@ export async function moveTask({ project, id, to, owner, commit } = {}) {
   });
 }
 
-const UPDATABLE = ['title', 'goal', 'epic', 'priority', 'depends_on', 'plan', 'owner'];
+const UPDATABLE = ['title', 'goal', 'epic', 'priority', 'depends_on', 'plan', 'owner', 'acceptance'];
 
 export async function updateTask({ project, id, fields } = {}) {
   const bad = await requireProject(project);
@@ -515,12 +621,19 @@ export async function updateTask({ project, id, fields } = {}) {
         return fail('INVALID_STATE', 'owner must be a non-empty session id with no whitespace');
       } else ownerNext = fields.owner;
     }
+    let acceptanceNext;
+    if ('acceptance' in fields) {
+      const resolved = resolveAcceptanceForSet(task.acceptance, fields.acceptance);
+      if (resolved.ok === false) return resolved;
+      acceptanceNext = resolved.list;
+    }
     for (const key of UPDATABLE) {
-      if (!(key in fields) || key === 'plan' || key === 'owner') continue;
+      if (!(key in fields) || key === 'plan' || key === 'owner' || key === 'acceptance') continue;
       if (key === 'depends_on') task.depends_on = Array.isArray(fields.depends_on) ? fields.depends_on : [];
       else task[key] = fields[key]; // priority is validated above, so it lands verbatim (incl. null)
     }
     if ('plan' in fields) task.plan = planNext;
+    if ('acceptance' in fields) task.acceptance = acceptanceNext;
     if ('owner' in fields) {
       const prev = task.owner ?? null;
       // Only a real change is logged (a no-op set stamps nothing) — the line is

@@ -370,6 +370,9 @@ function renderEditForm(t, plan = null) {
   const f = el('form', { class: 'form-grid', onsubmit: (e) => doEdit(e, t.id) }, [
     el('label', { class: 'field' }, ['Title', el('input', { name: 'title', value: t.title })]),
     el('label', { class: 'field' }, ['Goal', el('textarea', { name: 'goal', rows: '3' }, t.goal || '')]),
+    el('label', { class: 'field' }, ['Acceptance (one per line)',
+      el('textarea', { name: 'acceptance', rows: '3' }, (t.acceptance || []).map((a) => a.text).join('\n'))]),
+    el('p', { class: 'hint' }, 'Ticked criteria keep their tick when the text is unchanged. Empty clears the list.'),
     el('label', { class: 'field' }, ['Epic', el('select', { name: 'epic' }, epicOpts)]),
     el('label', { class: 'field' }, ['Priority', el('select', { name: 'priority' }, priorityOptions(t.priority))]),
     el('label', { class: 'field' }, ['Depends on (comma-separated ids)', el('input', { name: 'depends_on', value: (t.depends_on || []).join(', ') })]),
@@ -392,6 +395,7 @@ async function doEdit(e, id) {
     epic: fd.get('epic')?.toString() || null,
     priority: fd.get('priority')?.toString() || null, // '' is the unset option -> clear it
     depends_on: fd.get('depends_on')?.toString().split(',').map((s) => s.trim()).filter(Boolean),
+    acceptance: { replace: fd.get('acceptance')?.toString().split('\n').map((s) => s.trim()).filter(Boolean) },
   };
   if (!fields.title) { form.querySelector('.form-error').textContent = 'title is required'; return; }
   let data;

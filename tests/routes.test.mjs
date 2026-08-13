@@ -126,17 +126,61 @@ test('move to a non-in-progress destination clears owner (no stuck gui owner)', 
   });
 });
 
-test('PATCH updates whitelisted fields; acceptance is not editable', async () => {
+test('PATCH updates whitelisted fields; acceptance edits via {replace}, but a bare array is refused', async () => {
   await withServer(async ({ json }) => {
     const id = (await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'u', acceptance: ['x'] } })).body.id;
-    const patched = await json(`/api/board/demo/tasks/${id}`, { method: 'PATCH', body: { title: 'u2', priority: 'HIGH', acceptance: [{ text: 'y', done: true }] } });
+    const patched = await json(`/api/board/demo/tasks/${id}`, {
+      method: 'PATCH', body: { title: 'u2', priority: 'HIGH', acceptance: { replace: ['y'] } },
+    });
     assert.equal(patched.status, 200);
     assert.equal(patched.body.ok, true);
     const read = await json(`/api/board/demo/tasks/${id}`);
     assert.equal(read.body.task.title, 'u2');
     assert.equal(read.body.task.priority, 'HIGH');
-    // acceptance patch ignored — still the filed value.
-    assert.deepEqual(read.body.task.acceptance, [{ text: 'x', done: false }]);
+    assert.deepEqual(read.body.task.acceptance, [{ text: 'y', done: false }]);
+
+    // A bare array (the natural `string[]` guess, since that is file_task's
+    // filing-time shape) was PREVIOUSLY silently ignored — this is the
+    // deliberate 2026-0020 behaviour change: it now refuses INVALID_STATE, and
+    // the reason names all three accepted shapes.
+    const bad = await json(`/api/board/demo/tasks/${id}`, {
+      method: 'PATCH', body: { title: 'u3', acceptance: [{ text: 'z', done: true }] },
+    });
+    assert.equal(bad.status, 200);
+    assert.equal(bad.body.ok, false);
+    assert.equal(bad.body.code, 'INVALID_STATE');
+    assert.equal(bad.body.reason, 'acceptance must be {ops:[…]}, {replace:[…]}, or null');
+    const unchanged = await json(`/api/board/demo/tasks/${id}`);
+    assert.equal(unchanged.body.task.title, 'u2'); // the accompanying title change did NOT land either
+    assert.deepEqual(unchanged.body.task.acceptance, [{ text: 'y', done: false }]);
+  });
+});
+
+test('the GUI textarea round-trip keeps ticks: {op:done} then {replace} with the exact textarea payload', async () => {
+  await withServer(async ({ json }) => {
+    const id = (await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'u', acceptance: ['a', 'b'] } })).body.id;
+    await json(`/api/board/demo/tasks/${id}`, {
+      method: 'PATCH', body: { acceptance: { ops: [{ op: 'done', index: 0, done: true }] } },
+    });
+    // What the edit form's textarea actually sends: one line per criterion.
+    const patched = await json(`/api/board/demo/tasks/${id}`, {
+      method: 'PATCH', body: { acceptance: { replace: ['a', 'b', 'c'] } },
+    });
+    assert.equal(patched.body.ok, true);
+    const read = await json(`/api/board/demo/tasks/${id}`);
+    assert.deepEqual(read.body.task.acceptance, [
+      { text: 'a', done: true }, { text: 'b', done: false }, { text: 'c', done: false },
+    ]);
+  });
+});
+
+test('PATCH {acceptance:null} clears the list over HTTP', async () => {
+  await withServer(async ({ json }) => {
+    const id = (await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'u', acceptance: ['a', 'b'] } })).body.id;
+    const patched = await json(`/api/board/demo/tasks/${id}`, { method: 'PATCH', body: { acceptance: null } });
+    assert.equal(patched.body.ok, true);
+    const read = await json(`/api/board/demo/tasks/${id}`);
+    assert.deepEqual(read.body.task.acceptance, []);
   });
 });
 

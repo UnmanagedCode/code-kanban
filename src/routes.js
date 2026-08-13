@@ -98,7 +98,8 @@ export function buildRoutes() {
   }));
 
   // Patch updatable fields (see board.js's UPDATABLE). The body IS the fields
-  // object; acceptance is not updatable (read-only in the GUI).
+  // object; `acceptance` takes `{ops:[...]}` / `{replace:[...]}` / `null`,
+  // validated in board.js.
   r.patch('/board/:project/tasks/:id', wrap((req) =>
     board.updateTask({ project: req.params.project, id: req.params.id, fields: req.body ?? {} })));
 

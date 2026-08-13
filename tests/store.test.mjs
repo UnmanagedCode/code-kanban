@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
 import { freshRoot, cleanup } from './_helpers.mjs';
 import * as store from '../src/store.js';
 import { stateDir, plansDir } from '../src/paths.js';
@@ -30,6 +31,24 @@ test('writeTask/readTaskById round-trips all fields', async () => {
     assert.equal(t.acceptance[0].done, true);
     assert.equal(t.acceptance[1].done, false);
     assert.equal(t.logbook.length, 1);
+  } finally { await cleanup(root); }
+});
+
+// update_task's acceptance validator (src/board.js's cleanAcceptanceText) trims
+// text BEFORE it ever reaches store.writeTask — trimming is not something
+// store/taskfile does on write or on read. This pins that a value handed to
+// store already trimmed lands in the on-disk checkbox line with no padding and
+// reads back exactly as given (see .wiki/gotchas/acceptance-line-round-trip.md).
+test('a renamed acceptance text is stored TRIMMED (no padding in the file) and reads back trimmed', async () => {
+  const root = await freshRoot();
+  try {
+    store.ensureProjectDirs('demo');
+    const id = '2026-0004';
+    store.writeTask('demo', 'triage', { ...baseTask(id), id, acceptance: [{ text: 'trimmed value', done: true }] });
+    const raw = fs.readFileSync(path.join(stateDir('demo', 'triage'), `${id}.md`), 'utf8');
+    assert.ok(raw.includes('- [x] trimmed value\n'), raw); // exactly one separating space, no leading/trailing padding
+    const t = store.readTaskById('demo', id);
+    assert.deepEqual(t.acceptance, [{ text: 'trimmed value', done: true }]);
   } finally { await cleanup(root); }
 });
 

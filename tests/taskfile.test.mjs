@@ -166,3 +166,30 @@ test('parse(serialize(t)) round-trips every level AND unset', () => {
     assert.equal(back.priority, level, `${String(level)} did not round-trip`);
   }
 });
+
+// ---- acceptance: the line-per-criterion round trip (2026-0020) -----------
+//
+// update_task's acceptance validator relies on this shape: one criterion is
+// one `- [ ] <text>` line, and parse trims before matching. See
+// .wiki/gotchas/acceptance-line-round-trip.md.
+
+test('serializeBody/parse round-trip a renamed + unticked criterion, incl. literal [ ]-looking text', () => {
+  const acceptance = [
+    { text: 'renamed criterion', done: false },
+    { text: 'contains a literal [ ] in the middle', done: true },
+  ];
+  const body = serializeBody({ goal: '', acceptance, logbook: [] });
+  assert.ok(body.includes('- [ ] renamed criterion'), body);
+  assert.ok(body.includes('- [x] contains a literal [ ] in the middle'), body);
+  const back = parse(['---', '---', ''].join('\n') + body, { state: 'todo' });
+  assert.deepEqual(back.acceptance, acceptance);
+});
+
+test('a newline in criterion text does NOT round-trip — the continuation line is dropped', () => {
+  const acceptance = [{ text: 'a\nb', done: false }];
+  const body = serializeBody({ goal: '', acceptance, logbook: [] });
+  const back = parse(['---', '---', ''].join('\n') + body, { state: 'todo' });
+  // Only the FIRST physical line survives as the criterion's text; the
+  // continuation line 'b' is not merged back in and is simply gone.
+  assert.deepEqual(back.acceptance, [{ text: 'a', done: false }]);
+});

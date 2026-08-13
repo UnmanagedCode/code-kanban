@@ -57,7 +57,7 @@ conductor's own tool — not a team/shared surface.
 | `read_task` | conductor | Read one task (+ logbook, optionally last `logTail`); always returns the resolved plan path, and with `includePlan` the plan file's body. |
 | `read_progress` | conductor | Read a task's logbook only, most-recent first. |
 | `move_task` | conductor | Move between states; sets `owner` on entering `in-progress`; on landing (`→done`), stamps `commit` (given, or auto-captured from the owning worker's live worktree HEAD). |
-| `update_task` | conductor | Update `title`/`goal`/`epic`/`priority` (same four levels, or `null` to clear back to unset)/`depends_on`, attach or clear the `plan` link (pointer, or an absolute path copied in as `plans/<id>.md`; the stored link comes back in the result), and reassign `owner` on an in-progress card (plan worker → implementer, no lane move). |
+| `update_task` | conductor | Update `title`/`goal`/`epic`/`priority` (same four levels, or `null` to clear back to unset)/`depends_on`, attach or clear the `plan` link (pointer, or an absolute path copied in as `plans/<id>.md`; the stored link comes back in the result), edit the `acceptance` list (`{ops:[…]}` add/remove/rename/done, `{replace:[…]}`, or `null` to clear), and reassign `owner` on an in-progress card (plan worker → implementer, no lane move). |
 | `create_epic` | conductor | Create/refresh an epic — `project` (project-scoped) or `projects` (cross-project). |
 | `list_epics` | conductor | A project's epics + cross-project epics spanning it, with computed rollups. |
 | `read_epic` | conductor | One epic (+ rollup) and its tasks; cross-project epics aggregate across members. |
@@ -93,10 +93,16 @@ so it shares the same `board.js` service layer and per-project mutex as the MCP 
   append-only Logbook, (once landed) the Commit hash, and — when the card has a plan link — a Plan
   section showing the link plus the plan file's text (`(file not found)` for a dead link,
   `(truncated)` past the size cap), plus a Move control. An Edit button swaps in a form
-  (title/goal/epic/priority/depends_on); priority is a **select** over the four levels (never a
+  (title/goal/acceptance/epic/priority/depends_on), with acceptance as a one-criterion-per-line
+  textarea that preserves ticks on unchanged text and clears the list when left empty; priority is
+  a **select** over the four levels (never a
   number field), populated from `GET /api/board/meta`'s `priorities` and led by an `— unset —`
   option that clears the level. Save or Cancel returns to the
-  read view. Acceptance, Logbook, Commit and the plan link are not editable in the GUI.
+  read view. Logbook, Commit and the plan link are not editable in the GUI. Acceptance **is**
+  editable: the Edit form's textarea round-trips one criterion per line, keeping a criterion's tick
+  when its text is unchanged; saving with an empty box clears the list. Per-item ticking (toggling a
+  single checkbox without touching the wording) is not exposed in the GUI — use `update_task`'s
+  `{op:'done'}` over MCP for that, so the read-view checkboxes stay `disabled`.
 - **Epics** — rollup table; "open" reads one epic (+ its tasks). New-epic form upserts by slug; its
   "Span projects" multi-select makes a cross-project epic when ≥2 are picked (else project-scoped).
   Cross-project epics show a badge + member list; their detail lists each task's project.

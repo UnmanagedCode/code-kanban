@@ -10,6 +10,9 @@
 //   6. the plan badge on a card carrying a plan link
 //   7. that card's detail panel showing the Plan section (link + file body)
 //   8. the board with the "Has plan" filter on (only planned cards remain)
+//   14. the edit form's Acceptance textarea prefilled one criterion per line
+//   15. the read view after editing acceptance: a renamed criterion, a new
+//       one, and the untouched criterion's tick surviving the {replace} round trip
 // Reuses withPage/waitForServer from the shared code-playwright harness — no
 // chromium/launch logic here. Run: node harness/playwright/snap-gui.mjs
 import path from 'node:path';
@@ -312,6 +315,48 @@ async function main() {
       if (newValue !== '') throw new Error(`new-task form must open on the unset option, saw ${newValue}`);
       await page.screenshot({ path: path.join(SHOTS, 'gui-13-new-task-priority.png'), fullPage: true });
       console.log('snapped new-task form priority select (opens unset)');
+      await page.click('#form-overlay .overlay-close');
+      await page.waitForSelector('#form-overlay', { state: 'hidden', timeout: 10_000 });
+
+      // 14. Acceptance is editable (2026-0020). Pre-tick card a's FIRST
+      //     criterion over the API — there is no per-item toggle in the GUI,
+      //     {op:'done'} is MCP/HTTP-only — then open Edit and confirm the
+      //     textarea is prefilled one criterion per line.
+      const preTick = await fetch(`${srv.url}/api/board/${PROJECT}/tasks/${seeded.a.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ acceptance: { ops: [{ op: 'done', index: 0, done: true }] } }),
+      }).then((r) => r.json());
+      if (!preTick.ok) throw new Error(`pre-tick seed step refused: ${JSON.stringify(preTick)}`);
+      await page.click(`.card:has(.card-id:text-is("${seeded.a.id}"))`);
+      await page.waitForSelector('#detail-overlay:not(.hidden) .detail-title', { timeout: 10_000 });
+      await page.click('#detail-overlay .detail-head button');
+      await page.waitForSelector('#detail-overlay textarea[name="acceptance"]', { timeout: 10_000 });
+      const prefilled = await page.inputValue('#detail-overlay textarea[name="acceptance"]');
+      if (prefilled !== 'Matches design spec\nAccessible labels') {
+        throw new Error(`acceptance textarea not prefilled one-per-line: ${JSON.stringify(prefilled)}`);
+      }
+      await page.screenshot({ path: path.join(SHOTS, 'gui-14-edit-acceptance-prefilled.png'), fullPage: true });
+      console.log('snapped edit form with acceptance textarea prefilled');
+
+      // 15. Rename the SECOND (unticked) line, add a third, Save. The first
+      //     line's text is left untouched, so its tick must survive the
+      //     {replace} round trip — the whole reason `replace` preserves by text.
+      await page.fill('#detail-overlay textarea[name="acceptance"]',
+        'Matches design spec\nAccessible labels, verified\nKeyboard navigable');
+      await page.click('#detail-overlay button[type="submit"]');
+      await page.waitForSelector('#detail-overlay', { state: 'hidden', timeout: 10_000 });
+      await page.click(`.card:has(.card-id:text-is("${seeded.a.id}"))`);
+      await page.waitForSelector('#detail-overlay:not(.hidden) .detail-title', { timeout: 10_000 });
+      await page.waitForSelector('.acceptance li', { timeout: 10_000 });
+      const items = await page.locator('#detail-overlay .acceptance li').allTextContents();
+      if (items.length !== 3) throw new Error(`expected 3 acceptance items after edit, saw ${items.length}: ${items.join(' | ')}`);
+      if (!items.some((t) => t.includes('Accessible labels, verified'))) throw new Error(`renamed criterion missing: ${items.join(' | ')}`);
+      if (!items.some((t) => t.includes('Keyboard navigable'))) throw new Error(`new criterion missing: ${items.join(' | ')}`);
+      const checkedCount = await page.locator('#detail-overlay .acceptance input[type=checkbox]:checked').count();
+      if (checkedCount !== 1) throw new Error(`expected exactly 1 ticked criterion to survive the round trip, saw ${checkedCount}`);
+      await page.screenshot({ path: path.join(SHOTS, 'gui-15-acceptance-edited.png'), fullPage: true });
+      console.log('snapped read view after acceptance edit (renamed + added criterion, tick survived)');
     },{ headless: true, viewport: { width: 1440, height: 900 } });
   } finally {
     await srv.close();
