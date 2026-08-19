@@ -11,7 +11,7 @@ workflow, not a replacement for it.
 - **Deleting.** `delete_task` is permanent — no undo, no history, not sync-aware. Prefer it only
   for genuine mistakes/duplicates, not for closing out finished work (`move_task` to `done`).
 - **Lifecycle.** `in-progress` = a worker spawned on it — `owner` is that worker's `sessionId`;
-  `done` = **landed** (merged + signed off), not implementation-complete — a card stays
+  `done` = **landed** (merged), not implementation-complete — a card stays
   `in-progress` through the review→refine loop and only reaches `done` on merge.
 - **Landing commit.** `move_task` to `done` stamps `commit`: pass it explicitly for a squash/merge
   sha, otherwise the owning worker's live worktree HEAD is auto-captured (unset if that worktree
