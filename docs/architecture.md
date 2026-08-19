@@ -21,12 +21,16 @@ Env this plugin reads: `PORT`, `HOST` (`server.js`), `PROJECTS_ROOT` (`src/paths
 | `src/planLink.js` | Plan-link grammar (`board:`/`repo:`/bare) + the one containment guard, and `classifyPlanInput` — pointer vs **ingest** (a bare absolute input) discrimination. Pure — no fs; `board.js` owns stat-ing, the copy and every refusal shape. |
 | `src/projects.js` | `validateProject` — shape check + live list via `CONDUCTOR_URL/api/projects` (scan fallback standalone). `listProjects` — same source, for the GUI selector. |
 | `src/mutex.js` | Per-project async mutex — the one serialized write path. |
-| `src/mcp.js` | Thin tool dispatch → `board.js`; MCP envelope. |
+| `src/mcp.js` | Thin tool dispatch → `board.js`; MCP envelope. Also owns two MCP-only presentation defaults: hiding `done` from `list_tasks` and rendering listings/prose as raw text blocks (`src/listRender.js`) — neither reaches the GUI. |
+| `src/listRender.js` | Pure text renderers for `list_tasks`/`list_epics`'s raw-text blocks. No imports beyond `STATES`; never sorts (renders `board.js`'s pre-sorted order as-is). |
 | `src/routes.js` / `server.js` | Express `/api/health` + `/api/mcp` + the GUI's `/api/projects`, `/api/board/*` routes; `express.static(frontend/)` serves the GUI at `/`. Listen wiring. |
 
 Thin surfaces (`mcp.js`, the GUI routes) call `board.js`; they never duplicate logic or call each
 other. The GUI's additions to `board.js`/`projects.js` are **export-only** — `ALLOWED_TRANSITIONS`
-and `listProjects` are read out; no service-layer logic changed.
+and `listProjects` are read out; no service-layer logic changed. An MCP-only **presentation
+default** (hiding `done` from `list_tasks`, rendering a listing as text) is not board logic and
+deliberately does not reach the GUI — `board.listTasks`'s own default (every lane) is unchanged, so
+the two surfaces legitimately disagree about what the same call returns.
 
 ## On-disk state
 

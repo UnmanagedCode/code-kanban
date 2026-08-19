@@ -53,7 +53,7 @@ conductor's own tool — not a team/shared surface.
 |------|-----|--------|
 | `file_task` | worker + conductor | Create a task in `triage`, or directly in `todo`/`backlog` via `category`; takes `priority` (`CRITICAL`/`HIGH`/`MEDIUM`/`LOW`; omit to leave it unset — no default) and an optional `plan` (pointer or an absolute path copied in as `plans/<id>.md`); returns the new id (plus the stored `plan` link when given). |
 | `log_progress` | worker + conductor | Append a logbook line: worker's owned in-progress card (no `id`), or conductor's target card (`id` + `project`). |
-| `list_tasks` | conductor | List tasks, optionally filtered by `state`/`epic`. |
+| `list_tasks` | conductor | List tasks, optionally filtered by `state`/`epic`; hides `done` by default (`state:'done'`, or `includeDone:true` for every lane). |
 | `read_task` | conductor | Read one task (+ logbook, optionally last `logTail`); always returns the resolved plan path, and with `includePlan` the plan file's body. |
 | `read_progress` | conductor | Read a task's logbook only, most-recent first. |
 | `move_task` | conductor | Move between states; sets `owner` on entering `in-progress`; on landing (`→done`), stamps `commit` (given, or auto-captured from the owning worker's live worktree HEAD). |
