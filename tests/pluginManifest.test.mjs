@@ -91,6 +91,26 @@ test('update_task advertises the acceptance op shapes', () => {
   assert.equal('properties' in fieldsProp, false);
 });
 
+// 2026-0023: the advertised list_tasks/list_epics surface can't drift from the
+// implemented default (done hidden unless includeDone/state:'done') — same
+// discipline as the file_task.plan / update_task.acceptance manifest tests.
+test('list_tasks advertises includeDone (boolean, default false) and describes the hidden-done default', () => {
+  const listTasks = manifest.mcp.tools.find((t) => t.name === 'list_tasks');
+  const prop = listTasks.inputSchema.properties.includeDone;
+  assert.ok(prop, 'list_tasks advertises an includeDone param');
+  assert.equal(prop.type, 'boolean');
+  assert.equal(prop.default, false);
+  assert.equal(listTasks.inputSchema.required.includes('includeDone'), false);
+  assert.match(listTasks.description, /state:'done'/);
+  assert.match(listTasks.description, /includeDone/);
+  assert.match(listTasks.description, /PLAIN.TEXT/i);
+});
+
+test('list_epics advertises the plain-text listing in its description', () => {
+  const listEpics = manifest.mcp.tools.find((t) => t.name === 'list_epics');
+  assert.match(listEpics.description, /PLAIN.TEXT/i);
+});
+
 test('file_task advertises the priority enum from src/priority.js, with NO default', () => {
   const fileTask = manifest.mcp.tools.find((t) => t.name === 'file_task');
   const prop = fileTask.inputSchema.properties.priority;

@@ -1,5 +1,7 @@
 import * as board from './board.js';
 import { serializeBody } from './taskfile.js';
+import { renderTaskList, renderEpicList } from './listRender.js';
+import { STATES } from './paths.js';
 
 // Thin dispatch over board.js. Domain refusals from the service layer are
 // {ok:false, code, reason} objects returned as the {result} payload (a normal
@@ -32,20 +34,27 @@ const handlers = {
 // as JSON. Only this MCP surface renders raw blocks.
 //
 // Which fields become raw blocks is decided by ONE rule, stated in
-// docs/protocol.md: a field is a text block when it is authored prose or a
-// markdown document (read top-to-bottom); everything a caller BRANCHES on —
-// scalars, ids, counts, flags, arrays of record summaries — stays in the single
-// compact-JSON metadata block. A list of summaries is data even though it
-// contains titles, so list_tasks/list_epics stay pure {result}.
+// docs/protocol.md: a field is a text block when the reader consumes it
+// top-to-bottom — authored prose or a markdown document, OR a listing that is
+// the tool's whole payload (a lane-grouped card list, an epic roster).
+// Everything a caller BRANCHES on stays in the single compact-JSON metadata
+// block: scalars, ids, flags, and the counts describing the listing as a
+// whole — including the count of what the listing did not show. One
+// exception: read_epic's `tasks` stays JSON — a secondary field of a
+// card-detail read, not the payload the caller asked for (list_tasks({epic})
+// is the text rendering of that same set).
 //
-// Per tool, an ORDERED list of extractors: each takes (result, meta) -> the
-// body string or null, and removes from `meta` (a shallow clone of `result`)
-// whatever it promoted. Order is wire order; `text` is always an array, so
-// two-block reads (card body then plan body) are explicit and testable.
+// Per tool, an ORDERED list of extractors: each takes (result, meta, args) ->
+// the body string or null, and removes from `meta` (a shallow clone of
+// `result`) whatever it promoted. Order is wire order; `text` is always an
+// array, so two-block reads (card body then plan body) are explicit and
+// testable.
 const RAW_TEXT = {
   read_task: [cardBody, promote('plan_body')],
   read_progress: [progressEntries],
   read_epic: [epicGoal],
+  list_tasks: [taskListing],
+  list_epics: [epicListing],
 };
 
 // A body already sitting on the envelope as a string (2026-0009's plan_body).
@@ -84,13 +93,44 @@ function epicGoal(result, meta) {
   return goal ?? '';
 }
 
-function shapeBody(tool, result) {
+// `state` reaches board.listTasks verbatim, so board.js stays the one
+// validator (unknown state -> INVALID_STATE) and `counts` describes exactly
+// the lanes this call read: all five when no state was given, that one lane
+// when it was.
+function taskListing(result, meta, args) {
+  const all = result.tasks ?? [];
+  const state = args.state ?? null;
+  // Strict === true: the manifest advertises a boolean, and if a non-boolean
+  // ever arrives the conservative branch still prints "N done hidden", so
+  // nothing is hidden silently.
+  const everyLane = state === null && args.includeDone === true;
+  const shown = (state !== null || everyLane) ? all : all.filter((t) => t.state !== 'done');
+  delete meta.tasks;
+  meta.counts = state !== null
+    ? { [state]: all.length }
+    : Object.fromEntries(STATES.map((s) => [s, all.filter((t) => t.state === s).length]));
+  meta.shown = shown.length;
+  meta.done_hidden = all.length - shown.length;
+  return renderTaskList(shown, {
+    project: args.project, doneHidden: meta.done_hidden, state,
+    epic: args.epic ?? null, everyLane,
+  });
+}
+
+function epicListing(result, meta, args) {
+  const epics = result.epics ?? [];
+  delete meta.epics;
+  meta.count = epics.length;
+  return renderEpicList(epics, { project: args.project });
+}
+
+function shapeBody(tool, result, args) {
   const extractors = RAW_TEXT[tool];
   if (extractors && result?.ok === true) {
     const meta = { ...result };
     const text = [];
     for (const extract of extractors) {
-      const body = extract(result, meta);
+      const body = extract(result, meta, args);
       if (body) text.push(body); // empty body -> no block at all
     }
     return { meta, text };
@@ -109,8 +149,9 @@ export async function handle(body) {
   const fn = handlers[tool];
   if (!fn) return { status: 200, body: { error: `unknown tool: ${tool}` } };
   try {
-    const result = await fn(args ?? {}, caller?.sessionId ?? null);
-    return { status: 200, body: shapeBody(tool, result) };
+    const a = args ?? {};
+    const result = await fn(a, caller?.sessionId ?? null);
+    return { status: 200, body: shapeBody(tool, result, a) };
   } catch (e) {
     return { status: 200, body: { error: e.message } };
   }

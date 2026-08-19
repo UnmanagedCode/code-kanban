@@ -15,18 +15,25 @@ to `POST /api/mcp`:
   metadata block alone. A body on this path has **no `result` key**.
 
   **The split rule** (one rule, decided in `src/mcp.js`): a field gets its own raw text block when
-  it is *authored prose or a markdown document* — free text a human wrote and an LLM reads
-  top-to-bottom. Everything a caller **branches on** stays in the single compact-JSON metadata
-  block: scalars, ids, counts, flags, and arrays of record summaries. Author's test: *would this
-  field, printed alone, read as a document?* → text block. *Is it a scalar, or a table of records?*
-  → JSON. A list of summaries is **data even though it contains title strings**.
+  the reader consumes it **top-to-bottom** — authored prose or a markdown document, **or a listing
+  that is the tool's whole payload** (a lane-grouped card list, an epic roster). Everything a
+  caller **branches on** stays in the single compact-JSON metadata block: scalars, ids, flags, and
+  the **counts** describing the listing as a whole — including the count of what the listing did
+  *not* show. When a listing moves to text, every fact a conductor acts on must be *in* the text;
+  the JSON block carries only the census.
+
+  One exception: `read_epic`'s `tasks` stays JSON. It is a secondary field of a card-detail read
+  rather than the payload the caller asked for, and `list_tasks({epic})` is the text rendering of
+  that same set.
 
   | tool | JSON metadata block | raw text block(s), in order |
   |---|---|---|
   | `read_task` | `{ok, task:{…frontmatter scalars…}, plan_path[, plan_body, plan_truncated, plan_missing]}` | 1. the card body 2. `plan_body` (only with `includePlan` **and** a non-empty readable file) |
   | `read_progress` | `{ok, total, count}` | the logbook entries as a `- `-prefixed list |
   | `read_epic` | `{ok, epic:{slug,title,rollup[,projects]}, tasks:[summary]}` | `epic.goal` (block omitted when empty) |
-  | `list_tasks`, `list_epics`, every mutator | unchanged `{result}` | — |
+  | `list_tasks` | `{ok, counts:{…lanes read…}, shown, done_hidden}` | the lane-grouped listing (§ below) |
+  | `list_epics` | `{ok, count}` | the epic roster (§ below) |
+  | every mutator | unchanged `{result}` | — |
 
   `meta.task` stays **nested and complete** — every frontmatter scalar including `title` and
   `updated` — minus the three body sections that moved into the text block.
@@ -62,7 +69,20 @@ malformed envelope or an unexpected exception.
     check. `project` is then **required** (ids are per-project, not globally unique) — missing
     → `INVALID_STATE`. Card must be `in-progress`; nonexistent or not `in-progress` →
     `TASK_UNKNOWN`. Logged with `conductor` attribution.
-- `list_tasks({project, state?, epic?}) → {ok, tasks:[summary]}`.
+- `list_tasks({project, state?, epic?, includeDone?}) → {ok, tasks:[summary]}` — HTTP route shape
+  (`board.listTasks`, unchanged). **Over MCP** the result rides the raw-text channel: a
+  lane-grouped plain-text listing plus `{ok, counts, shown, done_hidden}`. `done` is **hidden by
+  default** — the default set is every lane except `done` (triage/backlog/todo/in-progress); the
+  header states how many `done` cards were hidden and how to see them. `state:'done'` still
+  returns exactly that lane (unchanged); `includeDone: true` (default `false`, no effect when
+  `state` is given) returns every lane instead. `state` reaches `board.listTasks` **verbatim**, so
+  `INVALID_STATE` still comes from the one validator, and `counts` describes exactly the lanes the
+  call read: all five (0 for an empty lane) when no `state` was given, exactly one key when it was.
+  `shown`/`done_hidden` split `tasks.length` into what the text block shows vs. what it collapsed
+  into the header's hidden-count clause. The listing groups by lane (`STATES` order, empty lanes
+  print nothing) then by the pre-sorted priority/id order within a lane; each row carries id,
+  priority, title, created date, plus `epic`/`owner`/`deps`/`plan` only when set — `project` and
+  `state` are not repeated per row (the header/group heading already carry them).
 - `read_task({project, id, logTail?, includePlan?}) → {ok, task, plan_path[, plan_body, plan_truncated, plan_missing]}` —
   the plan fields are **top-level** on the envelope, never inside `task` (which mirrors frontmatter
   1:1). `plan_path` (the resolved absolute path) is returned **always**, `includePlan` or not; it is
@@ -177,8 +197,8 @@ malformed envelope or an unexpected exception.
     (unlike `owner`, this is an edit, not a handoff). The edited list is **not** echoed back in the
     result — `read_task` is the read path.
 - `create_epic({project?, projects?, slug, title, goal?}) → {ok}` — `slug` matches `^[a-z0-9._-]+$`; idempotent upsert (re-creating refreshes title/goal, preserves `created`; for a cross-project epic it also **replaces the member `projects` list** — membership is mutable). Give **exactly one** of `project` (project-scoped) or `projects` (a cross-project epic spanning ≥2 members) → else `INVALID_STATE`. A slug may not be both a cross-project epic and a per-project epic in one of its members → `EPIC_CONFLICT` (guarded in both create orders).
-- `list_epics({project}) → {ok, epics:[{slug, title, rollup, projects}]}` — the project's own epics (`projects:null`) plus cross-project epics spanning it (`projects:[…]`, `rollup` aggregated over all members).
-- `read_epic({project?, slug}) → {ok, epic:{slug,title,goal,rollup[,projects]}, tasks:[summary]}` — with `project`, a project-scoped epic resolves first, else a cross-project epic covering it. Omit `project` to read a cross-project epic by slug; its `rollup` and `tasks` aggregate across all member projects and `epic.projects` lists them. **Over MCP:** metadata block `{ok, epic:{slug,title,rollup[,projects]}, tasks:[summary]}` plus `epic.goal` as one raw markdown block (omitted when the goal is empty); `tasks` stays JSON — a table of summaries is data.
+- `list_epics({project}) → {ok, epics:[{slug, title, rollup, projects}]}` — the project's own epics (`projects:null`) plus cross-project epics spanning it (`projects:[…]`, `rollup` aggregated over all members). **Over MCP:** the result rides the raw-text channel — one epic-roster text block (slug, title, per-state rollup always printed for all five lanes, `cross: <members>` for a cross-project epic) plus `{ok, count}`. Unlike `list_tasks`, there is no default-hide: an epic has no state, and its rollup's `done` count is the fact a reader wants, not noise. There is no honest whole-list aggregate for the rollups (a cross-project epic's rollup already spans other projects), so `meta` carries only the epic count — every rollup number lives in the text.
+- `read_epic({project?, slug}) → {ok, epic:{slug,title,goal,rollup[,projects]}, tasks:[summary]}` — with `project`, a project-scoped epic resolves first, else a cross-project epic covering it. Omit `project` to read a cross-project epic by slug; its `rollup` and `tasks` aggregate across all member projects and `epic.projects` lists them. **Over MCP:** metadata block `{ok, epic:{slug,title,rollup[,projects]}, tasks:[summary]}` plus `epic.goal` as one raw markdown block (omitted when the goal is empty); `tasks` stays JSON — the split rule's one exception, since it is a secondary field of a card-detail read rather than the payload the caller asked for (`list_tasks({epic})` is the text rendering of that same set).
 - `delete_task({project, id}) → {ok}` — permanently removes the task's file; unknown id → `TASK_UNKNOWN`. Also best-effort removes the card's plan file **when the link is `board:`** — a `repo:` plan is a source-tree file and is never touched; a failed unlink leaves an orphan, never a refusal. Irreversible and not sync-aware: see "Cross-instance sync" in `docs/architecture.md`.
 
 A `summary` is `{id, title, state, project, epic, priority, owner, depends_on, created, plan}`
@@ -186,7 +206,10 @@ A `summary` is `{id, title, state, project, epic, priority, owner, depends_on, c
 unset — i.e. nobody has judged it). Task
 lists (`list_tasks`, `read_epic`) are ordered **column (`STATES` order) → priority
 (`CRITICAL`→`HIGH`→`MEDIUM`→`LOW`→unset) → id ascending**; unset ranks after every judged level, so
-an unjudged card never outranks a judged one. A `rollup`
+an unjudged card never outranks a judged one. `list_tasks`' MCP text rendering of a `summary` prints
+`id`, `priority`, `title` and the date-only `created`; `epic`/`owner`/`depends_on`/`plan` print only
+when set (never as a bare `epic —`); `project` and `state` are never repeated per row — the
+listing's header and per-lane group heading already carry them. A `rollup`
 is a per-state count object over `triage/backlog/todo/in-progress/done`. `file_task`/`update_task`
 accept an `epic` slug that resolves to a per-project epic in the task's project **or** a
 cross-project epic covering it → else `EPIC_UNKNOWN`. The full task object (from `read_task`)

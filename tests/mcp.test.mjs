@@ -363,15 +363,215 @@ test('read_epic with no goal: metadata block only', async () => {
   } finally { await cleanup(root); }
 });
 
-test('list_tasks stays pure JSON — a table of summaries is data, not prose', async () => {
+// 2026-0023: list_tasks now rides the raw-text channel like every other
+// prose-bearing read, and hides `done` by default. The fixture deliberately
+// contains BOTH done and non-done cards, with all-distinct lane counts, so a
+// lane-key mixup or a "hide unconditionally" mutant cannot survive.
+async function fileListingFixture() {
+  const mk = async (title, category) => {
+    const r = await mcp.handle({ tool: 'file_task', arguments: { project: 'demo', title, category } });
+    return r.body.result.id;
+  };
+  await mk('triage-1');
+  await mk('backlog-1', 'backlog');
+  await mk('backlog-2', 'backlog');
+  await mk('todo-1', 'todo');
+  await mk('todo-2', 'todo');
+  await mk('todo-3', 'todo');
+  const doneIds = [];
+  for (let i = 0; i < 4; i += 1) {
+    const id = await mk(`done-${i}`, 'todo');
+    await mcp.handle({ tool: 'move_task', arguments: { project: 'demo', id, to: 'in-progress' } });
+    await mcp.handle({ tool: 'move_task', arguments: { project: 'demo', id, to: 'done' } });
+    doneIds.push(id);
+  }
+  return doneIds;
+}
+
+test('list_tasks default: done is hidden, counts cover all five lanes', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
-    await mcp.handle({ tool: 'file_task', arguments: { project: 'demo', title: 'a', goal: 'some prose' } });
+    const doneIds = await fileListingFixture();
     const r = await mcp.handle({ tool: 'list_tasks', arguments: { project: 'demo' } });
-    assert.equal(Array.isArray(r.body.result.tasks), true);
-    assert.equal(r.body.text, undefined);
-    assert.equal(r.body.meta, undefined);
+    assert.equal(r.body.result, undefined);
+    assert.equal(Array.isArray(r.body.text), true);
+    assert.equal(r.body.text.length, 1);
+    assert.equal('tasks' in r.body.meta, false);
+    assert.deepEqual(r.body.meta, {
+      ok: true,
+      counts: { triage: 1, backlog: 2, todo: 3, 'in-progress': 0, done: 4 },
+      shown: 6,
+      done_hidden: 4,
+    });
+    assert.equal(
+      r.body.text[0].split('\n')[0],
+      "TASKS demo — 6 shown · 4 done hidden (state:'done' to read them; includeDone:true for every lane)",
+    );
+    for (const id of doneIds) assert.equal(r.body.text[0].includes(id), false, `${id} must be hidden`);
+  } finally { await cleanup(root); }
+});
+
+test("list_tasks state:'done' still returns exactly that lane", async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const doneIds = await fileListingFixture();
+    const r = await mcp.handle({ tool: 'list_tasks', arguments: { project: 'demo', state: 'done' } });
+    assert.equal(r.body.text[0].split('\n')[0], 'TASKS demo — 4 shown · state done');
+    assert.ok(r.body.text[0].includes('▸ done (4)'));
+    for (const id of doneIds) assert.ok(r.body.text[0].includes(id), `${id} must be present`);
+    assert.deepEqual(r.body.meta, { ok: true, counts: { done: 4 }, shown: 4, done_hidden: 0 });
+  } finally { await cleanup(root); }
+});
+
+test('list_tasks includeDone:true returns every lane', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    await fileListingFixture();
+    const r = await mcp.handle({ tool: 'list_tasks', arguments: { project: 'demo', includeDone: true } });
+    assert.ok(r.body.text[0].includes('▸ done (4)'));
+    assert.equal(r.body.text[0].split('\n')[0], 'TASKS demo — 10 shown · every lane');
+    assert.equal(r.body.meta.done_hidden, 0);
+    assert.deepEqual(Object.keys(r.body.meta.counts).sort(), ['backlog', 'done', 'in-progress', 'todo', 'triage'].sort());
+  } finally { await cleanup(root); }
+});
+
+test('list_tasks includeDone with a non-boolean value hides done — nothing is ever hidden silently', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    await fileListingFixture();
+    const r = await mcp.handle({ tool: 'list_tasks', arguments: { project: 'demo', includeDone: 'true' } });
+    assert.equal(r.body.text[0].includes('▸ done'), false);
+    assert.match(r.body.text[0].split('\n')[0], /done hidden/);
+  } finally { await cleanup(root); }
+});
+
+// Anti-correlated with insertion order: filing LOW, unset, CRITICAL, MEDIUM in
+// that sequence means ids ascend in that same order, but the rendered order
+// must be CRITICAL, MEDIUM, LOW, unset — only a correct comparator produces
+// this; a mutant ranking unset first (or filing/id order) dies.
+test('list_tasks: priority sort within a lane, unjudged sorts last', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const low = await mcp.handle({ tool: 'file_task', arguments: { project: 'demo', title: 'low', priority: 'LOW' } });
+    const unset = await mcp.handle({ tool: 'file_task', arguments: { project: 'demo', title: 'unset' } });
+    const critical = await mcp.handle({ tool: 'file_task', arguments: { project: 'demo', title: 'critical', priority: 'CRITICAL' } });
+    const medium = await mcp.handle({ tool: 'file_task', arguments: { project: 'demo', title: 'medium', priority: 'MEDIUM' } });
+
+    const r = await mcp.handle({ tool: 'list_tasks', arguments: { project: 'demo' } });
+    const laneLines = r.body.text[0].split('\n').filter((l) => l.startsWith('    '));
+    const ids = laneLines.map((l) => l.trim().split(/\s+/)[0]);
+    assert.deepEqual(ids, [
+      critical.body.result.id,
+      medium.body.result.id,
+      low.body.result.id,
+      unset.body.result.id,
+    ]);
+  } finally { await cleanup(root); }
+});
+
+// Omit-empty round trip on real board.js-produced summaries, not just
+// hand-written fixtures: one bare row, one row carrying all four optional
+// tail facts (epic, owner, deps, plan).
+test('list_tasks: tail facts are omitted when unset and present when set, on real data', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    await mcp.handle({ tool: 'create_epic', arguments: { project: 'demo', slug: 'auth', title: 'Auth' } });
+    const bare = await mcp.handle({ tool: 'file_task', arguments: { project: 'demo', title: 'bare-row' } });
+    const bareId = bare.body.result.id;
+    const dep = await mcp.handle({ tool: 'file_task', arguments: { project: 'demo', title: 'dep-target' } });
+
+    const planFile = path.join(plansDir('demo'), 'p.md');
+    fs.mkdirSync(path.dirname(planFile), { recursive: true });
+    fs.writeFileSync(planFile, '# a real plan\n');
+    const rich = await mcp.handle({
+      tool: 'file_task',
+      arguments: { project: 'demo', title: 'rich-row', epic: 'auth', depends_on: [dep.body.result.id], category: 'todo', plan: 'p.md' },
+    });
+    const richId = rich.body.result.id;
+    await mcp.handle({ tool: 'move_task', arguments: { project: 'demo', id: richId, to: 'in-progress', owner: 'w-1' } });
+
+    const r = await mcp.handle({ tool: 'list_tasks', arguments: { project: 'demo' } });
+    const bareLine = r.body.text[0].split('\n').find((l) => l.includes(bareId));
+    const richLine = r.body.text[0].split('\n').find((l) => l.includes(richId));
+    assert.ok(bareLine, 'bare row present');
+    for (const kw of ['epic', 'owner', 'deps', 'plan']) assert.equal(bareLine.includes(kw), false, `bare row must omit ${kw}`);
+    assert.ok(richLine, 'rich row present');
+    assert.ok(richLine.includes('epic auth'));
+    assert.ok(richLine.includes('owner w-1'));
+    assert.ok(richLine.includes(`deps ${dep.body.result.id}`));
+    assert.match(richLine, /plan /);
+  } finally { await cleanup(root); }
+});
+
+test('list_tasks and list_epics refusals stay on {result} — {state} still reaches the one validator', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const r1 = await mcp.handle({ tool: 'list_tasks', arguments: { project: 'demo', state: 'nope' } });
+    assert.equal(r1.body.meta, undefined);
+    assert.equal(r1.body.text, undefined);
+    assert.equal(r1.body.result.ok, false);
+    assert.equal(r1.body.result.code, 'INVALID_STATE');
+
+    const r2 = await mcp.handle({ tool: 'list_epics', arguments: { project: 'ghost' } });
+    assert.equal(r2.body.meta, undefined);
+    assert.equal(r2.body.text, undefined);
+    assert.equal(r2.body.result.ok, false);
+    assert.equal(r2.body.result.code, 'PROJECT_UNKNOWN');
+  } finally { await cleanup(root); }
+});
+
+test('list_epics rides the raw-text channel too: {ok, count} meta plus one text block', async () => {
+  const root = await freshRoot();
+  useProjects(['web', 'api']);
+  try {
+    await mcp.handle({ tool: 'create_epic', arguments: { project: 'web', slug: 'reads', title: 'Reads' } });
+    await mcp.handle({ tool: 'file_task', arguments: { project: 'web', title: 't1', epic: 'reads' } });
+    await mcp.handle({ tool: 'create_epic', arguments: { projects: ['web', 'api'], slug: 'platform', title: 'Platform' } });
+    const t2 = await mcp.handle({ tool: 'file_task', arguments: { project: 'api', title: 't2', epic: 'platform', category: 'todo' } });
+    await mcp.handle({ tool: 'move_task', arguments: { project: 'api', id: t2.body.result.id, to: 'in-progress' } });
+
+    const r = await mcp.handle({ tool: 'list_epics', arguments: { project: 'web' } });
+    assert.equal(r.body.result, undefined);
+    assert.equal(r.body.text.length, 1);
+    assert.equal('epics' in r.body.meta, false);
+    assert.deepEqual(r.body.meta, { ok: true, count: 2 });
+    assert.match(r.body.text[0], /▸ reads/);
+    assert.match(r.body.text[0], /▸ platform/);
+    assert.match(r.body.text[0], /cross: web, api/);
+  } finally { await cleanup(root); }
+});
+
+// The hidden-count and shown counts are scoped to the epic, not the whole
+// board — a card outside `epic:'auth'` must never contribute to either.
+test('list_tasks epic filter: counts and done-hidden are epic-scoped, not board-wide', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    await mcp.handle({ tool: 'create_epic', arguments: { project: 'demo', slug: 'auth', title: 'Auth' } });
+    // Board noise outside the epic: one extra done card that must not count.
+    const noise = await mcp.handle({ tool: 'file_task', arguments: { project: 'demo', title: 'noise', category: 'todo' } });
+    await mcp.handle({ tool: 'move_task', arguments: { project: 'demo', id: noise.body.result.id, to: 'in-progress' } });
+    await mcp.handle({ tool: 'move_task', arguments: { project: 'demo', id: noise.body.result.id, to: 'done' } });
+
+    await mcp.handle({ tool: 'file_task', arguments: { project: 'demo', title: 'auth-triage', epic: 'auth' } });
+    const authTodo = await mcp.handle({ tool: 'file_task', arguments: { project: 'demo', title: 'auth-todo', epic: 'auth', category: 'todo' } });
+    const authDone = await mcp.handle({ tool: 'file_task', arguments: { project: 'demo', title: 'auth-done', epic: 'auth', category: 'todo' } });
+    await mcp.handle({ tool: 'move_task', arguments: { project: 'demo', id: authDone.body.result.id, to: 'in-progress' } });
+    await mcp.handle({ tool: 'move_task', arguments: { project: 'demo', id: authDone.body.result.id, to: 'done' } });
+
+    const r = await mcp.handle({ tool: 'list_tasks', arguments: { project: 'demo', epic: 'auth' } });
+    assert.match(r.body.text[0].split('\n')[0], /· epic auth/);
+    assert.equal(r.body.meta.shown, 2); // auth-triage + auth-todo, not the noise card
+    assert.equal(r.body.meta.done_hidden, 1); // only auth's own done card
+    assert.equal(r.body.text[0].includes(noise.body.result.id), false);
+    assert.equal(r.body.text[0].includes(authTodo.body.result.id), true);
   } finally { await cleanup(root); }
 });
 

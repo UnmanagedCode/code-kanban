@@ -64,13 +64,14 @@
       },
       {
         "name": "list_tasks",
-        "description": "List tasks on a project's board, optionally filtered by state and/or epic. Conductor.",
+        "description": "List a project's tasks as a lane-grouped PLAIN-TEXT listing plus one small JSON block (per-lane counts). HIDES `done` BY DEFAULT: the default set is triage + backlog + todo + in-progress, and the header states how many done cards were hidden. Pass state:'done' to read those, or includeDone:true for every lane. Any explicit `state` returns exactly that lane, as before. Rows are grouped by lane in board order and sorted by priority within a lane (an unjudged card sorts below LOW); each row carries id, priority, title and created date, plus epic / owner / deps / plan only when set. `project` is not repeated per row. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
             "project": { "type": "string", "minLength": 1 },
             "state": { "type": "string", "enum": ["triage", "backlog", "todo", "in-progress", "done"] },
-            "epic": { "type": "string" }
+            "epic": { "type": "string" },
+            "includeDone": { "type": "boolean", "default": false, "description": "Include the `done` lane instead of collapsing it to a `N done hidden` note in the header (default false). No effect when `state` is given — that filter already names the lane." }
           },
           "required": ["project"]
         }
@@ -147,7 +148,7 @@
       },
       {
         "name": "list_epics",
-        "description": "List a project's epics with their computed per-state rollup, including cross-project epics that span it. Conductor.",
+        "description": "List a project's epics — including cross-project epics that span it — as PLAIN TEXT: one block per epic with its slug, title, per-state rollup, and member projects for a cross-project epic. Plus a small JSON block carrying the epic count. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {

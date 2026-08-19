@@ -25,13 +25,23 @@ unescaped** block after it, rather than JSON-escaping a multi-KB document into o
 not folklore: code-conductor `src/plugins/mcpBridge.ts` (the `rec.text !== undefined` branch) →
 `src/mcp/content.ts`'s `textPayload`.
 
-Every **prose-bearing read** uses it: `read_task` (card body, then `plan_body` when `includePlan`
-read a **non-empty** file — an empty body emits no block, and `docs/protocol.md` has the full
-key-by-key outcome table), `read_progress` (logbook entries), `read_epic` (`epic.goal`). `list_tasks`/
-`list_epics` and the mutators stay on `{result}`. The rule that decides this — prose/document → text
-block, anything a caller branches on (incl. arrays of summaries) → the JSON block — and the
-per-tool block order live in `docs/protocol.md`; the mechanism is `RAW_TEXT` + `shapeBody` in
-`src/mcp.js`.
+**Every read** uses it now (2026-0023 added `list_tasks`/`list_epics` to the set 2026-0010 started):
+`read_task` (card body, then `plan_body` when `includePlan` read a **non-empty** file — an empty
+body emits no block, and `docs/protocol.md` has the full key-by-key outcome table), `read_progress`
+(logbook entries), `read_epic` (`epic.goal`), `list_tasks` (a lane-grouped text listing, rendered by
+`src/listRender.js`), `list_epics` (an epic-roster text listing). Only the **mutators** stay on
+`{result}`. The rule that decides this — prose/document, or a listing that is the tool's whole
+payload, → text block; anything a caller branches on (scalars, flags, and the counts describing the
+listing as a whole) → the JSON block — and the per-tool block order live in `docs/protocol.md`; the
+mechanism is `RAW_TEXT` + `shapeBody` in `src/mcp.js`. One exception: `read_epic`'s `tasks` stays
+JSON (a secondary field of a card-detail read, not the tool's own payload).
+
+**New gotcha (2026-0023): `list_tasks`' MCP default differs from `board.listTasks`'s.** The MCP
+surface hides the `done` lane by default (`state:'done'` or `includeDone:true` to see it); the HTTP
+route (`GET /api/board/:project/tasks`, used by the GUI) has no such default — it always returns
+every lane `board.listTasks` matches. This is deliberate (an MCP-only presentation default, per
+`docs/architecture.md`), but it means the two surfaces legitimately disagree about what the same
+`{project}` call returns.
 
 Two consequences: a tool on this path has **no `result` key** at all, so anything reading
 `body.result` must handle its absence — and it is now the *normal* path for those three reads, not a
