@@ -44,10 +44,13 @@ every lane `board.listTasks` matches. This is deliberate (an MCP-only presentati
 `{project}` call returns.
 
 Two consequences: a tool on this path has **no `result` key** at all, so anything reading
-`body.result` must handle its absence — and it is now the *normal* path for those three reads, not a
-conditional one (`read_task` always emits a card body, so there is no `{result}` fallback left);
-and the channel is **MCP-only** — the GUI's HTTP routes bypass `mcp.js` and keep reading `goal`/
-`logbook`/`plan_body` as plain fields.
+`body.result` must handle its absence — and it is now the *normal* path for all five reads, not a
+conditional one (`read_task` always emits a card body, and `list_tasks`/`list_epics` always emit at
+least the header line even on an empty/all-hidden board, so none of the three has a `{result}`
+fallback left; only `read_progress`/`read_epic` can still emit **zero** text blocks, on an empty
+logbook or a goal-less epic); and the channel is **MCP-only** — the GUI's HTTP routes bypass
+`mcp.js` and keep reading `goal`/`logbook`/`plan_body` as plain fields, and (for `list_tasks`/
+`list_epics`) `tasks`/`epics` as plain JSON arrays with no default hide.
 
 Gotcha inside the gotcha: the card body is **re-rendered** from the task object
 (`taskfile.serializeBody`), never passed through from the file. Reading the file would silently
