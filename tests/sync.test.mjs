@@ -818,12 +818,12 @@ test('a cross epic\'s plan link and logbook survive a pull too', async () => {
   });
 });
 
-// A malformed epic BODY field from a peer must not reach the store. The card
-// path already normalises (`Array.isArray(rc.logbook) ? … : []`); before the
-// epic paths did the same, `logbook: "GARBAGE"` made serializeEpicFile's .map()
-// throw — and since the cross-epic merge runs BEFORE the per-project loop, that
+// A malformed epic BODY field from a peer must not reach the store — `goal`,
+// `plan` and `logbook` alike. The card path already normalises
+// (`Array.isArray(rc.logbook) ? … : []`); before the epic paths did the same,
+// `logbook: "GARBAGE"` made serializeEpicFile's .map() throw — and since the cross-epic merge runs BEFORE the per-project loop, that
 // rejected the ENTIRE syncPull, so well-formed cards never merged either.
-test('a peer serving a malformed epic logbook/plan is normalised, not fatal — and cards still merge', async () => {
+test('a peer serving a malformed epic goal/plan/logbook is normalised, not fatal — and cards still merge', async () => {
   await withRoot(async () => {
     board._setSyncFetcher(async () => ({
       ok: true,
@@ -898,11 +898,17 @@ test('a cross epic with non-string members is filtered, not fatal — and the le
       projects: { alpha: [card({ id: '2026-0001', uid: 'u-P', title: 'GoodCard' })] },
       crossEpics: [
         // Junk alongside two real members: survives with the junk dropped.
-        xEpic({ slug: 'plat', projects: [5, 'alpha', null, 'beta', ''], title: 'Platform' }),
+        xEpic({ slug: 'plat', projects: [5, 'alpha', null, 'beta', '', '   '], title: 'Platform' }),
         // Junk leaves only ONE real member: too short, so skipped + reported
         // rather than half-written. Only reachable if the filter precedes the
         // length check.
         xEpic({ slug: 'thin', projects: [{}, 'alpha', 7], title: 'Thin' }),
+        // Two members only if you COUNT THE BLANKS. An empty/whitespace member
+        // round-trips to nothing (writeCrossEpic emits `[alpha, , ]`, and
+        // parseEpicFile re-reads it with .filter(Boolean)), so counting them
+        // would persist a cross epic that reloads with a single member —
+        // breaking the >=2 invariant with no error anywhere.
+        xEpic({ slug: 'holey', projects: ['alpha', '', '  '], title: 'Holey' }),
       ],
     }));
     const r = await board.syncPull({ peerUrl: 'https://peer.example', scope: 'all' });
@@ -911,8 +917,20 @@ test('a cross epic with non-string members is filtered, not fatal — and the le
     assert.ok(byTitle('alpha', 'GoodCard'));
 
     assert.deepEqual(store.readCrossEpic('plat').projects, ['alpha', 'beta']);
+    // Assert the FILE, not just the re-read: a blank member serialises as a hole
+    // (`[alpha, , beta]`) that .filter(Boolean) silently swallows on the way back
+    // in, so the parsed value alone cannot see it. The stored record must never
+    // claim a member it cannot keep.
+    assert.match(
+      fs.readFileSync(path.join(crossEpicsDir(), 'plat.md'), 'utf8'),
+      /^projects: \[alpha, beta\]$/m,
+    );
     assert.equal(store.crossEpicExists('thin'), false);
-    assert.deepEqual(r.summary.skippedEpics, [{ slug: 'thin', kind: 'cross' }]);
+    assert.equal(store.crossEpicExists('holey'), false);
+    assert.deepEqual(r.summary.skippedEpics, [
+      { slug: 'thin', kind: 'cross' },
+      { slug: 'holey', kind: 'cross' },
+    ]);
 
     // The surviving epic is readable and its rollup iterates only real members.
     const re = await board.readEpic({ slug: 'plat' });
