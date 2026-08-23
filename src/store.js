@@ -179,16 +179,25 @@ export function epicExists(project, slug) {
   return fs.existsSync(epicPath(project, slug));
 }
 
+// ---- the shared epic codec ----
+//
+// A project-scoped epic file and a cross-project one differ by exactly ONE
+// frontmatter line, so both codec pairs below share these halves rather than
+// hand-rolling the format twice (two copies is how the two drift when a field
+// is added).
+//
 // `updated`/`node` are the cross-instance sync version stamp — the LWW clock and
 // its tiebreak, mirroring cards (but epics have NO uid: their slug is identity).
 // Emitted only when set; hidden from reads (board.readEpic/listEpics whitelist
 // their output) — exposed only via /api/sync/export.
-export function writeEpic(project, epic) {
-  const parts = [
+
+// `ownerLines` is the differing line: `project: <p>` or `projects: [a, b]`.
+function serializeEpicFile(epic, ownerLines) {
+  return [
     '---',
     `slug: ${epic.slug}`,
     `title: ${epic.title ?? ''}`,
-    `project: ${project}`,
+    ...ownerLines,
     `created: ${epic.created}`,
     ...(epic.updated ? [`updated: ${epic.updated}`] : []),
     ...(epic.node ? [`node: ${epic.node}`] : []),
@@ -196,15 +205,16 @@ export function writeEpic(project, epic) {
     '## Goal',
     (epic.goal ?? '').trim(),
     '',
-  ];
-  atomicWrite(epicPath(project, epic.slug), parts.join('\n'));
+  ].join('\n');
 }
 
-export function readEpic(project, slug) {
-  const file = epicPath(project, slug);
-  if (!fs.existsSync(file)) return null;
-  const lines = fs.readFileSync(file, 'utf8').split('\n');
-  const epic = { slug, title: '', project, created: null, updated: null, node: null, goal: '' };
+// `seed` is the fully-defaulted object the caller wants back, carrying the
+// identity fields it already knows (slug, plus `project` or an empty `projects`
+// list). A `projects:` line is read ONLY when the seed carries the list — a
+// project-scoped epic ignores a stray one, exactly as before.
+function parseEpicFile(text, seed) {
+  const lines = text.split('\n');
+  const epic = { ...seed };
   let i = 0;
   if (lines[0]?.trim() === '---') {
     i = 1;
@@ -214,6 +224,10 @@ export function readEpic(project, slug) {
       const key = lines[i].slice(0, idx).trim();
       const val = lines[i].slice(idx + 1).trim();
       if (key === 'title' || key === 'created' || key === 'updated' || key === 'node') epic[key] = val;
+      else if (key === 'projects' && Array.isArray(epic.projects)) {
+        const inner = val.replace(/^\[/, '').replace(/\]$/, '').trim();
+        epic.projects = inner ? inner.split(',').map((s) => s.trim()).filter(Boolean) : [];
+      }
     }
     i++;
   }
@@ -226,6 +240,18 @@ export function readEpic(project, slug) {
   }
   epic.goal = goal.join('\n').trim();
   return epic;
+}
+
+export function writeEpic(project, epic) {
+  atomicWrite(epicPath(project, epic.slug), serializeEpicFile(epic, [`project: ${project}`]));
+}
+
+export function readEpic(project, slug) {
+  const file = epicPath(project, slug);
+  if (!fs.existsSync(file)) return null;
+  return parseEpicFile(fs.readFileSync(file, 'utf8'), {
+    slug, title: '', project, created: null, updated: null, node: null, goal: '',
+  });
 }
 
 export function listEpicSlugs(project) {
@@ -249,52 +275,18 @@ export function crossEpicExists(slug) {
 }
 
 export function writeCrossEpic(epic) {
-  const parts = [
-    '---',
-    `slug: ${epic.slug}`,
-    `title: ${epic.title ?? ''}`,
-    `projects: [${(epic.projects ?? []).join(', ')}]`,
-    `created: ${epic.created}`,
-    ...(epic.updated ? [`updated: ${epic.updated}`] : []),
-    ...(epic.node ? [`node: ${epic.node}`] : []),
-    '---',
-    '## Goal',
-    (epic.goal ?? '').trim(),
-    '',
-  ];
-  atomicWrite(crossEpicPath(epic.slug), parts.join('\n'));
+  atomicWrite(
+    crossEpicPath(epic.slug),
+    serializeEpicFile(epic, [`projects: [${(epic.projects ?? []).join(', ')}]`]),
+  );
 }
 
 export function readCrossEpic(slug) {
   const file = crossEpicPath(slug);
   if (!fs.existsSync(file)) return null;
-  const lines = fs.readFileSync(file, 'utf8').split('\n');
-  const epic = { slug, title: '', projects: [], created: null, updated: null, node: null, goal: '' };
-  let i = 0;
-  if (lines[0]?.trim() === '---') {
-    i = 1;
-    for (; i < lines.length && lines[i].trim() !== '---'; i++) {
-      const idx = lines[i].indexOf(':');
-      if (idx === -1) continue;
-      const key = lines[i].slice(0, idx).trim();
-      const val = lines[i].slice(idx + 1).trim();
-      if (key === 'title' || key === 'created' || key === 'updated' || key === 'node') epic[key] = val;
-      else if (key === 'projects') {
-        const inner = val.replace(/^\[/, '').replace(/\]$/, '').trim();
-        epic.projects = inner ? inner.split(',').map((s) => s.trim()).filter(Boolean) : [];
-      }
-    }
-    i++;
-  }
-  const goal = [];
-  let inGoal = false;
-  for (; i < lines.length; i++) {
-    if (/^##\s+Goal/i.test(lines[i])) { inGoal = true; continue; }
-    if (/^##\s+/.test(lines[i])) { inGoal = false; continue; }
-    if (inGoal) goal.push(lines[i]);
-  }
-  epic.goal = goal.join('\n').trim();
-  return epic;
+  return parseEpicFile(fs.readFileSync(file, 'utf8'), {
+    slug, title: '', projects: [], created: null, updated: null, node: null, goal: '',
+  });
 }
 
 export function listCrossEpicSlugs() {
