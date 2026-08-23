@@ -1022,9 +1022,17 @@ function ensureEpicIdentity(epic) {
 // — a dead/absent link degrades to plan_missing, which every read handles.
 // In-memory only, and it touches NO identity field, so the kind-conflict guards
 // still run unchanged on the normalised record.
+//
+// Epics are DELIBERATELY stricter than cards here: the card path has the same
+// hole on `goal` (taskfile.serializeBody's `(task.goal ?? '').trim()`), left
+// alone on purpose and tracked as card 2026-0026. Not an oversight — fixing the
+// card side is that card's job, and the asymmetry is temporary.
 function normalizeRemoteEpic(epic) {
   return {
     ...epic,
+    // `(epic.goal ?? '').trim()` in store.js coalesces null/undefined only, so a
+    // number or object goal throws on .trim().
+    goal: typeof epic.goal === 'string' ? epic.goal : '',
     plan: (typeof epic.plan === 'string' && !/[\n\r]/.test(epic.plan) && epic.plan.trim())
       ? epic.plan.trim() : null,
     logbook: Array.isArray(epic.logbook) ? epic.logbook.filter((l) => typeof l === 'string') : [],
@@ -1069,7 +1077,18 @@ function mergeCrossEpics(remoteCross, localProjects, summary) {
       summary.skippedEpics.push({ slug: (re && typeof re.slug === 'string') ? re.slug : null, kind: 'cross' });
       continue;
     }
-    const members = Array.isArray(re.projects) ? [...new Set(re.projects)] : [];
+    // Members must be usable project NAMES before anything indexes a path with
+    // them: a non-string throws in path.join, inside withLock(CROSS_LOCK) and so
+    // before the per-project card loop — killing the whole pull. An empty string
+    // is dropped too, since writeCrossEpic's `[a, b]` list is re-read with
+    // .filter(Boolean) and would silently lose it on the next parse anyway.
+    // This runs BEFORE the length check on purpose, so a list that is short only
+    // once the junk is gone is skipped-and-reported rather than half-written.
+    // NB a member naming a project absent from THIS machine is legitimate and
+    // kept — a cross epic may span projects only the peer has.
+    const members = Array.isArray(re.projects)
+      ? [...new Set(re.projects.filter((p) => typeof p === 'string' && p.trim() !== ''))]
+      : [];
     if (members.length < 2) { summary.skippedEpics.push({ slug: re.slug, kind: 'cross' }); continue; }
     if (!members.some((p) => localProjects.has(p))) continue; // covers no local project — irrelevant
     const clash = members.find((p) => store.epicExists(p, re.slug));

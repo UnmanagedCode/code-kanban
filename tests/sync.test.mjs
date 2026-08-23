@@ -831,13 +831,13 @@ test('a peer serving a malformed epic logbook/plan is normalised, not fatal — 
       projects: { alpha: [card({ id: '2026-0001', uid: 'u-P', title: 'GoodCard' })] },
       projectEpics: {
         alpha: [{
-          slug: 'auth', title: 'Peer', goal: 'g', project: 'alpha',
+          slug: 'auth', title: 'Peer', goal: 42, project: 'alpha',
           plan: { not: 'a string' }, logbook: 'GARBAGE',
           created: '2026-01-01T00:00:00.000Z', updated: '2026-02-01T00:00:00.000Z', node: 'peer-node',
         }],
       },
       crossEpics: [{
-        slug: 'plat', title: 'XPeer', goal: 'g', projects: ['alpha', 'beta'],
+        slug: 'plat', title: 'XPeer', goal: {}, projects: ['alpha', 'beta'],
         plan: 'board:x.md\nnode: injected', logbook: [{ nope: 1 }, 'a real line'],
         created: '2026-01-01T00:00:00.000Z', updated: '2026-02-01T00:00:00.000Z', node: 'peer-node',
       }],
@@ -852,6 +852,8 @@ test('a peer serving a malformed epic logbook/plan is normalised, not fatal — 
     const e = store.readEpic('alpha', 'auth');
     assert.equal(e.plan, null);        // a non-string link is dropped, not stringified
     assert.deepEqual(e.logbook, []);   // a non-array logbook becomes empty
+    // `(goal ?? '').trim()` coalesces null/undefined only, so a number would throw.
+    assert.equal(e.goal, '');
 
     const x = store.readCrossEpic('plat');
     // A newline-bearing link would inject a second frontmatter key on write —
@@ -860,6 +862,7 @@ test('a peer serving a malformed epic logbook/plan is normalised, not fatal — 
     assert.equal(x.plan, null);
     assert.equal(x.node, 'peer-node');
     assert.deepEqual(x.logbook, ['a real line']); // non-string entries filtered out
+    assert.equal(x.goal, ''); // an object goal likewise never reaches .trim()
     // Both records are still readable through the normal surface.
     assert.equal((await board.readEpic({ project: 'alpha', slug: 'auth' })).ok, true);
     assert.equal((await board.readEpic({ slug: 'plat' })).ok, true);
@@ -880,5 +883,40 @@ test('normalising a malformed remote epic does not bypass the kind-conflict guar
     assert.deepEqual(r.summary.epicConflicts, [{ slug: 'plat', kind: 'cross-vs-project', project: 'alpha' }]);
     assert.equal(store.crossEpicExists('plat'), false); // never written, so no two-record state
     assert.equal(store.readEpic('alpha', 'plat').title, 'LocalProject'); // local untouched
+  });
+});
+
+// The members list is derived BEFORE normalizeRemoteEpic runs and is what every
+// path index uses, so it needs its own guard: a non-string member reaches
+// path.join and throws inside withLock(CROSS_LOCK) — again before the
+// per-project card loop, so the whole pull dies.
+test('a cross epic with non-string members is filtered, not fatal — and the length check sees the filtered list', async () => {
+  await withRoot(async () => {
+    board._setSyncFetcher(async () => ({
+      ok: true,
+      nodeId: 'peer-node',
+      projects: { alpha: [card({ id: '2026-0001', uid: 'u-P', title: 'GoodCard' })] },
+      crossEpics: [
+        // Junk alongside two real members: survives with the junk dropped.
+        xEpic({ slug: 'plat', projects: [5, 'alpha', null, 'beta', ''], title: 'Platform' }),
+        // Junk leaves only ONE real member: too short, so skipped + reported
+        // rather than half-written. Only reachable if the filter precedes the
+        // length check.
+        xEpic({ slug: 'thin', projects: [{}, 'alpha', 7], title: 'Thin' }),
+      ],
+    }));
+    const r = await board.syncPull({ peerUrl: 'https://peer.example', scope: 'all' });
+    assert.equal(r.ok, true, 'the pull must not reject');
+    assert.equal(r.summary.added, 1); // the card still merged
+    assert.ok(byTitle('alpha', 'GoodCard'));
+
+    assert.deepEqual(store.readCrossEpic('plat').projects, ['alpha', 'beta']);
+    assert.equal(store.crossEpicExists('thin'), false);
+    assert.deepEqual(r.summary.skippedEpics, [{ slug: 'thin', kind: 'cross' }]);
+
+    // The surviving epic is readable and its rollup iterates only real members.
+    const re = await board.readEpic({ slug: 'plat' });
+    assert.equal(re.ok, true);
+    assert.deepEqual(re.epic.projects, ['alpha', 'beta']);
   });
 });

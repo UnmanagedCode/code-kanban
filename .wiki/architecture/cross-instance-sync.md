@@ -101,6 +101,18 @@ addressable identity that cards reference via `epic:`. Consequences:
   first, an intra-dump kind flip (same slug appearing as both cross and project in ONE dump)
   resolves deterministically: cross is written first, the project version then hits the guard and is
   skipped+logged.
+- **Malformed body fields are DROPPED, not repaired, and never reported** (the third guard,
+  alongside the slug/members skip and the kind conflict). `normalizeRemoteEpic` coerces an incoming
+  epic's `goal`/`plan`/`logbook` to safe values before the write, and `mergeCrossEpics` filters
+  `projects` to non-empty strings before its <2 check. Dropping rather than repairing is the
+  choice: a dead or absent plan link degrades to `plan_missing`, which every read already handles,
+  whereas a guessed value would be indistinguishable from a real one. **The ordering is why this is
+  a guard and not a nicety:** these fields reach hand-rolled serializers that call `.trim()`/`.map()`
+  on them, and the cross-epic phase runs FIRST, under `CROSS_LOCK`, before the per-project card
+  loop — so before the guard existed, one peer epic carrying `logbook: "GARBAGE"` threw and
+  rejected the WHOLE `syncPull`, and every well-formed card in the same dump failed to merge with
+  it. Epics are deliberately stricter than cards here; the card path has the same `goal` hole,
+  tracked as card 2026-0026.
 - **Single-project scope** carries the project's own epics PLUS every cross epic covering it —
   exactly the set a card in that project can reference (`epicVisibleIn`), so every `card.epic`
   resolves without a drop-and-log rule.

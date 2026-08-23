@@ -336,6 +336,11 @@ test('epics: create, file under, rollup counts on read', async () => {
 
     const re = await board.readEpic({ project: 'demo', slug: 'auth' });
     assert.equal(re.tasks.length, 2);
+    // `projects` is a CROSS-epic field. It must be absent, not present-holding-
+    // undefined: the response is a field whitelist, and JSON.stringify drops an
+    // undefined value, so an unconditional spread is invisible over the wire and
+    // to the GUI — but it is still the whitelist quietly widening.
+    assert.equal('projects' in re.epic, false);
     assert.equal((await board.readEpic({ project: 'demo', slug: 'ghost' })).code, 'EPIC_UNKNOWN');
   } finally { await cleanup(root); }
 });

@@ -300,7 +300,17 @@ Notes:
   (whole-epic last-edit-wins; hidden `updated`/`node` exposed only by export, never by `read_epic`/
   `list_epics`). A slug that is a project epic on one side and cross-project on the other is skipped +
   reported in `epicConflicts` (never merged/deleted — grow-only); malformed epics (bad slug / cross
-  epic with <2 members) go to `skippedEpics`.
+  epic with <2 members) go to `skippedEpics`. A cross epic's `projects` list is filtered to
+  non-empty **strings** first, so junk members are dropped *before* that <2 check — an epic left
+  too short by the filter is skipped, not half-written. Beyond skip and conflict there is a **third
+  outcome**: a well-formed epic whose BODY fields are malformed (`goal` not a string, `plan` a
+  non-string or newline-bearing value, `logbook` not an array of strings) is neither skipped nor
+  fatal — it **merges with the bad values dropped, not repaired** (`normalizeRemoteEpic` in
+  `src/board.js`), and **nothing in the summary reports the drop**. Dropping matters because these
+  reach a hand-rolled serializer: an unguarded value throws inside `withLock(CROSS_LOCK)`, which
+  runs *before* the per-project card loop, so one bad epic body would fail the entire pull —
+  well-formed cards included. Epics are deliberately stricter than cards here; the card path has
+  the same `goal` hole, tracked separately as card `2026-0026`.
   Refusals: malformed `peerUrl` or a blocked host → 200 `{ok:false, INVALID_STATE}`; an
   unreachable/garbage/oversized peer → 200 `{ok:false, SYNC_UNREACHABLE}`.
   **SSRF guard**: `peerUrl` pointing at a loopback / private / link-local IP literal
