@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
 import { freshRoot, cleanup } from './_helpers.mjs';
-import { plansDir } from '../src/paths.js';
+import { plansDir, epicsDir } from '../src/paths.js';
 import * as board from '../src/board.js';
 import * as store from '../src/store.js';
 import * as taskfile from '../src/taskfile.js';
@@ -40,6 +41,7 @@ function serveFull({ projects = {}, projectEpics = {}, crossEpics = [] }) {
 function pEpic(o) {
   return {
     slug: o.slug, title: o.title ?? o.slug, goal: o.goal ?? '', project: o.project ?? 'alpha',
+    plan: o.plan ?? null, logbook: o.logbook ?? [],
     created: o.created ?? '2026-01-01T00:00:00.000Z',
     updated: o.updated ?? o.created ?? '2026-01-01T00:00:00.000Z',
     node: o.node ?? 'peer-node',
@@ -49,6 +51,7 @@ function xEpic(o) {
   return {
     slug: o.slug, title: o.title ?? o.slug, goal: o.goal ?? '',
     projects: o.projects ?? ['alpha', 'beta'],
+    plan: o.plan ?? null, logbook: o.logbook ?? [],
     created: o.created ?? '2026-01-01T00:00:00.000Z',
     updated: o.updated ?? o.created ?? '2026-01-01T00:00:00.000Z',
     node: o.node ?? 'peer-node',
@@ -681,5 +684,113 @@ test('an incoming legacy card outranks a local MEDIUM once mapped', async () => 
     assert.equal((await pull('project', 'alpha')).ok, true);
     const ids = (await board.listTasks({ project: 'alpha' })).tasks.map((t) => t.title);
     assert.deepEqual(ids, ['peer was 1', 'local']);
+  });
+});
+
+// ---- epic plan link + logbook across sync (2026-0025) -----------------
+//
+// Both new fields live INSIDE the epic record, so they ride export/pull as
+// ordinary frontmatter/body under whole-epic LWW. The hazard worth pinning is
+// the backfill, which READS THEN REWRITES any epic missing a version stamp.
+
+test('exportBoard\'s identity backfill does not destroy a legacy epic\'s plan link and logbook', async () => {
+  await withRoot(async () => {
+    store.ensureProjectDirs('alpha');
+    // Hand-written, as an older build + a newer peer's edit would leave it: NO
+    // updated/node (so the backfill rewrites the file) but WITH a plan link and
+    // two logbook entries. A serializer that emitted these without a parser
+    // reading them would silently erase both here.
+    fs.writeFileSync(path.join(epicsDir('alpha'), 'auth.md'), [
+      '---', 'slug: auth', 'title: Legacy', 'project: alpha', 'plan: board:epic-auth.md',
+      'created: 2026-01-01T00:00:00.000Z', '---',
+      '## Goal', 'the legacy goal', '',
+      '## Logbook',
+      '- 2026-01-01T00:00:00.000Z · conductor · one',
+      '- 2026-01-02T00:00:00.000Z · conductor · two',
+      '',
+    ].join('\n'));
+
+    const dump = await board.exportBoard({ scope: 'project', project: 'alpha' });
+    assert.equal(dump.ok, true);
+    assert.equal(dump.projectEpics.alpha[0].updated, '2026-01-01T00:00:00.000Z'); // backfilled = created
+
+    const e = store.readEpic('alpha', 'auth');
+    assert.equal(e.plan, 'board:epic-auth.md');
+    assert.deepEqual(e.logbook, [
+      '2026-01-01T00:00:00.000Z · conductor · one',
+      '2026-01-02T00:00:00.000Z · conductor · two',
+    ]);
+    assert.equal(e.goal, 'the legacy goal');
+  });
+});
+
+test('epic LWW carries the peer\'s plan link and logbook; the losing side\'s entries are DROPPED', async () => {
+  await withRoot(async () => {
+    seedProjectEpic('alpha', {
+      slug: 'auth', title: 'Local', updated: '2026-01-01T00:00:00.000Z',
+      logbook: ['2026-01-01T00:00:00.000Z · conductor · local only'],
+    });
+    serveFull({
+      projects: { alpha: [] },
+      projectEpics: {
+        alpha: [pEpic({
+          slug: 'auth', title: 'Peer', updated: '2026-02-01T00:00:00.000Z',
+          plan: 'board:epic-auth.md',
+          logbook: ['2026-02-01T00:00:00.000Z · conductor · peer one', '2026-02-02T00:00:00.000Z · conductor · peer two'],
+        })],
+      },
+    });
+    const r = await pull('project', 'alpha');
+    assert.equal(r.summary.epicsUpdated, 1);
+    const e = store.readEpic('alpha', 'auth');
+    assert.equal(e.title, 'Peer');
+    assert.equal(e.plan, 'board:epic-auth.md'); // the LINK ships (the body does not)
+    // Whole-epic LWW, exactly as for a card's logbook: the winner REPLACES,
+    // entries are not unioned, so the loser's line is gone. Accepted semantics.
+    assert.deepEqual(e.logbook, [
+      '2026-02-01T00:00:00.000Z · conductor · peer one',
+      '2026-02-02T00:00:00.000Z · conductor · peer two',
+    ]);
+  });
+});
+
+test('an older peer\'s epic (no plan/logbook keys at all) merges cleanly', async () => {
+  await withRoot(async () => {
+    const legacy = {
+      slug: 'auth', title: 'Peer', goal: 'g', project: 'alpha',
+      created: '2026-01-01T00:00:00.000Z', updated: '2026-02-01T00:00:00.000Z', node: 'peer-node',
+    };
+    assert.equal('logbook' in legacy, false); // the shape a pre-2026-0025 peer serves
+    assert.equal('plan' in legacy, false);
+    serveFull({ projects: { alpha: [] }, projectEpics: { alpha: [legacy] } });
+    const r = await pull('project', 'alpha');
+    assert.equal(r.summary.epicsAdded, 1);
+    const e = store.readEpic('alpha', 'auth');
+    assert.equal(e.plan, null);
+    assert.deepEqual(e.logbook, []);
+    assert.equal((await board.readEpic({ project: 'alpha', slug: 'auth' })).ok, true);
+  });
+});
+
+test('a cross epic\'s plan link and logbook survive a pull too', async () => {
+  await withRoot(async () => {
+    serveFull({
+      projects: {},
+      crossEpics: [xEpic({
+        slug: 'plat', projects: ['alpha', 'beta'], title: 'Platform',
+        plan: 'board:epic-plat.md',
+        logbook: ['2026-02-01T00:00:00.000Z · conductor · cross entry'],
+      })],
+    });
+    const r = await pull('all');
+    assert.equal(r.summary.epicsAdded, 1);
+    const x = store.readCrossEpic('plat');
+    assert.equal(x.plan, 'board:epic-plat.md');
+    assert.deepEqual(x.logbook, ['2026-02-01T00:00:00.000Z · conductor · cross entry']);
+    // The body was never in the dump, so the link is dead here — a degradation,
+    // never a refusal (same accepted gap as a card's plan).
+    const re = await board.readEpic({ slug: 'plat', includePlan: true });
+    assert.equal(re.ok, true);
+    assert.equal(re.plan_missing, true);
   });
 });

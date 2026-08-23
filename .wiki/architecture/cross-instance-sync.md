@@ -105,8 +105,22 @@ addressable identity that cards reference via `epic:`. Consequences:
   exactly the set a card in that project can reference (`epicVisibleIn`), so every `card.epic`
   resolves without a drop-and-log rule.
 - **Hidden-field discipline:** `board.readEpic`/`listEpics` build responses from a field whitelist
-  (`{slug,title,goal,rollup,projects}`), so `updated`/`node` never leak; `/api/sync/export` is the
-  sole exposure. Same as cards.
+  (`{slug,title,goal,plan,rollup,projects,logbook}`), so `updated`/`node` never leak;
+  `/api/sync/export` is the sole exposure. Same as cards.
+- **An epic's `plan` link and `logbook` ride along too** (2026-0025) — both live in the epic
+  record, so no sync code knows about them. Two consequences worth stating:
+  - The logbook rides **whole-epic LWW**, so the losing side's entries are **lost, not merged** —
+    identical semantics to a card's logbook, and accepted for the same reason.
+  - Plan **bodies** are not in the dump (the board-level `plans/` dir included), so a synced epic
+    can carry a dead link; `read_epic` degrades to `plan_missing: true`. Same accepted gap as a
+    card's — see [[../gotchas/plan-link-and-sync-gap]].
+- **GOTCHA — adding a field to an epic file means adding it to BOTH halves, in one change.**
+  `backfillProjectEpics`/`backfillCrossEpics` **read then rewrite** any epic missing a version
+  stamp. So a field that `serializeEpicFile` emits but `parseEpicFile` does not read is silently
+  **destroyed on every legacy epic** the next time `exportBoard` runs — the read drops it and the
+  rewrite persists the loss. No other test path exercises this; `tests/sync.test.mjs`'s
+  *"exportBoard's identity backfill does not destroy a legacy epic's plan link and logbook"* is
+  the pin.
 
 ## Scope & limitations
 - `project` = the current project; `all` = every live project (`listProjects`). A peer project

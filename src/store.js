@@ -192,18 +192,26 @@ export function epicExists(project, slug) {
 // their output) — exposed only via /api/sync/export.
 
 // `ownerLines` is the differing line: `project: <p>` or `projects: [a, b]`.
+// `plan` is a LINK to the epic's plan file (src/planLink.js), never the plan
+// text, and — like a card's — the key is absent when unset. `## Logbook` is
+// always emitted, in the same `- <line>` shape taskfile.serializeBody uses, so
+// one reading habit serves cards and epics.
 function serializeEpicFile(epic, ownerLines) {
   return [
     '---',
     `slug: ${epic.slug}`,
     `title: ${epic.title ?? ''}`,
     ...ownerLines,
+    ...(epic.plan ? [`plan: ${epic.plan}`] : []),
     `created: ${epic.created}`,
     ...(epic.updated ? [`updated: ${epic.updated}`] : []),
     ...(epic.node ? [`node: ${epic.node}`] : []),
     '---',
     '## Goal',
     (epic.goal ?? '').trim(),
+    '',
+    '## Logbook',
+    ...(epic.logbook ?? []).map((l) => `- ${l}`),
     '',
   ].join('\n');
 }
@@ -224,6 +232,7 @@ function parseEpicFile(text, seed) {
       const key = lines[i].slice(0, idx).trim();
       const val = lines[i].slice(idx + 1).trim();
       if (key === 'title' || key === 'created' || key === 'updated' || key === 'node') epic[key] = val;
+      else if (key === 'plan') epic.plan = val === '' ? null : val;
       else if (key === 'projects' && Array.isArray(epic.projects)) {
         const inner = val.replace(/^\[/, '').replace(/\]$/, '').trim();
         epic.projects = inner ? inner.split(',').map((s) => s.trim()).filter(Boolean) : [];
@@ -231,12 +240,21 @@ function parseEpicFile(text, seed) {
     }
     i++;
   }
+  // Parsing `plan`/`logbook` is not optional once they are serialized: sync's
+  // backfill READS THEN REWRITES any epic missing a version stamp, so a parser
+  // that dropped them would let the next exportBoard destroy them on every
+  // legacy epic (see .wiki/architecture/cross-instance-sync.md).
   const goal = [];
-  let inGoal = false;
+  let section = null;
   for (; i < lines.length; i++) {
-    if (/^##\s+Goal/i.test(lines[i])) { inGoal = true; continue; }
-    if (/^##\s+/.test(lines[i])) { inGoal = false; continue; }
-    if (inGoal) goal.push(lines[i]);
+    if (/^##\s+Goal/i.test(lines[i])) { section = 'goal'; continue; }
+    if (/^##\s+Logbook/i.test(lines[i])) { section = 'logbook'; continue; }
+    if (/^##\s+/.test(lines[i])) { section = null; continue; }
+    if (section === 'goal') goal.push(lines[i]);
+    else if (section === 'logbook') {
+      const m = /^-\s+(.*)$/.exec(lines[i].trim()); // same rule as taskfile.parse
+      if (m) epic.logbook.push(m[1]);
+    }
   }
   epic.goal = goal.join('\n').trim();
   return epic;
@@ -250,7 +268,8 @@ export function readEpic(project, slug) {
   const file = epicPath(project, slug);
   if (!fs.existsSync(file)) return null;
   return parseEpicFile(fs.readFileSync(file, 'utf8'), {
-    slug, title: '', project, created: null, updated: null, node: null, goal: '',
+    slug, title: '', project, plan: null, created: null, updated: null, node: null,
+    goal: '', logbook: [],
   });
 }
 
@@ -285,7 +304,8 @@ export function readCrossEpic(slug) {
   const file = crossEpicPath(slug);
   if (!fs.existsSync(file)) return null;
   return parseEpicFile(fs.readFileSync(file, 'utf8'), {
-    slug, title: '', projects: [], created: null, updated: null, node: null, goal: '',
+    slug, title: '', projects: [], plan: null, created: null, updated: null, node: null,
+    goal: '', logbook: [],
   });
 }
 

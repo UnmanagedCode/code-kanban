@@ -177,6 +177,43 @@ test('writeCrossEpic/readCrossEpic round-trips title, goal, and the projects lis
   } finally { await cleanup(root); }
 });
 
+test('epic write->read round-trips the plan link and the logbook (project AND cross)', async () => {
+  const root = await freshRoot();
+  try {
+    store.ensureProjectDirs('demo');
+    const logbook = [
+      '2026-07-22T00:00:00.000Z · conductor · first card landed',
+      '2026-07-23T00:00:00.000Z · conductor · resequenced: 0004 before 0003',
+    ];
+    store.writeEpic('demo', {
+      slug: 'auth', title: 'Auth', goal: 'Sign-in', plan: 'board:epic-auth.md', logbook,
+      created: '2026-07-22T00:00:00.000Z',
+    });
+    const e = store.readEpic('demo', 'auth');
+    assert.equal(e.plan, 'board:epic-auth.md');
+    assert.deepEqual(e.logbook, logbook);
+    assert.equal(e.goal, 'Sign-in'); // the Logbook section does not bleed into the goal
+
+    store.writeCrossEpic({
+      slug: 'plat', title: 'Plat', goal: 'Shared', projects: ['web', 'api'],
+      plan: 'board:epic-plat.md', logbook, created: '2026-07-22T00:00:00.000Z',
+    });
+    const x = store.readCrossEpic('plat');
+    assert.equal(x.plan, 'board:epic-plat.md');
+    assert.deepEqual(x.logbook, logbook);
+    assert.equal(x.goal, 'Shared');
+    assert.deepEqual(x.projects, ['web', 'api']);
+
+    // Unset: no `plan:` key in the file at all (like a card's), empty logbook -> [].
+    store.writeEpic('demo', { slug: 'bare', title: 'Bare', goal: '', created: '2026-07-22T00:00:00.000Z' });
+    const raw = fs.readFileSync(path.join(epicsDir('demo'), 'bare.md'), 'utf8');
+    assert.equal(/^plan:/m.test(raw), false, raw);
+    const bare = store.readEpic('demo', 'bare');
+    assert.equal(bare.plan, null);
+    assert.deepEqual(bare.logbook, []);
+  } finally { await cleanup(root); }
+});
+
 test('ensureProjectDirs creates plans/ (the board: plan-link base)', async () => {
   const root = await freshRoot();
   try {

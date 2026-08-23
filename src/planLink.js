@@ -1,34 +1,44 @@
-// Plan-link grammar: the typed, always-relative pointer a card's `plan`
-// frontmatter scalar holds. NEVER the plan text — the body lives in a file that
-// ordinary Read/Write/Edit owns.
+// Plan-link grammar: the typed, always-relative pointer a `plan` frontmatter
+// scalar holds — on a card, or on an epic. NEVER the plan text — the body lives
+// in a file that ordinary Read/Write/Edit owns.
 //
 //   board:<rel>  -> <kanbanRoot>/projects/<project>/plans/<rel>
+//                   ...or <kanbanRoot>/plans/<rel> when `project` is null
 //   repo:<rel>   -> <PROJECTS_ROOT>/<project>/<rel>   (the BASE checkout, never a
 //                   worktree — which is why a repo: link only resolves once the
-//                   plan is merged)
+//                   plan is merged); REFUSED when `project` is null
 //   <rel>        -> bare, means board:
 //
-// A card's STORED plan is always one of the two typed forms above. Set-time
-// INPUT has a third form: a bare ABSOLUTE path, which is not a pointer at all —
-// it is an ingest source that board.js copies to plans/<id>.md and then stores
-// as `board:<id>.md` (see classifyPlanInput below and ingestPlanFile there).
+// `project` is null for exactly one owner: a CROSS-project epic, which has no
+// single owning project. That is why `board:`'s base is parameterised rather
+// than a third scheme existing — the owning record's kind already tells every
+// resolution site which base it is on, so the stored link never self-describes.
+//
+// A STORED plan is always one of the two typed forms above. Set-time INPUT has a
+// third form: a bare ABSOLUTE path, which is not a pointer at all — it is an
+// ingest source that board.js copies into the board's plans/ dir and then stores
+// as `board:<name>` (see classifyPlanInput below and ingestPlanFile there).
 //
 // Pure: no fs here. Grammar + containment only; board.js owns stat-ing the file
 // and every refusal shape (see resolvePlanForSet there).
 
 import path from 'node:path';
-import { plansDir, projectRepoDir } from './paths.js';
+import { plansDir, boardPlansDir, projectRepoDir } from './paths.js';
 
 // Case-insensitive by construction (the scheme is lowercased before lookup), so
 // a Windows drive letter (`C:\x`) is a LOUD unknown-scheme refusal rather than a
 // bizarre relative filename.
 const SCHEME_RE = /^([A-Za-z][A-Za-z0-9+.-]*):/;
 
-const BASE_DIR = { board: plansDir, repo: projectRepoDir };
+const BASE_DIR = {
+  board: (project) => (project === null ? boardPlansDir() : plansDir(project)),
+  repo: projectRepoDir,
+};
 
 function bad(reason) { return { error: { code: 'INVALID_STATE', reason } }; }
 
-// The base dir a scheme's relative path resolves under.
+// The base dir a scheme's relative path resolves under. `project` is null only
+// for a cross-project epic, and only `board:` has a base for that case.
 export function planBaseDir(project, scheme) {
   return BASE_DIR[scheme](project);
 }
@@ -76,6 +86,11 @@ export function resolvePlanLink(project, link) {
   const parsed = parsePlanLink(link);
   if (parsed.error) return parsed;
   const { scheme, rel } = parsed;
+  // `repo:` resolves under <PROJECTS_ROOT>/<project>/, so with no owning project
+  // there is no base to resolve against — an explicit refusal, not a crash.
+  if (scheme === 'repo' && project === null) {
+    return bad('repo: plan links need an owning project (a cross-project epic has none) — use board: or an absolute path');
+  }
   const base = planBaseDir(project, scheme);
   const abs = path.resolve(base, rel);
   if (!isContained(base, abs)) {

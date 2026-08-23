@@ -644,3 +644,79 @@ test('a refusal on any raw-text tool keeps the plain {result} path', async () =>
     }
   } finally { await cleanup(root); }
 });
+
+// ---- read_epic / read_progress over an epic (2026-0025) ----------------
+
+test('read_epic emits goal, logbook and plan_body as three ORDERED text blocks', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const goal = 'Unify the reads.\n\nWhy: LLMs read markdown.';
+    await mcp.handle({ tool: 'create_epic', arguments: { project: 'demo', slug: 'reads', title: 'Reads', goal } });
+    const file = path.join(plansDir('demo'), 'p.md');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '# the strategy\n');
+    await mcp.handle({ tool: 'create_epic', arguments: { project: 'demo', slug: 'reads', title: 'Reads', plan: 'board:p.md' } });
+    await mcp.handle({ tool: 'log_progress', arguments: { project: 'demo', epic: 'reads', entry: 'first card landed' } });
+
+    const r = await mcp.handle({ tool: 'read_epic', arguments: { project: 'demo', slug: 'reads', includePlan: true } });
+    assert.equal(r.body.result, undefined);
+    assert.equal(r.body.text.length, 3);
+    assert.equal(r.body.text[0], goal);                    // 1. the goal, verbatim
+    assert.ok(r.body.text[1].startsWith('- '));            // 2. the logbook, as a - list
+    assert.match(r.body.text[1], /first card landed/);
+    assert.equal(r.body.text[2], '# the strategy\n');      // 3. the plan body, verbatim
+    // Both prose halves left the JSON block; the plan LINK — a scalar a caller
+    // branches on — stayed in it.
+    assert.equal('goal' in r.body.meta.epic, false);
+    assert.equal('logbook' in r.body.meta.epic, false);
+    assert.equal(r.body.meta.epic.plan, 'board:p.md');
+    assert.equal(r.body.meta.plan_path, file);
+    assert.equal('plan_body' in r.body.meta, false);       // promoted out
+    assert.equal(Array.isArray(r.body.meta.tasks), true);  // tasks stay JSON
+    // The goal preservation survives the re-upsert that only set `plan`.
+    assert.equal(r.body.text[0], goal);
+  } finally { await cleanup(root); }
+});
+
+test('read_epic without includePlan emits goal + logbook only (no plan block)', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    await mcp.handle({ tool: 'create_epic', arguments: { project: 'demo', slug: 'reads', title: 'R', goal: 'G' } });
+    await mcp.handle({ tool: 'log_progress', arguments: { project: 'demo', epic: 'reads', entry: 'landed' } });
+    const r = await mcp.handle({ tool: 'read_epic', arguments: { project: 'demo', slug: 'reads' } });
+    assert.equal(r.body.text.length, 2);
+    assert.equal(r.body.text[0], 'G');
+    assert.match(r.body.text[1], /landed/);
+  } finally { await cleanup(root); }
+});
+
+test('read_progress({epic}) rides the same raw-text channel as a card\'s', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    await mcp.handle({ tool: 'create_epic', arguments: { project: 'demo', slug: 'auth', title: 'A' } });
+    await mcp.handle({ tool: 'log_progress', arguments: { project: 'demo', epic: 'auth', entry: 'resequenced 0004 before 0003' } });
+    const r = await mcp.handle({ tool: 'read_progress', arguments: { project: 'demo', epic: 'auth' } });
+    assert.equal(r.body.text.length, 1);
+    assert.ok(r.body.text[0].startsWith('- '));
+    assert.match(r.body.text[0], /resequenced 0004 before 0003/);
+    assert.equal(r.body.meta.total, 1);
+    assert.equal(r.body.meta.count, 1);
+    assert.equal('entries' in r.body.meta, false); // progressEntries needed no change
+  } finally { await cleanup(root); }
+});
+
+test('create_epic via mcp: an absolute plan is ingested and the stored link reported', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'code-kanban-src-'));
+  try {
+    const source = path.join(dir, 'wake-plan.md');
+    fs.writeFileSync(source, '# the epic strategy');
+    const c = await mcp.handle({ tool: 'create_epic', arguments: { project: 'demo', slug: 'auth', title: 'A', plan: source } });
+    assert.equal(c.body.result.plan, 'board:epic-auth.md');
+    assert.equal(fs.readFileSync(path.join(plansDir('demo'), 'epic-auth.md'), 'utf8'), '# the epic strategy');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); await cleanup(root); }
+});

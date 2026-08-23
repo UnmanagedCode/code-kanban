@@ -9,7 +9,8 @@ import * as board from '../src/board.js';
 import * as store from '../src/store.js';
 import { _setProjectFetcher } from '../src/projects.js';
 import { _setInstanceFetcher } from '../src/ownerWorktree.js';
-import { stateDir, plansDir, projectRepoDir } from '../src/paths.js';
+import { stateDir, plansDir, boardPlansDir, epicsDir, projectRepoDir } from '../src/paths.js';
+import { localNodeId } from '../src/nodeId.js';
 
 // Creates a real git repo at <root>/<name> with one commit and returns its
 // HEAD sha, so tests can assert the auto-captured value against ground truth.
@@ -759,6 +760,15 @@ function outsideSources() {
     },
     cleanup() { fs.rmSync(dir, { recursive: true, force: true }); },
   };
+}
+
+// Write a file under the BOARD-LEVEL plans/ dir — a CROSS-project epic's
+// `board:` base, since it has no owning project.
+function writeBoardLevelPlan(rel, body) {
+  const file = path.join(boardPlansDir(), rel);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, body);
+  return file;
 }
 
 // The board's ingest destination for a card.
@@ -1983,5 +1993,408 @@ test('update_task acceptance: an edit writes NO logbook line', async () => {
     // still being silently ignored) would trivially pass the logbook check too.
     assert.deepEqual(after.task.acceptance, [{ text: 'a', done: true }, { text: 'b', done: false }]);
     assert.equal(after.task.logbook.length, before);
+  } finally { await cleanup(root); }
+});
+
+// ---- epic plan links + the epic logbook (2026-0025) -------------------
+//
+// An epic carries the same two things a card does: a typed `plan` LINK (the
+// strategy behind the epic) and an append-only logbook (what landed, what got
+// resequenced). Both go through the SAME helpers the card paths use, so each
+// test below drives the EPIC call site specifically — a card-path test can't
+// stand in for it.
+
+test('create_epic re-upsert preserves an OMITTED goal; \'\'/null clear it (project AND cross epics)', async () => {
+  const root = await freshRoot();
+  useProjects(['demo', 'web', 'api']);
+  try {
+    // --- a project-scoped epic ---
+    await board.createEpic({ project: 'demo', slug: 'auth', title: 'Auth', goal: 'the original goal' });
+    assert.equal((await board.createEpic({ project: 'demo', slug: 'auth', title: 'Auth v2' })).ok, true);
+    let re = await board.readEpic({ project: 'demo', slug: 'auth' });
+    assert.equal(re.epic.goal, 'the original goal'); // omitted -> preserved
+    assert.equal(re.epic.title, 'Auth v2');          // title always overwrites
+    // ...but an EXPLICIT clear must still clear: preservation must not swallow it.
+    await board.createEpic({ project: 'demo', slug: 'auth', title: 'Auth v3', goal: '' });
+    assert.equal((await board.readEpic({ project: 'demo', slug: 'auth' })).epic.goal, '');
+    await board.createEpic({ project: 'demo', slug: 'auth', title: 'Auth v4', goal: 'a new goal' });
+    assert.equal((await board.readEpic({ project: 'demo', slug: 'auth' })).epic.goal, 'a new goal');
+    await board.createEpic({ project: 'demo', slug: 'auth', title: 'Auth v5', goal: null });
+    assert.equal((await board.readEpic({ project: 'demo', slug: 'auth' })).epic.goal, '');
+
+    // --- a cross-project epic: its own call site of the same rule ---
+    await board.createEpic({ projects: ['web', 'api'], slug: 'plat', title: 'Plat', goal: 'the cross goal' });
+    await board.createEpic({ projects: ['web', 'api'], slug: 'plat', title: 'Plat v2' });
+    assert.equal((await board.readEpic({ slug: 'plat' })).epic.goal, 'the cross goal');
+    await board.createEpic({ projects: ['web', 'api'], slug: 'plat', title: 'Plat v3', goal: '' });
+    assert.equal((await board.readEpic({ slug: 'plat' })).epic.goal, '');
+  } finally { await cleanup(root); }
+});
+
+test('create_epic re-upsert preserves an OMITTED plan; plan:null clears it (project AND cross epics)', async () => {
+  const root = await freshRoot();
+  useProjects(['demo', 'web', 'api']);
+  try {
+    // --- a project-scoped epic ---
+    writeBoardPlan('demo', 'p.md', 'the strategy');
+    await board.createEpic({ project: 'demo', slug: 'auth', title: 'Auth', plan: 'board:p.md' });
+    await board.createEpic({ project: 'demo', slug: 'auth', title: 'Auth v2' }); // plan omitted
+    assert.equal((await board.readEpic({ project: 'demo', slug: 'auth' })).epic.plan, 'board:p.md');
+    const cleared = await board.createEpic({ project: 'demo', slug: 'auth', title: 'Auth v3', plan: null });
+    assert.equal(cleared.plan, null);
+    const after = await board.readEpic({ project: 'demo', slug: 'auth' });
+    assert.equal(after.epic.plan, null);
+    assert.equal(after.plan_path, null);
+
+    // --- a cross-project epic ---
+    writeBoardLevelPlan('x.md', 'the cross strategy');
+    await board.createEpic({ projects: ['web', 'api'], slug: 'plat', title: 'Plat', plan: 'board:x.md' });
+    await board.createEpic({ projects: ['web', 'api'], slug: 'plat', title: 'Plat v2' });
+    assert.equal((await board.readEpic({ slug: 'plat' })).epic.plan, 'board:x.md');
+    await board.createEpic({ projects: ['web', 'api'], slug: 'plat', title: 'Plat v3', plan: null });
+    assert.equal((await board.readEpic({ slug: 'plat' })).epic.plan, null);
+  } finally { await cleanup(root); }
+});
+
+test('create_epic reports the stored plan link ONLY when plan was in the call', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const plain = await board.createEpic({ project: 'demo', slug: 'auth', title: 'Auth' });
+    assert.equal('plan' in plain, false); // response shape unchanged for existing callers
+    writeBoardPlan('demo', 'p.md', 'x');
+    const set = await board.createEpic({ project: 'demo', slug: 'auth', title: 'Auth', plan: 'p.md' });
+    assert.equal(set.plan, 'board:p.md'); // normalised: a bare path gained board:
+    const cleared = await board.createEpic({ project: 'demo', slug: 'auth', title: 'Auth', plan: null });
+    assert.equal('plan' in cleared, true); // null was in the call, so it is reported
+    assert.equal(cleared.plan, null);
+  } finally { await cleanup(root); }
+});
+
+test('create_epic re-upsert preserves the epic\'s LOGBOOK (project AND cross epics)', async () => {
+  const root = await freshRoot();
+  useProjects(['demo', 'web', 'api']);
+  try {
+    await board.createEpic({ project: 'demo', slug: 'auth', title: 'Auth' });
+    await board.logProgress({ project: 'demo', epic: 'auth', entry: 'first card landed' });
+    await board.createEpic({ project: 'demo', slug: 'auth', title: 'Auth renamed', goal: 'g' });
+    const log = await board.readProgress({ project: 'demo', epic: 'auth' });
+    assert.equal(log.total, 1); // no caller can pass a logbook, so an upsert must never wipe it
+    assert.match(log.entries[0], /first card landed/);
+
+    await board.createEpic({ projects: ['web', 'api'], slug: 'plat', title: 'Plat' });
+    await board.logProgress({ epic: 'plat', entry: 'cross entry' });
+    await board.createEpic({ projects: ['web', 'api'], slug: 'plat', title: 'Plat renamed' });
+    assert.equal((await board.readProgress({ epic: 'plat' })).total, 1);
+  } finally { await cleanup(root); }
+});
+
+test('a project-scoped epic\'s board: link resolves under ITS project\'s plans/, not the board-level dir', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    // The file exists ONLY in the board-level dir: the pointer must NOT find it.
+    writeBoardLevelPlan('p.md', 'board-level copy');
+    const refused = await board.createEpic({ project: 'demo', slug: 'auth', title: 'A', plan: 'board:p.md' });
+    assert.equal(refused.code, 'PLAN_UNKNOWN');
+    // The same link resolves once the file is in the project's own plans/ dir.
+    const file = writeBoardPlan('demo', 'p.md', 'project-level copy');
+    assert.equal((await board.createEpic({ project: 'demo', slug: 'auth', title: 'A', plan: 'board:p.md' })).plan, 'board:p.md');
+    const re = await board.readEpic({ project: 'demo', slug: 'auth', includePlan: true });
+    assert.equal(re.plan_path, file);
+    assert.equal(re.plan_body, 'project-level copy');
+  } finally { await cleanup(root); }
+});
+
+test('a cross-project epic\'s plan lives in the BOARD-LEVEL plans/ dir, never a member\'s', async () => {
+  const root = await freshRoot();
+  useProjects(['web', 'api']);
+  const src = outsideSources();
+  try {
+    // Ingest: an absolute source is copied to <kanbanRoot>/plans/epic-<slug>.md.
+    const source = src.write('strategy.md', '# the cross strategy');
+    const c = await board.createEpic({ projects: ['web', 'api'], slug: 'plat', title: 'Plat', plan: source });
+    assert.equal(c.plan, 'board:epic-plat.md');
+    const dest = path.join(boardPlansDir(), 'epic-plat.md');
+    assert.equal(fs.readFileSync(dest, 'utf8'), '# the cross strategy');
+    // Not in either member's plans/ — no fallback to the first member, no double write.
+    for (const p of ['web', 'api']) {
+      assert.equal(fs.existsSync(path.join(plansDir(p), 'epic-plat.md')), false, `${p} must hold no copy`);
+    }
+    const re = await board.readEpic({ slug: 'plat', includePlan: true });
+    assert.equal(re.plan_path, dest);
+    assert.equal(re.plan_body, '# the cross strategy');
+
+    // A POINTER resolves against the same board-level base.
+    const other = writeBoardLevelPlan('other.md', 'X');
+    assert.equal((await board.createEpic({ projects: ['web', 'api'], slug: 'plat', title: 'Plat', plan: 'board:other.md' })).plan, 'board:other.md');
+    assert.equal((await board.readEpic({ slug: 'plat' })).plan_path, other);
+  } finally { src.cleanup(); await cleanup(root); }
+});
+
+// SLUG_RE admits a card-id-shaped slug, so `plans/<slug>.md` as the epic ingest
+// destination would silently overwrite that card's own plan file. The `epic-`
+// prefix (a card id can never start with it) is what keeps the two apart.
+test('an epic ingest cannot clobber a card\'s plan file when the slug looks like a card id', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  const src = outsideSources();
+  try {
+    const f = await board.fileTask({ project: 'demo', title: 't', plan: src.write('card.md', 'THE CARD PLAN') });
+    const cardDest = ingestDest('demo', f.id);
+    assert.equal(f.plan, `board:${f.id}.md`);
+    assert.equal(fs.readFileSync(cardDest, 'utf8'), 'THE CARD PLAN');
+
+    const c = await board.createEpic({
+      project: 'demo', slug: f.id, title: 'Colliding', plan: src.write('epic.md', 'THE EPIC PLAN'),
+    });
+    assert.equal(c.plan, `board:epic-${f.id}.md`);
+    assert.equal(fs.readFileSync(cardDest, 'utf8'), 'THE CARD PLAN'); // byte-identical, untouched
+    assert.equal(fs.readFileSync(path.join(plansDir('demo'), `epic-${f.id}.md`), 'utf8'), 'THE EPIC PLAN');
+    assert.equal((await board.readTask({ project: 'demo', id: f.id, includePlan: true })).plan_body, 'THE CARD PLAN');
+  } finally { src.cleanup(); await cleanup(root); }
+});
+
+test('repo: on a CROSS-project epic -> INVALID_STATE; the same link on a project-scoped epic resolves', async () => {
+  const root = await freshRoot();
+  useProjects(['web', 'api']);
+  try {
+    const r = await board.createEpic({ projects: ['web', 'api'], slug: 'plat', title: 'P', plan: 'repo:docs/x.md' });
+    assert.equal(r.code, 'INVALID_STATE');
+    assert.match(r.reason, /owning project/);
+    assert.equal((await board.readEpic({ slug: 'plat' })).code, 'EPIC_UNKNOWN'); // refused before any write
+
+    const file = writeRepoPlan('web', 'docs/x.md', '# merged plan');
+    const ok = await board.createEpic({ project: 'web', slug: 'local', title: 'L', plan: 'repo:docs/x.md' });
+    assert.equal(ok.plan, 'repo:docs/x.md');
+    assert.equal((await board.readEpic({ project: 'web', slug: 'local' })).plan_path, file);
+  } finally { await cleanup(root); }
+});
+
+test('a symlink out of the BOARD-LEVEL plans/ dir is not readable through a cross-project epic', async () => {
+  const root = await freshRoot();
+  useProjects(['web', 'api']);
+  try {
+    const secret = path.join(root, 'secret.txt');
+    fs.writeFileSync(secret, 'top secret');
+    fs.mkdirSync(boardPlansDir(), { recursive: true });
+    fs.symlinkSync(secret, path.join(boardPlansDir(), 'escape.md'));
+    // statSync follows the link; safePlanFile's realpath re-check catches it.
+    const r = await board.createEpic({ projects: ['web', 'api'], slug: 'plat', title: 'P', plan: 'board:escape.md' });
+    assert.equal(r.code, 'PLAN_UNKNOWN');
+  } finally { await cleanup(root); }
+});
+
+test('read_epic returns plan_path with AND without includePlan, and null when unlinked', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const file = writeBoardPlan('demo', 'p.md', 'the plan');
+    await board.createEpic({ project: 'demo', slug: 'auth', title: 'A', plan: 'p.md' });
+    const plain = await board.readEpic({ project: 'demo', slug: 'auth' });
+    assert.equal(plain.plan_path, file);          // returned OUTSIDE the includePlan branch
+    assert.equal(plain.plan_body, undefined);     // ...but no body without it
+    assert.equal('plan_missing' in plain, false);
+    const withBody = await board.readEpic({ project: 'demo', slug: 'auth', includePlan: true });
+    assert.equal(withBody.plan_path, file);
+    assert.equal(withBody.plan_body, 'the plan');
+
+    await board.createEpic({ project: 'demo', slug: 'bare', title: 'B' });
+    const bare = await board.readEpic({ project: 'demo', slug: 'bare', includePlan: true });
+    assert.equal(bare.epic.plan, null);
+    assert.equal(bare.plan_path, null);
+    assert.equal(bare.plan_body, null);
+    assert.equal(bare.plan_missing, false); // no link at all is not a MISSING file
+  } finally { await cleanup(root); }
+});
+
+test('read_epic includePlan: truncation flag, and a deleted plan file -> plan_missing, never a refusal', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const file = writeBoardPlan('demo', 'p.md', 'line one\nline two\n');
+    await board.createEpic({ project: 'demo', slug: 'auth', title: 'A', plan: 'p.md' });
+    let r = await board.readEpic({ project: 'demo', slug: 'auth', includePlan: true });
+    assert.equal(r.plan_body, 'line one\nline two\n');
+    assert.equal(r.plan_truncated, false);
+    assert.equal(r.plan_missing, false);
+
+    fs.rmSync(file); // e.g. the epic synced in from a peer that holds the file
+    r = await board.readEpic({ project: 'demo', slug: 'auth', includePlan: true });
+    assert.equal(r.ok, true); // a dead link is NEVER a refusal
+    assert.equal(r.plan_body, null);
+    assert.equal(r.plan_missing, true);
+    assert.equal(r.plan_path, file); // still resolved
+
+    writeBoardPlan('demo', 'big.md', 'x'.repeat(65536 + 100));
+    await board.createEpic({ project: 'demo', slug: 'auth', title: 'A', plan: 'big.md' });
+    r = await board.readEpic({ project: 'demo', slug: 'auth', includePlan: true });
+    assert.equal(r.plan_truncated, true);
+    assert.equal(r.plan_body.length, 65536); // the same cap read_task applies
+  } finally { await cleanup(root); }
+});
+
+test('read_epic logTail keeps only the last N logbook entries (0/1/2)', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    await board.createEpic({ project: 'demo', slug: 'auth', title: 'A' });
+    for (const e of ['one', 'two', 'three']) await board.logProgress({ project: 'demo', epic: 'auth', entry: e });
+    const full = (await board.readEpic({ project: 'demo', slug: 'auth' })).epic.logbook;
+    assert.equal(full.length, 3);
+    // logTail:0 must yield zero entries (the slice(-0) trap), as on read_task.
+    assert.equal((await board.readEpic({ project: 'demo', slug: 'auth', logTail: 0 })).epic.logbook.length, 0);
+    assert.deepEqual((await board.readEpic({ project: 'demo', slug: 'auth', logTail: 1 })).epic.logbook, full.slice(-1));
+    assert.deepEqual((await board.readEpic({ project: 'demo', slug: 'auth', logTail: 2 })).epic.logbook, full.slice(-2));
+  } finally { await cleanup(root); }
+});
+
+test('log_progress({epic}) appends a conductor-attributed line; read_progress({epic}) reads it back most-recent-first', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    await board.createEpic({ project: 'demo', slug: 'auth', title: 'A' });
+    assert.equal((await board.logProgress({ project: 'demo', epic: 'auth', entry: 'first card landed' })).ok, true);
+    // Even with a session id in hand, an epic entry is CONDUCTOR-attributed:
+    // an epic has no owner, so there is no worker to credit.
+    assert.equal((await board.logProgress({ project: 'demo', epic: 'auth', entry: 'resequenced', sessionId: 'worker-xyz' })).ok, true);
+
+    const log = await board.readProgress({ project: 'demo', epic: 'auth' });
+    assert.equal(log.total, 2);
+    assert.match(log.entries[0], /· conductor · resequenced$/);
+    assert.match(log.entries[1], /· conductor · first card landed$/);
+    assert.equal((await board.readProgress({ project: 'demo', epic: 'auth', limit: 1 })).entries.length, 1);
+    assert.equal((await board.readProgress({ project: 'demo', epic: 'auth', limit: 0 })).entries.length, 0);
+    // read_epic surfaces the same entries, in record (chronological) order.
+    const re = await board.readEpic({ project: 'demo', slug: 'auth' });
+    assert.match(re.epic.logbook[0], /first card landed/);
+    assert.match(re.epic.logbook[1], /resequenced/);
+    // An empty entry is refused, as on the card paths.
+    assert.equal((await board.logProgress({ project: 'demo', epic: 'auth', entry: '  ' })).code, 'INVALID_STATE');
+  } finally { await cleanup(root); }
+});
+
+// The decisive no-gate test: the two entries most worth having both happen when
+// no card under the epic is in-progress.
+test('logging to an epic with ZERO tasks succeeds — an epic has no lane, so there is no gate', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    await board.createEpic({ project: 'demo', slug: 'auth', title: 'A' });
+    assert.deepEqual((await board.listTasks({ project: 'demo', epic: 'auth' })).tasks, []);
+    assert.equal((await board.logProgress({ project: 'demo', epic: 'auth', entry: 'resequenced before any card starts' })).ok, true);
+
+    // ...and again once every card has LANDED (still nothing in-progress).
+    const { id } = await board.fileTask({ project: 'demo', title: 't', epic: 'auth' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w' });
+    await board.moveTask({ project: 'demo', id, to: 'done' });
+    assert.equal((await board.logProgress({ project: 'demo', epic: 'auth', entry: 'retrospective' })).ok, true);
+    assert.equal((await board.readProgress({ project: 'demo', epic: 'auth' })).total, 2);
+  } finally { await cleanup(root); }
+});
+
+test('log_progress / read_progress with BOTH id and epic -> INVALID_STATE', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    await board.createEpic({ project: 'demo', slug: 'auth', title: 'A' });
+    const { id } = await board.fileTask({ project: 'demo', title: 't', epic: 'auth' });
+    await board.moveTask({ project: 'demo', id, to: 'todo' });
+    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w' });
+
+    const l = await board.logProgress({ project: 'demo', id, epic: 'auth', entry: 'hi' });
+    assert.equal(l.code, 'INVALID_STATE');
+    assert.match(l.reason, /at most one/);
+    assert.equal((await board.readProgress({ project: 'demo', id, epic: 'auth' })).code, 'INVALID_STATE');
+    // Neither target was written.
+    assert.equal((await board.readProgress({ project: 'demo', epic: 'auth' })).total, 0);
+    assert.equal((await board.readProgress({ project: 'demo', id })).total, 3); // filed + 2 moves
+  } finally { await cleanup(root); }
+});
+
+test('log_progress / read_progress on an unknown epic -> EPIC_UNKNOWN (incl. a cross epic via a NON-member project)', async () => {
+  const root = await freshRoot();
+  useProjects(['web', 'api', 'infra']);
+  try {
+    await board.createEpic({ projects: ['web', 'api'], slug: 'plat', title: 'P' });
+    for (const [name, call] of [['log', (a) => board.logProgress({ ...a, entry: 'x' })], ['read', (a) => board.readProgress(a)]]) {
+      assert.equal((await call({ project: 'web', epic: 'ghost' })).code, 'EPIC_UNKNOWN', `${name}: unknown slug`);
+      assert.equal((await call({ epic: 'ghost' })).code, 'EPIC_UNKNOWN', `${name}: unknown slug, no project`);
+      // infra is not a member, so the cross epic is not its epic — same guard readEpic applies.
+      assert.equal((await call({ project: 'infra', epic: 'plat' })).code, 'EPIC_UNKNOWN', `${name}: non-member project`);
+      assert.equal((await call({ project: 'ghost-project', epic: 'plat' })).code, 'PROJECT_UNKNOWN', `${name}: unknown project`);
+    }
+    // ...while a member project resolves it.
+    assert.equal((await board.logProgress({ project: 'web', epic: 'plat', entry: 'ok' })).ok, true);
+    assert.equal((await board.readProgress({ project: 'web', epic: 'plat' })).total, 1);
+  } finally { await cleanup(root); }
+});
+
+test('epic logbook resolution precedence matches read_epic (project epic wins; a member falls through to cross)', async () => {
+  const root = await freshRoot();
+  useProjects(['demo', 'web', 'api']);
+  try {
+    // The SAME slug as a project epic in demo and a cross epic over web+api.
+    await board.createEpic({ project: 'demo', slug: 's', title: 'Project S' });
+    await board.createEpic({ projects: ['web', 'api'], slug: 's', title: 'Cross S' });
+
+    await board.logProgress({ project: 'demo', epic: 's', entry: 'to the project record' });
+    await board.logProgress({ project: 'web', epic: 's', entry: 'to the cross record' });
+    await board.logProgress({ epic: 's', entry: 'to the cross record by slug' });
+
+    const p = await board.readProgress({ project: 'demo', epic: 's' });
+    assert.equal(p.total, 1);
+    assert.match(p.entries[0], /to the project record/);
+
+    const x = await board.readProgress({ epic: 's' });
+    assert.equal(x.total, 2);
+    assert.match(x.entries[0], /by slug/);
+    assert.match(x.entries[1], /to the cross record$/);
+    // read_epic resolves each the same way.
+    assert.equal((await board.readEpic({ project: 'demo', slug: 's' })).epic.title, 'Project S');
+    assert.equal((await board.readEpic({ project: 'web', slug: 's' })).epic.title, 'Cross S');
+    assert.equal((await board.readEpic({ slug: 's' })).epic.title, 'Cross S');
+  } finally { await cleanup(root); }
+});
+
+// An edit that does not move `updated` is invisible to the LWW merge. Seeding a
+// fixed peer stamp on disk makes the assertion deterministic — no
+// same-millisecond race between two live timestamps.
+test('logging to an epic bumps its updated/node version stamp (project AND cross)', async () => {
+  const root = await freshRoot();
+  useProjects(['demo', 'web', 'api']);
+  try {
+    store.ensureProjectDirs('demo');
+    const stale = '2026-01-01T00:00:00.000Z';
+    store.writeEpic('demo', { slug: 'auth', title: 'A', goal: '', created: stale, updated: stale, node: 'peer-node' });
+    store.writeCrossEpic({ slug: 'plat', title: 'P', goal: '', projects: ['web', 'api'], created: stale, updated: stale, node: 'peer-node' });
+
+    assert.equal((await board.logProgress({ project: 'demo', epic: 'auth', entry: 'landed' })).ok, true);
+    assert.equal((await board.logProgress({ epic: 'plat', entry: 'landed' })).ok, true);
+
+    const dump = await board.exportBoard({ scope: 'all' });
+    const p = dump.projectEpics.demo.find((e) => e.slug === 'auth');
+    const x = dump.crossEpics.find((e) => e.slug === 'plat');
+    for (const [kind, e] of [['project', p], ['cross', x]]) {
+      assert.ok(e.updated > stale, `${kind} epic updated must move past the peer stamp (got ${e.updated})`);
+      assert.equal(e.node, localNodeId(), `${kind} epic node must become this machine's`);
+      assert.equal(e.logbook.length, 1); // ...and the entry really landed
+    }
+  } finally { await cleanup(root); }
+});
+
+test('create_epic with a malformed plan -> INVALID_STATE before any lock; nothing is written', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const r = await board.createEpic({ project: 'demo', slug: 'auth', title: 'A', plan: 'board:/abs/p.md' });
+    assert.equal(r.code, 'INVALID_STATE');
+    assert.match(r.reason, /relative/);
+    assert.equal((await board.readEpic({ project: 'demo', slug: 'auth' })).code, 'EPIC_UNKNOWN');
+    assert.equal(fs.existsSync(path.join(epicsDir('demo'), 'auth.md')), false);
+    // A grammatical pointer at a missing file refuses too, and still writes nothing.
+    assert.equal((await board.createEpic({ project: 'demo', slug: 'auth', title: 'A', plan: 'board:ghost.md' })).code, 'PLAN_UNKNOWN');
+    assert.equal((await board.readEpic({ project: 'demo', slug: 'auth' })).code, 'EPIC_UNKNOWN');
   } finally { await cleanup(root); }
 });

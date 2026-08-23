@@ -13,7 +13,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import { STATES, plansDir } from './paths.js';
+import { STATES } from './paths.js';
 import { resolvePlanLink, classifyPlanInput, planBaseDir, isContained } from './planLink.js';
 import { validateProject, listProjects } from './projects.js';
 import { withLock } from './mutex.js';
@@ -84,21 +84,23 @@ function safePlanFile(project, resolved) {
   }
 }
 
-// Ingest: copy an absolute source INTO the board as this card's plan file and
-// return the stored `board:<id>.md` link. Copy, never move — the source (a plan
-// wake's ~/.claude/plans/<slug>.md, typically) is never touched or modified. An
-// existing destination is overwritten: last write wins, no versioning, so
-// re-attaching a revised plan simply replaces the board's copy.
+// Ingest: copy an absolute source INTO the board as the owning record's plan
+// file and return the stored `board:<destName>` link. `destDir`/`destName` are
+// supplied by the caller (a card's plans/<id>.md, an epic's plans/epic-<slug>.md,
+// under that project's plans/ dir or the board-level one) — this function does
+// not know which kind of record it is serving. Copy, never move — the source (a
+// plan wake's ~/.claude/plans/<slug>.md, typically) is never touched or
+// modified. An existing destination is overwritten: last write wins, no
+// versioning, so re-attaching a revised plan simply replaces the board's copy.
 // -> {link} | a fail('PLAN_UNKNOWN', …)
-function ingestPlanFile(project, id, source) {
+function ingestPlanFile(destDir, destName, source) {
   let stat;
   try { stat = fs.statSync(source); } // follows symlinks
   catch (e) { return fail('PLAN_UNKNOWN', `cannot read plan file at ${source}: ${e.message}`); }
   if (!stat.isFile()) return fail('PLAN_UNKNOWN', `plan source is not a regular file: ${source}`);
 
-  const dir = plansDir(project);
-  const dest = path.join(dir, `${id}.md`);
-  const link = `board:${id}.md`;
+  const dest = path.join(destDir, destName);
+  const link = `board:${destName}`;
   // Self-copy guard — the only special case: re-attaching plans/<id>.md by
   // absolute path, or via a symlink to it, must be a no-op success. Compared by
   // REALPATH, not string, since only that catches the symlink form.
@@ -122,7 +124,7 @@ function ingestPlanFile(project, id, source) {
   try {
     // store.ensureProjectDirs creates plans/, but updateTask never calls it —
     // a project dir predating that function has none.
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(destDir, { recursive: true });
     fs.copyFileSync(source, dest);
   } catch (e) {
     return fail('PLAN_UNKNOWN', `could not copy plan file from ${source}: ${e.message}`);
@@ -131,14 +133,17 @@ function ingestPlanFile(project, id, source) {
 }
 
 // The single set-time validator for a caller-supplied plan value, shared by
-// update_task, file_task and the GUI's PATCH route. -> {link} | a fail().
-// A pointer (`board:`/`repo:`/bare relative) is stat-validated and NOTHING is
-// written; a bare absolute path is ingested (copied in). `id` names the
-// destination, so the copy always lands on the card's own plan file.
-function resolvePlanForSet(project, value, id) {
+// update_task, file_task, create_epic and the GUI's PATCH route. -> {link} | a
+// fail(). A pointer (`board:`/`repo:`/bare relative) is stat-validated and
+// NOTHING is written; a bare absolute path is ingested (copied in). `destName`
+// names the ingest destination, so the copy always lands on the owning record's
+// own plan file — `<id>.md` for a card, `epic-<slug>.md` for an epic. `project`
+// is null for a cross-project epic, which puts `board:` under the board-level
+// plans/ dir and refuses `repo:` (see src/planLink.js).
+function resolvePlanForSet(project, value, destName) {
   const c = classifyPlanInput(project, value);
   if (c.error) return fail(c.error.code, c.error.reason);
-  if (c.kind === 'ingest') return ingestPlanFile(project, id, c.source);
+  if (c.kind === 'ingest') return ingestPlanFile(planBaseDir(project, 'board'), destName, c.source);
   if (!safePlanFile(project, c)) {
     return fail('PLAN_UNKNOWN', `no plan file at ${c.link} (resolved to ${c.path})`);
   }
@@ -274,6 +279,27 @@ function readPlanBody(file) {
   }
 }
 
+// The plan-read half of every read path (read_task and read_epic), so the rule
+// has ONE implementation: `plan_path` is returned always — null when there is no
+// link or the stored link is ungrammatical (e.g. arrived by sync from a newer
+// peer) — and a missing/unreadable plan FILE is never a refusal, just
+// plan_body:null + plan_missing:true. plan_missing is false when the record
+// simply has no link. `project` is null for a cross-project epic.
+// -> {plan_path[, plan_body, plan_truncated, plan_missing]}
+function planFields(project, link, includePlan) {
+  const resolved = link ? resolvePlanLink(project, link) : null;
+  const ok = resolved && !resolved.error ? resolved : null;
+  const out = { plan_path: ok ? ok.path : null };
+  if (includePlan) {
+    const file = ok ? safePlanFile(project, ok) : null;
+    const read = file ? readPlanBody(file) : null;
+    out.plan_body = read ? read.body : null;
+    out.plan_truncated = read ? read.truncated : false;
+    out.plan_missing = link ? read === null : false;
+  }
+  return out;
+}
+
 // Legal state transitions. The forward path is the intended lifecycle; the extra
 // entries are corrective moves the conductor (the sole trusted mutator) may need.
 // triage is an inbox: its only exits are backlog OR todo (both first-class).
@@ -379,7 +405,7 @@ export async function fileTask({ project, title, goal, acceptance, epic, depends
     // nextId — so the next file_task gets this same id).
     let planLink = null;
     if (plan != null) {
-      const resolved = resolvePlanForSet(project, plan, id);
+      const resolved = resolvePlanForSet(project, plan, `${id}.md`);
       if (resolved.ok === false) return resolved;
       planLink = resolved.link;
     }
@@ -434,8 +460,36 @@ export async function deleteTask({ project, id } = {}) {
 //   scopes the lookup directly (fast path); if omitted, every project is scanned for
 //   the owned card. If a session owns MORE THAN ONE in-progress card, resolve to the
 //   most recently modified one, across projects when scanning.
+// - `epic` given (conductor path): logs to that EPIC's logbook instead of a card's.
+//   There is deliberately NO lane gate — an epic has no state and no owner, and the
+//   two entries most worth having (a resequencing decision before any card starts, a
+//   retrospective after the last one lands) both happen with no in-progress card. So
+//   EPIC_UNKNOWN is the only refusal on this path. Mutually exclusive with `id`.
 // (see .wiki/gotchas/owner-from-caller-sessionid.md)
-export async function logProgress({ project, id, entry, sessionId } = {}) {
+export async function logProgress({ project, id, epic, entry, sessionId } = {}) {
+  if (epic !== undefined) {
+    if (id !== undefined) return fail('INVALID_STATE', 'give at most one of id or epic');
+    if (project !== undefined) {
+      const bad = await requireProject(project);
+      if (bad) return bad;
+    }
+    if (typeof entry !== 'string' || !entry.trim()) {
+      return fail('INVALID_STATE', 'entry is required and must be a non-empty string');
+    }
+    const t = resolveEpic(project, epic);
+    if (!t) return fail('EPIC_UNKNOWN', `unknown epic: ${epic}`);
+    return withLock(epicLockKey(t), () => {
+      // Re-read under the lock — the resolve above ran unlocked.
+      const fresh = rereadEpic(t);
+      if (!fresh) return fail('EPIC_UNKNOWN', `unknown epic: ${epic}`);
+      fresh.epic.logbook.push(logLine(nowIso(), null, entry.trim())); // conductor attribution
+      // touch() is load-bearing: an edit that does not move `updated` is
+      // invisible to the LWW merge.
+      writeResolvedEpic({ ...fresh, epic: touch(fresh.epic) });
+      return { ok: true };
+    });
+  }
+
   if (id !== undefined) {
     if (project === undefined) {
       return fail('INVALID_STATE', 'project is required when id is given (ids are per-project)');
@@ -513,27 +567,36 @@ export async function readTask({ project, id, logTail, includePlan } = {}) {
     task.logbook = task.logbook.slice(Math.max(0, task.logbook.length - logTail));
   }
   delete task._mtimeMs;
-  const resolved = task.plan ? resolvePlanLink(project, task.plan) : null;
-  const ok = resolved && !resolved.error ? resolved : null;
-  const out = { ok: true, task: stripHidden(task), plan_path: ok ? ok.path : null };
-  if (includePlan) {
-    const file = ok ? safePlanFile(project, ok) : null;
-    const read = file ? readPlanBody(file) : null;
-    out.plan_body = read ? read.body : null;
-    out.plan_truncated = read ? read.truncated : false;
-    out.plan_missing = task.plan ? read === null : false;
-  }
-  return out;
+  const plan = task.plan;
+  return { ok: true, task: stripHidden(task), ...planFields(project, plan, includePlan) };
 }
 
-export async function readProgress({ project, id, limit } = {}) {
+// `epic` reads that epic's logbook instead of a card's — same envelope, so every
+// consumer (incl. src/mcp.js's progressEntries) reads one shape.
+export async function readProgress({ project, id, epic, limit } = {}) {
+  if (epic !== undefined) {
+    if (id !== undefined) return fail('INVALID_STATE', 'give at most one of id or epic');
+    if (project !== undefined) {
+      const bad = await requireProject(project);
+      if (bad) return bad;
+    }
+    const t = resolveEpic(project, epic);
+    if (!t) return fail('EPIC_UNKNOWN', `unknown epic: ${epic}`);
+    return tail(t.epic.logbook ?? [], limit);
+  }
   const bad = await requireProject(project);
   if (bad) return bad;
   const task = store.readTaskById(project, id);
   if (!task) return fail('TASK_UNKNOWN', `unknown task: ${id}`);
-  const recent = [...task.logbook].reverse(); // most-recent first
+  return tail(task.logbook, limit);
+}
+
+// A logbook, most-recent first, optionally capped. One implementation for the
+// card and epic paths so their envelopes cannot drift.
+function tail(logbook, limit) {
+  const recent = [...logbook].reverse();
   const entries = Number.isFinite(limit) && limit >= 0 ? recent.slice(0, limit) : recent;
-  return { ok: true, entries, total: task.logbook.length };
+  return { ok: true, entries, total: logbook.length };
 }
 
 // ---- conductor: mutations ----
@@ -604,7 +667,7 @@ export async function updateTask({ project, id, fields } = {}) {
     if ('plan' in fields) {
       if (fields.plan === null) planNext = null;
       else {
-        const resolved = resolvePlanForSet(project, fields.plan, id);
+        const resolved = resolvePlanForSet(project, fields.plan, `${id}.md`);
         if (resolved.ok === false) return resolved;
         planNext = resolved.link; // the NORMALISED link (a bare path gains board:, an absolute path is ingested)
       }
@@ -675,7 +738,66 @@ function epicVisibleIn(project, slug) {
   return !!x && x.projects.includes(project);
 }
 
-export async function createEpic({ project, projects, slug, title, goal } = {}) {
+// The ONE epic resolver: readEpic, logProgress and readProgress all route
+// through it, so the three can never disagree about which record a
+// (project, slug) pair names. A project-scoped epic wins when `project` is
+// given (the EPIC_CONFLICT guard makes that unambiguous), else a cross-project
+// epic covering it; with no `project`, a cross epic by slug alone. A cross epic
+// addressed with a NON-member project is not that project's epic.
+// -> {kind:'project', project, epic} | {kind:'cross', epic} | null
+function resolveEpic(project, slug) {
+  if (project !== undefined) {
+    const e = store.readEpic(project, slug);
+    if (e) return { kind: 'project', project, epic: e };
+  }
+  const x = store.readCrossEpic(slug);
+  if (!x || (project !== undefined && !x.projects.includes(project))) return null;
+  return { kind: 'cross', epic: x };
+}
+
+// A cross epic's writes serialize on CROSS_LOCK, a project epic's on its own
+// project mutex — the same single-writer mechanism keyed on the owning domain.
+function epicLockKey(t) { return t.kind === 'cross' ? CROSS_LOCK : t.project; }
+
+// The `project` a resolved epic's plan link resolves against — null for a cross
+// epic, which has no owning project (its `board:` base is board-level).
+function epicPlanScope(t) { return t.kind === 'cross' ? null : t.project; }
+
+// Re-read a resolved epic's record, KEEPING the resolved kind — so a mutator
+// re-reading under its lock stays on the record whose lock it took.
+function rereadEpic(t) {
+  const e = t.kind === 'cross'
+    ? store.readCrossEpic(t.epic.slug)
+    : store.readEpic(t.project, t.epic.slug);
+  return e ? { ...t, epic: e } : null;
+}
+
+function writeResolvedEpic(t) {
+  if (t.kind === 'cross') store.writeCrossEpic(t.epic);
+  else store.writeEpic(t.project, t.epic);
+}
+
+// Preserve-on-omit for an epic's `goal`: an OMITTED key keeps the stored value,
+// an explicit '' or null clears it. Tested with `!== undefined`, NEVER with
+// `'goal' in args`: src/routes.js destructures the request body and passes an
+// object literal, so the key is always present holding `undefined` — an `in`
+// test would make every GUI epic re-post silently clobber the goal.
+function preservedGoal(goal, existing) {
+  return goal !== undefined ? (goal ?? '') : (existing?.goal ?? '');
+}
+
+// Same upsert semantics for an epic's `plan` — omitted preserves, null clears,
+// anything else validates + sets through the one shared validator. An ingest
+// lands on `plans/epic-<slug>.md`: the `epic-` prefix is load-bearing, since
+// SLUG_RE admits a card-id-shaped slug (`2026-0001`) and an unprefixed name
+// would overwrite that card's own plan file. -> {link} | a fail().
+function resolveEpicPlanForSet(scope, slug, plan, existing) {
+  if (plan === undefined) return { link: existing?.plan ?? null };
+  if (plan === null) return { link: null };
+  return resolvePlanForSet(scope, plan, `epic-${slug}.md`);
+}
+
+export async function createEpic({ project, projects, slug, title, goal, plan } = {}) {
   if (typeof slug !== 'string' || !SLUG_RE.test(slug)) {
     return fail('INVALID_STATE', 'slug must match ^[a-z0-9._-]+$');
   }
@@ -686,12 +808,18 @@ export async function createEpic({ project, projects, slug, title, goal } = {}) 
   if (isCross === (project !== undefined)) {
     return fail('INVALID_STATE', 'give exactly one of project (project-scoped) or projects (cross-project)');
   }
+  // Grammar-only pre-check before any lock, mirroring fileTask: a malformed plan
+  // value writes nothing. The value is RESOLVED (stat/copy) inside the lock.
+  if (plan !== undefined && plan !== null) {
+    const c = classifyPlanInput(isCross ? null : project, plan);
+    if (c.error) return fail(c.error.code, c.error.reason);
+  }
   return isCross
-    ? createCrossEpic({ projects, slug, title, goal })
-    : createProjectEpic({ project, slug, title, goal });
+    ? createCrossEpic({ projects, slug, title, goal, plan })
+    : createProjectEpic({ project, slug, title, goal, plan });
 }
 
-async function createProjectEpic({ project, slug, title, goal }) {
+async function createProjectEpic({ project, slug, title, goal, plan }) {
   const bad = await requireProject(project);
   if (bad) return bad;
   return withLock(project, () => {
@@ -701,18 +829,26 @@ async function createProjectEpic({ project, slug, title, goal }) {
       return fail('EPIC_CONFLICT', `slug ${slug} is a cross-project epic covering ${project}`);
     }
     store.ensureProjectDirs(project);
-    // Upsert: create, or refresh title/goal of an existing epic (idempotent).
+    // Upsert: create, or refresh an existing epic (idempotent). `title` always
+    // overwrites; every OPTIONAL field a caller omits is PRESERVED — including
+    // the logbook, which no caller can pass and an upsert must never wipe.
     const existing = store.readEpic(project, slug);
+    const resolved = resolveEpicPlanForSet(project, slug, plan, existing);
+    if (resolved.ok === false) return resolved;
     store.writeEpic(project, {
-      slug, title: title.trim(), goal: goal ?? '',
+      slug, title: title.trim(), goal: preservedGoal(goal, existing),
+      plan: resolved.link, logbook: existing?.logbook ?? [],
       created: existing?.created ?? nowIso(),
       updated: nowIso(), node: localNodeId(), // sync version stamp (see writeEpic)
     });
-    return { ok: true };
+    // Report the stored link (an ingest's destination is `board:epic-<slug>.md`,
+    // which the caller would otherwise have to infer) only when `plan` was in
+    // the call, so no existing response shape changes.
+    return plan !== undefined ? { ok: true, plan: resolved.link } : { ok: true };
   });
 }
 
-async function createCrossEpic({ projects, slug, title, goal }) {
+async function createCrossEpic({ projects, slug, title, goal, plan }) {
   if (!Array.isArray(projects)) return fail('INVALID_STATE', 'projects must be an array');
   const members = [...new Set(projects)];
   if (members.length < 2) {
@@ -728,12 +864,17 @@ async function createCrossEpic({ projects, slug, title, goal }) {
       return fail('EPIC_CONFLICT', `slug ${slug} is a per-project epic in ${clash}`);
     }
     const existing = store.readCrossEpic(slug);
+    // scope null: a cross epic has no owning project, so its plan resolves
+    // under the BOARD-LEVEL plans/ dir (and `repo:` is refused).
+    const resolved = resolveEpicPlanForSet(null, slug, plan, existing);
+    if (resolved.ok === false) return resolved;
     store.writeCrossEpic({
-      slug, title: title.trim(), goal: goal ?? '', projects: members,
+      slug, title: title.trim(), goal: preservedGoal(goal, existing), projects: members,
+      plan: resolved.link, logbook: existing?.logbook ?? [],
       created: existing?.created ?? nowIso(),
       updated: nowIso(), node: localNodeId(), // sync version stamp (see writeEpic)
     });
-    return { ok: true };
+    return plan !== undefined ? { ok: true, plan: resolved.link } : { ok: true };
   });
 }
 
@@ -1191,30 +1332,33 @@ export async function listEpics({ project } = {}) {
   return { ok: true, epics };
 }
 
-export async function readEpic({ project, slug } = {}) {
+// Envelope: {ok, epic, plan_path[, plan_body, plan_truncated, plan_missing], tasks}.
+// Like read_task, the plan fields sit TOP-LEVEL and `epic` mirrors the record
+// (minus the hidden updated/node stamp — the response is a field whitelist).
+export async function readEpic({ project, slug, logTail, includePlan } = {}) {
   if (project !== undefined) {
     const bad = await requireProject(project);
     if (bad) return bad;
-    // Project-scoped epic wins (the conflict guard makes this unambiguous).
-    const e = store.readEpic(project, slug);
-    if (e) {
-      const tasks = sortTasks(store.listTasks(project).filter((t) => t.epic === slug)).map(summary);
-      return { ok: true, epic: { slug, title: e.title, goal: e.goal, rollup: rollup(project, slug) }, tasks };
-    }
   }
-  // Cross-project epic: by slug when no project is given, or the fall-through
-  // when the given project is one of its members (else it is not this project's
-  // epic → EPIC_UNKNOWN).
-  const x = store.readCrossEpic(slug);
-  if (!x || (project !== undefined && !x.projects.includes(project))) {
-    return fail('EPIC_UNKNOWN', `unknown epic: ${slug}`);
-  }
+  const t = resolveEpic(project, slug);
+  if (!t) return fail('EPIC_UNKNOWN', `unknown epic: ${slug}`);
+  const e = t.epic;
+  const isCross = t.kind === 'cross';
+  const members = isCross ? e.projects : [t.project];
   const tasks = sortTasks(
-    x.projects.flatMap((p) => store.listTasks(p).filter((t) => t.epic === slug)),
+    members.flatMap((p) => store.listTasks(p).filter((x) => x.epic === slug)),
   ).map(summary);
-  return {
-    ok: true,
-    epic: { slug, title: x.title, goal: x.goal, rollup: crossRollup(slug, x.projects), projects: x.projects },
-    tasks,
+  let logbook = e.logbook ?? [];
+  if (Number.isFinite(logTail) && logTail >= 0) {
+    // slice(-0) === slice(0) returns everything, so compute the start index
+    // explicitly — logTail:0 must yield 0 entries (same trap as readTask).
+    logbook = logbook.slice(Math.max(0, logbook.length - logTail));
+  }
+  const epic = {
+    slug, title: e.title, goal: e.goal, plan: e.plan ?? null,
+    rollup: isCross ? crossRollup(slug, e.projects) : rollup(t.project, slug),
+    ...(isCross ? { projects: e.projects } : {}),
+    logbook,
   };
+  return { ok: true, epic, ...planFields(epicPlanScope(t), e.plan, includePlan), tasks };
 }

@@ -49,6 +49,13 @@ export function projectRepoDir(project) {
   return path.join(projectsRoot(), project);
 }
 
+// Base dir for a `board:` plan link with NO owning project — a cross-project
+// epic's. A sibling of crossEpicsDir() for the same reason: the record it
+// belongs to lives above `projects/` because no single project owns it.
+export function boardPlansDir() {
+  return path.join(kanbanRoot(), 'plans');
+}
+
 // Cross-project epics live ABOVE the per-project layout: one <slug>.md per epic,
 // each naming its member projects in frontmatter. A per-project epic and a
 // cross-project epic never share a slug in the same project (board.js guards it).

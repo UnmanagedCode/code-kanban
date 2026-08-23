@@ -57,6 +57,27 @@ Everything else on that feature must die — notably: drop the `mkdirSync`; `ren
 exists; ingest a `board:`/`repo:` pointer; treat a bare relative path as an ingest; set `task.plan`
 before the source is validated; write the card before the copy in `fileTask`.
 
+The epic-level plan link + logbook (2026-0025) extends that list. `planFields`,
+`resolvePlanForSet` and `ingestPlanFile` now each serve **two** call sites (card and epic), so
+mutate **at each call site**, not only inside the shared helper — a per-call-site gap otherwise
+hides behind a helper that looks covered. Named mutants that must die:
+
+| mutant | killed by |
+| --- | --- |
+| drop `create_epic`'s preserve-on-omit branch (`goal ?? ''` unconditionally) | `create_epic re-upsert preserves an OMITTED goal…` + both route tests |
+| test presence with `'goal' in args` instead of `goal !== undefined` | **only** `POST an epic twice without a goal PRESERVES it` and the cross-epic route test — `src/routes.js` is the sole caller that passes the key holding `undefined`, so no `tests/board.test.mjs` test can reach it |
+| preserve `goal` but not `plan`, or drop `logbook` from the upsert write | `…preserves an OMITTED plan…` / `…preserves the epic's LOGBOOK…` |
+| always echo `plan` in `create_epic`'s result | `create_epic reports the stored plan link ONLY when plan was in the call` |
+| name the epic ingest destination `<slug>.md` | `an epic ingest cannot clobber a card's plan file when the slug looks like a card id` |
+| resolve a null project to some default project dir (or a member's) | `a cross-project epic's plan lives in the BOARD-LEVEL plans/ dir, never a member's`, the `planLink` base test, `repo: on a CROSS-project epic…` |
+| resolve a **project-scoped** epic against the board-level dir | `a project-scoped epic's board: link resolves under ITS project's plans/…` |
+| compute `plan_path` inside the `includePlan` branch | `read_epic returns plan_path with AND without includePlan…` **and** the card-side `update_task sets a board: plan link…` — each path pins it independently |
+| reintroduce a lane gate on the epic log path | `logging to an epic with ZERO tasks succeeds…` |
+| drop the `touch()` on the epic log write | `logging to an epic bumps its updated/node version stamp…` |
+| serialize `plan`/`logbook` without parsing them back | **only** `exportBoard's identity backfill does not destroy a legacy epic's plan link and logbook` — the backfill read-then-rewrite is the sole path that exposes it |
+| reorder `read_epic`'s extractors, or leave `logbook` in `meta` | `read_epic emits goal, logbook and plan_body as three ORDERED text blocks` |
+| drop the `id`/`epic` mutual exclusion; always prefer the cross epic | `…with BOTH id and epic -> INVALID_STATE` / `epic logbook resolution precedence matches read_epic` |
+
 ## `--jobs` and parallel copy runs
 
 `--jobs N` in `copy` mode is safe for this project. Verified 2026-08-10 as part of

@@ -251,6 +251,26 @@ test('epics: create (upsert) -> list -> read with rollup', async () => {
   });
 });
 
+// The route is the ONE caller that reaches board.createEpic through a
+// DESTRUCTURE — `const { slug, title, goal } = req.body ?? {}` always passes the
+// `goal` key, holding `undefined`, when the body omits it. So this is the only
+// path on which testing presence with `'goal' in args` instead of
+// `goal !== undefined` is observable: every GUI epic re-post would clobber the
+// goal to empty. Not reachable from tests/board.test.mjs.
+test('POST an epic twice without a goal PRESERVES it (a destructured undefined is not a set)', async () => {
+  await withServer(async ({ json }) => {
+    await json('/api/board/demo/epics', { method: 'POST', body: { slug: 'auth', title: 'Auth', goal: 'the original goal' } });
+    const re = await json('/api/board/demo/epics', { method: 'POST', body: { slug: 'auth', title: 'Auth v2' } });
+    assert.equal(re.body.ok, true);
+    const read = (await json('/api/board/demo/epics/auth')).body;
+    assert.equal(read.epic.goal, 'the original goal');
+    assert.equal(read.epic.title, 'Auth v2'); // title still overwrites
+    // An explicit '' through the same route still clears.
+    await json('/api/board/demo/epics', { method: 'POST', body: { slug: 'auth', title: 'Auth v3', goal: '' } });
+    assert.equal((await json('/api/board/demo/epics/auth')).body.epic.goal, '');
+  });
+});
+
 test('cross-project epics: POST /api/epics -> GET /api/epics/:slug -> appears in member list', async () => {
   const root = await freshRoot();
   useProjects(['web', 'api']);
@@ -259,6 +279,13 @@ test('cross-project epics: POST /api/epics -> GET /api/epics/:slug -> appears in
     const created = await srv.json('/api/epics', { method: 'POST', body: { slug: 'platform', title: 'Platform', goal: 'shared', projects: ['web', 'api'] } });
     assert.equal(created.status, 200);
     assert.equal(created.body.ok, true);
+
+    // POST /api/epics destructures too, so it is a second call site of the
+    // preserve-on-omit rule: re-posting without a goal must not empty it.
+    await srv.json('/api/epics', { method: 'POST', body: { slug: 'platform', title: 'Platform v2', projects: ['web', 'api'] } });
+    const preserved = (await srv.json('/api/epics/platform')).body.epic;
+    assert.equal(preserved.goal, 'shared');
+    assert.equal(preserved.title, 'Platform v2');
 
     // File under it in both members.
     await srv.json('/api/board/web/tasks', { method: 'POST', body: { title: 'w', epic: 'platform' } });

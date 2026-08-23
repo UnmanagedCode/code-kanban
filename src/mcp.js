@@ -10,7 +10,7 @@ import { STATES } from './paths.js';
 // {error}. Owner-scoped tools receive the caller's server-resolved sessionId.
 const handlers = {
   file_task:   (a, sid) => board.fileTask({ ...a, sessionId: sid }),
-  log_progress: (a, sid) => board.logProgress({ project: a.project, id: a.id, entry: a.entry, sessionId: sid }),
+  log_progress: (a, sid) => board.logProgress({ project: a.project, id: a.id, epic: a.epic, entry: a.entry, sessionId: sid }),
   list_tasks:  (a) => board.listTasks(a),
   read_task:   (a) => board.readTask(a),
   read_progress: (a) => board.readProgress(a),
@@ -52,7 +52,7 @@ const handlers = {
 const RAW_TEXT = {
   read_task: [cardBody, promote('plan_body')],
   read_progress: [progressEntries],
-  read_epic: [epicGoal],
+  read_epic: [epicGoal, epicLogbook, promote('plan_body')],
   list_tasks: [taskListing],
   list_epics: [epicListing],
 };
@@ -86,11 +86,23 @@ function progressEntries(result, meta) {
   return entries.map((e) => `- ${e}`).join('\n');
 }
 
+// Both prose halves of an epic leave the JSON block here, in the first
+// extractor: `meta.epic` keeps only what a caller branches on (slug, title,
+// `plan` — the link, not the text — and the rollup). Extractors read the
+// untouched `result` and mutate only `meta`, so epicLogbook below still sees
+// its entries.
 function epicGoal(result, meta) {
   if (!result.epic) return null;
-  const { goal, ...rest } = result.epic;
+  const { goal, logbook, ...rest } = result.epic;
   meta.epic = rest;
   return goal ?? '';
+}
+
+// Same `- ` bullet rendering as progressEntries and the card body's ## Logbook,
+// so one reading habit serves every logbook a conductor sees.
+function epicLogbook(result) {
+  const entries = result.epic?.logbook ?? [];
+  return entries.map((e) => `- ${e}`).join('\n');
 }
 
 // `state` reaches board.listTasks verbatim, so board.js stays the one
