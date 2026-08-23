@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { freshRoot, cleanup } from './_helpers.mjs';
 import * as store from '../src/store.js';
-import { stateDir, plansDir } from '../src/paths.js';
+import { stateDir, plansDir, epicsDir, crossEpicsDir } from '../src/paths.js';
 
 function baseTask(id) {
   return {
@@ -103,6 +103,62 @@ test('atomicWrite leaves no .tmp- residue', async () => {
     store.writeTask('demo', 'triage', baseTask('2026-0001'));
     const names = fs.readdirSync(stateDir('demo', 'triage'));
     assert.equal(names.some((n) => n.includes('.tmp-')), false);
+  } finally { await cleanup(root); }
+});
+
+// Characterization pins for the two epic codec PAIRS, written before the
+// serializer/parser halves were factored out of writeEpic/readEpic and
+// writeCrossEpic/readCrossEpic. They fix the pre-extraction behaviour of every
+// field an epic file carries — including the `updated`/`node` sync stamp and its
+// emitted-only-when-set rule — so the extraction is provably behaviour-neutral.
+test('writeEpic/readEpic round-trips every field a project epic carries', async () => {
+  const root = await freshRoot();
+  try {
+    store.ensureProjectDirs('demo');
+    store.writeEpic('demo', {
+      slug: 'auth', title: 'Auth: v2', goal: 'Sign-in\nover two lines.',
+      created: '2026-07-22T00:00:00.000Z', updated: '2026-07-23T00:00:00.000Z', node: 'node-a',
+    });
+    assert.equal(store.epicExists('demo', 'auth'), true);
+    const e = store.readEpic('demo', 'auth');
+    assert.equal(e.slug, 'auth');
+    assert.equal(e.title, 'Auth: v2'); // the value keeps its own colon
+    assert.equal(e.project, 'demo');
+    assert.match(e.goal, /over two lines/);
+    assert.equal(e.created, '2026-07-22T00:00:00.000Z');
+    assert.equal(e.updated, '2026-07-23T00:00:00.000Z');
+    assert.equal(e.node, 'node-a');
+    assert.deepEqual(store.listEpicSlugs('demo'), ['auth']);
+    assert.equal(store.readEpic('demo', 'ghost'), null);
+  } finally { await cleanup(root); }
+});
+
+test('both epic codecs round-trip the version stamp, and omit it entirely when unset', async () => {
+  const root = await freshRoot();
+  try {
+    store.ensureProjectDirs('demo');
+    store.writeCrossEpic({
+      slug: 'platform', title: 'Platform', goal: '', projects: ['web', 'api'],
+      created: '2026-07-22T00:00:00.000Z', updated: '2026-07-23T00:00:00.000Z', node: 'node-b',
+    });
+    const x = store.readCrossEpic('platform');
+    assert.equal(x.updated, '2026-07-23T00:00:00.000Z');
+    assert.equal(x.node, 'node-b');
+
+    // A legacy epic (no stamp): the keys are absent from the FILE, and read back
+    // as null — that absence is what sync's ensureEpicIdentity backfill detects.
+    store.writeEpic('demo', { slug: 'legacy', title: 'Legacy', goal: 'g', created: '2026-01-01T00:00:00.000Z' });
+    store.writeCrossEpic({ slug: 'xlegacy', title: 'XLegacy', goal: 'g', projects: ['web', 'api'], created: '2026-01-01T00:00:00.000Z' });
+    const pRaw = fs.readFileSync(path.join(epicsDir('demo'), 'legacy.md'), 'utf8');
+    const xRaw = fs.readFileSync(path.join(crossEpicsDir(), 'xlegacy.md'), 'utf8');
+    for (const raw of [pRaw, xRaw]) {
+      assert.equal(/^updated:/m.test(raw), false, raw);
+      assert.equal(/^node:/m.test(raw), false, raw);
+    }
+    assert.equal(store.readEpic('demo', 'legacy').updated, null);
+    assert.equal(store.readEpic('demo', 'legacy').node, null);
+    assert.equal(store.readCrossEpic('xlegacy').updated, null);
+    assert.equal(store.readCrossEpic('xlegacy').node, null);
   } finally { await cleanup(root); }
 });
 
