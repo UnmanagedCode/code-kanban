@@ -126,3 +126,58 @@ test('file_task advertises the priority enum from src/priority.js, with NO defau
   assert.match(prop.description, /unset/i);
   assert.equal(/default(s|ing)? to|omit(ting)? .{0,20}(for|means) MEDIUM/i.test(prop.description), false, prop.description);
 });
+
+// 2026-0025: the epic-level plan link and logbook. The tool schemas are the
+// conductor's ONLY channel for these forms, so pin the advertised surface
+// against the implemented one — same discipline as the file_task.plan test.
+test('create_epic advertises an optional string `plan` covering the absolute form and the epic- destination', () => {
+  const createEpic = manifest.mcp.tools.find((t) => t.name === 'create_epic');
+  const prop = createEpic.inputSchema.properties.plan;
+  assert.ok(prop, 'create_epic advertises a plan param');
+  assert.equal(prop.type, 'string');
+  assert.equal(createEpic.inputSchema.required.includes('plan'), false, 'plan must not be required');
+  assert.match(prop.description, /absolute/i);
+  assert.match(prop.description, /board:/);
+  assert.match(prop.description, /epic-/); // the ingest destination a caller cannot guess
+  assert.match(prop.description, /BOARD-LEVEL/); // the cross-project epic's base
+  assert.match(prop.description, /repo:.*refused|refused.*repo:/s);
+});
+
+// D1 (preserve-on-omit) is a semantic change to an existing tool: a caller that
+// does not know it will keep re-sending fields to avoid a clobber, or clobber by
+// omission. Nothing else tells them.
+test('create_epic\'s description states preserve-on-omit and how to clear', () => {
+  const desc = manifest.mcp.tools.find((t) => t.name === 'create_epic').description;
+  assert.match(desc, /preserv/i);
+  assert.match(desc, /`goal: ''`|`plan: null`/);
+  assert.match(manifest.mcp.tools.find((t) => t.name === 'create_epic').inputSchema.properties.goal.description, /omit/i);
+});
+
+test('read_epic advertises logTail + includePlan, and says plan_path is always returned', () => {
+  const readEpic = manifest.mcp.tools.find((t) => t.name === 'read_epic');
+  assert.equal(readEpic.inputSchema.properties.logTail.type, 'integer');
+  const includePlan = readEpic.inputSchema.properties.includePlan;
+  assert.equal(includePlan.type, 'boolean');
+  assert.equal(includePlan.default, false);
+  assert.equal(readEpic.inputSchema.required.includes('includePlan'), false);
+  assert.match(readEpic.description, /plan_path always/);
+  assert.match(readEpic.description, /logbook/);
+});
+
+test('log_progress and read_progress advertise an `epic` param; read_progress no longer requires id', () => {
+  const logProgress = manifest.mcp.tools.find((t) => t.name === 'log_progress');
+  const readProgress = manifest.mcp.tools.find((t) => t.name === 'read_progress');
+  for (const tool of [logProgress, readProgress]) {
+    const prop = tool.inputSchema.properties.epic;
+    assert.ok(prop, `${tool.name} advertises an epic param`);
+    assert.equal(prop.type, 'string');
+    assert.match(prop.description, /Mutually exclusive with `id`/);
+  }
+  assert.match(logProgress.inputSchema.properties.epic.description, /[Cc]onductor-only/);
+  assert.match(logProgress.inputSchema.properties.epic.description, /[Nn]o lane gate/);
+  assert.match(logProgress.inputSchema.properties.project.description, /epic/);
+  // A cross-project epic read supplies NEITHER project nor id, so the old
+  // required pair would make the advertised surface refuse a legal call.
+  assert.equal(readProgress.inputSchema.required, undefined);
+  assert.deepEqual(logProgress.inputSchema.required, ['entry']);
+});

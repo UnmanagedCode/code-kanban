@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
 import { freshRoot, cleanup } from './_helpers.mjs';
-import { plansDir } from '../src/paths.js';
+import { plansDir, epicsDir, crossEpicsDir } from '../src/paths.js';
 import * as board from '../src/board.js';
 import * as store from '../src/store.js';
 import * as taskfile from '../src/taskfile.js';
@@ -40,6 +41,7 @@ function serveFull({ projects = {}, projectEpics = {}, crossEpics = [] }) {
 function pEpic(o) {
   return {
     slug: o.slug, title: o.title ?? o.slug, goal: o.goal ?? '', project: o.project ?? 'alpha',
+    plan: o.plan ?? null, logbook: o.logbook ?? [],
     created: o.created ?? '2026-01-01T00:00:00.000Z',
     updated: o.updated ?? o.created ?? '2026-01-01T00:00:00.000Z',
     node: o.node ?? 'peer-node',
@@ -49,6 +51,7 @@ function xEpic(o) {
   return {
     slug: o.slug, title: o.title ?? o.slug, goal: o.goal ?? '',
     projects: o.projects ?? ['alpha', 'beta'],
+    plan: o.plan ?? null, logbook: o.logbook ?? [],
     created: o.created ?? '2026-01-01T00:00:00.000Z',
     updated: o.updated ?? o.created ?? '2026-01-01T00:00:00.000Z',
     node: o.node ?? 'peer-node',
@@ -681,5 +684,257 @@ test('an incoming legacy card outranks a local MEDIUM once mapped', async () => 
     assert.equal((await pull('project', 'alpha')).ok, true);
     const ids = (await board.listTasks({ project: 'alpha' })).tasks.map((t) => t.title);
     assert.deepEqual(ids, ['peer was 1', 'local']);
+  });
+});
+
+// ---- epic plan link + logbook across sync (2026-0025) -----------------
+//
+// Both new fields live INSIDE the epic record, so they ride export/pull as
+// ordinary frontmatter/body under whole-epic LWW. The hazard worth pinning is
+// the backfill, which READS THEN REWRITES any epic missing a version stamp.
+
+test('exportBoard\'s identity backfill does not destroy a legacy epic\'s plan link and logbook', async () => {
+  await withRoot(async () => {
+    store.ensureProjectDirs('alpha');
+    // Hand-written, as an older build + a newer peer's edit would leave it: NO
+    // updated/node (so the backfill rewrites the file) but WITH a plan link and
+    // two logbook entries. A serializer that emitted these without a parser
+    // reading them would silently erase both here.
+    fs.writeFileSync(path.join(epicsDir('alpha'), 'auth.md'), [
+      '---', 'slug: auth', 'title: Legacy', 'project: alpha', 'plan: board:epic-auth.md',
+      'created: 2026-01-01T00:00:00.000Z', '---',
+      '## Goal', 'the legacy goal', '',
+      '## Logbook',
+      '- 2026-01-01T00:00:00.000Z · conductor · one',
+      '- 2026-01-02T00:00:00.000Z · conductor · two',
+      '',
+    ].join('\n'));
+
+    // The SAME hazard on the cross-epic codec, whose backfill is a separate
+    // function (backfillCrossEpics) writing through a separate serializer call.
+    fs.mkdirSync(crossEpicsDir(), { recursive: true }); // no ensureProjectDirs covers the top-level dir
+    fs.writeFileSync(path.join(crossEpicsDir(), 'plat.md'), [
+      '---', 'slug: plat', 'title: XLegacy', 'projects: [alpha, beta]', 'plan: board:epic-plat.md',
+      'created: 2026-01-01T00:00:00.000Z', '---',
+      '## Goal', 'the legacy cross goal', '',
+      '## Logbook',
+      '- 2026-01-01T00:00:00.000Z · conductor · cross one',
+      '- 2026-01-02T00:00:00.000Z · conductor · cross two',
+      '',
+    ].join('\n'));
+
+    const dump = await board.exportBoard({ scope: 'all' });
+    assert.equal(dump.ok, true);
+    assert.equal(dump.projectEpics.alpha[0].updated, '2026-01-01T00:00:00.000Z'); // backfilled = created
+    assert.equal(dump.crossEpics[0].updated, '2026-01-01T00:00:00.000Z');
+
+    const e = store.readEpic('alpha', 'auth');
+    assert.equal(e.plan, 'board:epic-auth.md');
+    assert.deepEqual(e.logbook, [
+      '2026-01-01T00:00:00.000Z · conductor · one',
+      '2026-01-02T00:00:00.000Z · conductor · two',
+    ]);
+    assert.equal(e.goal, 'the legacy goal');
+
+    const x = store.readCrossEpic('plat');
+    assert.equal(x.plan, 'board:epic-plat.md');
+    assert.deepEqual(x.logbook, [
+      '2026-01-01T00:00:00.000Z · conductor · cross one',
+      '2026-01-02T00:00:00.000Z · conductor · cross two',
+    ]);
+    assert.equal(x.goal, 'the legacy cross goal');
+    assert.deepEqual(x.projects, ['alpha', 'beta']);
+  });
+});
+
+test('epic LWW carries the peer\'s plan link and logbook; the losing side\'s entries are DROPPED', async () => {
+  await withRoot(async () => {
+    seedProjectEpic('alpha', {
+      slug: 'auth', title: 'Local', updated: '2026-01-01T00:00:00.000Z',
+      logbook: ['2026-01-01T00:00:00.000Z · conductor · local only'],
+    });
+    serveFull({
+      projects: { alpha: [] },
+      projectEpics: {
+        alpha: [pEpic({
+          slug: 'auth', title: 'Peer', updated: '2026-02-01T00:00:00.000Z',
+          plan: 'board:epic-auth.md',
+          logbook: ['2026-02-01T00:00:00.000Z · conductor · peer one', '2026-02-02T00:00:00.000Z · conductor · peer two'],
+        })],
+      },
+    });
+    const r = await pull('project', 'alpha');
+    assert.equal(r.summary.epicsUpdated, 1);
+    const e = store.readEpic('alpha', 'auth');
+    assert.equal(e.title, 'Peer');
+    assert.equal(e.plan, 'board:epic-auth.md'); // the LINK ships (the body does not)
+    // Whole-epic LWW, exactly as for a card's logbook: the winner REPLACES,
+    // entries are not unioned, so the loser's line is gone. Accepted semantics.
+    assert.deepEqual(e.logbook, [
+      '2026-02-01T00:00:00.000Z · conductor · peer one',
+      '2026-02-02T00:00:00.000Z · conductor · peer two',
+    ]);
+  });
+});
+
+test('an older peer\'s epic (no plan/logbook keys at all) merges cleanly', async () => {
+  await withRoot(async () => {
+    const legacy = {
+      slug: 'auth', title: 'Peer', goal: 'g', project: 'alpha',
+      created: '2026-01-01T00:00:00.000Z', updated: '2026-02-01T00:00:00.000Z', node: 'peer-node',
+    };
+    assert.equal('logbook' in legacy, false); // the shape a pre-2026-0025 peer serves
+    assert.equal('plan' in legacy, false);
+    serveFull({ projects: { alpha: [] }, projectEpics: { alpha: [legacy] } });
+    const r = await pull('project', 'alpha');
+    assert.equal(r.summary.epicsAdded, 1);
+    const e = store.readEpic('alpha', 'auth');
+    assert.equal(e.plan, null);
+    assert.deepEqual(e.logbook, []);
+    assert.equal((await board.readEpic({ project: 'alpha', slug: 'auth' })).ok, true);
+  });
+});
+
+test('a cross epic\'s plan link and logbook survive a pull too', async () => {
+  await withRoot(async () => {
+    serveFull({
+      projects: {},
+      crossEpics: [xEpic({
+        slug: 'plat', projects: ['alpha', 'beta'], title: 'Platform',
+        plan: 'board:epic-plat.md',
+        logbook: ['2026-02-01T00:00:00.000Z · conductor · cross entry'],
+      })],
+    });
+    const r = await pull('all');
+    assert.equal(r.summary.epicsAdded, 1);
+    const x = store.readCrossEpic('plat');
+    assert.equal(x.plan, 'board:epic-plat.md');
+    assert.deepEqual(x.logbook, ['2026-02-01T00:00:00.000Z · conductor · cross entry']);
+    // The body was never in the dump, so the link is dead here — a degradation,
+    // never a refusal (same accepted gap as a card's plan).
+    const re = await board.readEpic({ slug: 'plat', includePlan: true });
+    assert.equal(re.ok, true);
+    assert.equal(re.plan_missing, true);
+  });
+});
+
+// A malformed epic BODY field from a peer must not reach the store — `goal`,
+// `plan` and `logbook` alike. The card path already normalises
+// (`Array.isArray(rc.logbook) ? … : []`); before the epic paths did the same,
+// `logbook: "GARBAGE"` made serializeEpicFile's .map() throw — and since the cross-epic merge runs BEFORE the per-project loop, that
+// rejected the ENTIRE syncPull, so well-formed cards never merged either.
+test('a peer serving a malformed epic goal/plan/logbook is normalised, not fatal — and cards still merge', async () => {
+  await withRoot(async () => {
+    board._setSyncFetcher(async () => ({
+      ok: true,
+      nodeId: 'peer-node',
+      projects: { alpha: [card({ id: '2026-0001', uid: 'u-P', title: 'GoodCard' })] },
+      projectEpics: {
+        alpha: [{
+          slug: 'auth', title: 'Peer', goal: 42, project: 'alpha',
+          plan: { not: 'a string' }, logbook: 'GARBAGE',
+          created: '2026-01-01T00:00:00.000Z', updated: '2026-02-01T00:00:00.000Z', node: 'peer-node',
+        }],
+      },
+      crossEpics: [{
+        slug: 'plat', title: 'XPeer', goal: {}, projects: ['alpha', 'beta'],
+        plan: 'board:x.md\nnode: injected', logbook: [{ nope: 1 }, 'a real line'],
+        created: '2026-01-01T00:00:00.000Z', updated: '2026-02-01T00:00:00.000Z', node: 'peer-node',
+      }],
+    }));
+    const r = await board.syncPull({ peerUrl: 'https://peer.example', scope: 'all' });
+    assert.equal(r.ok, true, 'the pull must not reject');
+
+    // The card merged — proof the cross-epic phase did not abort the whole pull.
+    assert.equal(r.summary.added, 1);
+    assert.ok(byTitle('alpha', 'GoodCard'));
+
+    const e = store.readEpic('alpha', 'auth');
+    assert.equal(e.plan, null);        // a non-string link is dropped, not stringified
+    assert.deepEqual(e.logbook, []);   // a non-array logbook becomes empty
+    // `(goal ?? '').trim()` coalesces null/undefined only, so a number would throw.
+    assert.equal(e.goal, '');
+
+    const x = store.readCrossEpic('plat');
+    // A newline-bearing link would inject a second frontmatter key on write —
+    // the same hazard parsePlanLink refuses at set time. Dropped, so `node`
+    // keeps the value the merge actually assigned.
+    assert.equal(x.plan, null);
+    assert.equal(x.node, 'peer-node');
+    assert.deepEqual(x.logbook, ['a real line']); // non-string entries filtered out
+    assert.equal(x.goal, ''); // an object goal likewise never reaches .trim()
+    // Both records are still readable through the normal surface.
+    assert.equal((await board.readEpic({ project: 'alpha', slug: 'auth' })).ok, true);
+    assert.equal((await board.readEpic({ slug: 'plat' })).ok, true);
+  });
+});
+
+// The normalisation must not touch identity, or it could open a path to the
+// both-kinds state createEpic's EPIC_CONFLICT guard exists to forbid.
+test('normalising a malformed remote epic does not bypass the kind-conflict guard', async () => {
+  await withRoot(async () => {
+    seedProjectEpic('alpha', { slug: 'plat', title: 'LocalProject' });
+    serveFull({
+      projects: {},
+      crossEpics: [xEpic({ slug: 'plat', projects: ['alpha', 'beta'], title: 'XPeer', logbook: 'GARBAGE' })],
+    });
+    const r = await pull('all');
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.summary.epicConflicts, [{ slug: 'plat', kind: 'cross-vs-project', project: 'alpha' }]);
+    assert.equal(store.crossEpicExists('plat'), false); // never written, so no two-record state
+    assert.equal(store.readEpic('alpha', 'plat').title, 'LocalProject'); // local untouched
+  });
+});
+
+// The members list is derived BEFORE normalizeRemoteEpic runs and is what every
+// path index uses, so it needs its own guard: a non-string member reaches
+// path.join and throws inside withLock(CROSS_LOCK) — again before the
+// per-project card loop, so the whole pull dies.
+test('a cross epic with non-string members is filtered, not fatal — and the length check sees the filtered list', async () => {
+  await withRoot(async () => {
+    board._setSyncFetcher(async () => ({
+      ok: true,
+      nodeId: 'peer-node',
+      projects: { alpha: [card({ id: '2026-0001', uid: 'u-P', title: 'GoodCard' })] },
+      crossEpics: [
+        // Junk alongside two real members: survives with the junk dropped.
+        xEpic({ slug: 'plat', projects: [5, 'alpha', null, 'beta', '', '   '], title: 'Platform' }),
+        // Junk leaves only ONE real member: too short, so skipped + reported
+        // rather than half-written. Only reachable if the filter precedes the
+        // length check.
+        xEpic({ slug: 'thin', projects: [{}, 'alpha', 7], title: 'Thin' }),
+        // Two members only if you COUNT THE BLANKS. An empty/whitespace member
+        // round-trips to nothing (writeCrossEpic emits `[alpha, , ]`, and
+        // parseEpicFile re-reads it with .filter(Boolean)), so counting them
+        // would persist a cross epic that reloads with a single member —
+        // breaking the >=2 invariant with no error anywhere.
+        xEpic({ slug: 'holey', projects: ['alpha', '', '  '], title: 'Holey' }),
+      ],
+    }));
+    const r = await board.syncPull({ peerUrl: 'https://peer.example', scope: 'all' });
+    assert.equal(r.ok, true, 'the pull must not reject');
+    assert.equal(r.summary.added, 1); // the card still merged
+    assert.ok(byTitle('alpha', 'GoodCard'));
+
+    assert.deepEqual(store.readCrossEpic('plat').projects, ['alpha', 'beta']);
+    // Assert the FILE, not just the re-read: a blank member serialises as a hole
+    // (`[alpha, , beta]`) that .filter(Boolean) silently swallows on the way back
+    // in, so the parsed value alone cannot see it. The stored record must never
+    // claim a member it cannot keep.
+    assert.match(
+      fs.readFileSync(path.join(crossEpicsDir(), 'plat.md'), 'utf8'),
+      /^projects: \[alpha, beta\]$/m,
+    );
+    assert.equal(store.crossEpicExists('thin'), false);
+    assert.equal(store.crossEpicExists('holey'), false);
+    assert.deepEqual(r.summary.skippedEpics, [
+      { slug: 'thin', kind: 'cross' },
+      { slug: 'holey', kind: 'cross' },
+    ]);
+
+    // The surviving epic is readable and its rollup iterates only real members.
+    const re = await board.readEpic({ slug: 'plat' });
+    assert.equal(re.ok, true);
+    assert.deepEqual(re.epic.projects, ['alpha', 'beta']);
   });
 });

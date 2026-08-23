@@ -19,8 +19,13 @@ workflow, not a replacement for it.
 - **Plans.** On a plan wake, attach the plan to the card rather than re-authoring it: pass the
   plan file's absolute path — the one the wake names — as `update_task`'s `plan`. When the plan
   instead lives in the project tree, attach `repo:<rel>` once the merge lands. A card may be
-  planned but unstarted — `todo` plus a plan link. Pull the text back with
-  `read_task({includePlan:true})` only when you actually need it.
+  planned but unstarted — `todo` plus a plan link. `read_task`/`read_epic` hand back `plan_path`:
+  put that path in a worker's brief. `includePlan` pulls the body into *your* context — use it
+  only when you must read the plan yourself.
+- **Epic plan + log.** An epic outlives every card under it, so its plan is where *strategy* lives.
+  Attach it with `create_epic`'s `plan` when you create the epic, and revise it whenever the
+  strategy changes. Log to the epic (`log_progress({epic})`) when a card under it lands or the
+  sequence changes.
 - **Handoff.** `update_task` can reassign `owner` on an `in-progress` card (plan worker ->
   implementer) with no lane move.
 - **Don't brief workers to mutate.** Never ask a worker to move or update a card.

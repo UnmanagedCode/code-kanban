@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { parsePlanLink, resolvePlanLink, classifyPlanInput, isContained } from '../src/planLink.js';
-import { plansDir, projectRepoDir } from '../src/paths.js';
+import { parsePlanLink, resolvePlanLink, classifyPlanInput, isContained, planBaseDir } from '../src/planLink.js';
+import { plansDir, boardPlansDir, projectRepoDir } from '../src/paths.js';
 
 // Pure grammar/containment tests — no temp root, no fs. PROJECTS_ROOT is only
 // read to compute the expected base dirs, so whatever the ambient value is,
@@ -28,6 +28,28 @@ test('planLink: a repo: link resolves under the project BASE checkout', () => {
   assert.equal(r.scheme, 'repo');
   assert.equal(r.link, 'repo:docs/plans/x.md');
   assert.equal(r.path, path.join(projectRepoDir(P), 'docs/plans/x.md'));
+});
+
+// `project === null` is the cross-project-epic case: no owning project, so
+// `board:` takes a board-level base and `repo:` has no base at all.
+test('planLink: board:\'s base is the project\'s plans/, or the BOARD-LEVEL plans/ with no owning project', () => {
+  assert.notEqual(plansDir(P), boardPlansDir()); // sanity: the two bases really differ
+  assert.equal(planBaseDir(P, 'board'), plansDir(P));
+  assert.equal(planBaseDir(null, 'board'), boardPlansDir());
+  // ...and that switch is what an actual link resolution goes through.
+  assert.equal(resolvePlanLink(P, 'p.md').path, path.join(plansDir(P), 'p.md'));
+  assert.equal(resolvePlanLink(null, 'p.md').path, path.join(boardPlansDir(), 'p.md'));
+  assert.equal(resolvePlanLink(null, 'board:sub/p.md').link, 'board:sub/p.md');
+});
+
+test('planLink: repo: with no owning project -> INVALID_STATE', () => {
+  const r = resolvePlanLink(null, 'repo:docs/x.md');
+  assert.equal(r.error?.code, 'INVALID_STATE');
+  assert.match(r.error.reason, /owning project/);
+  // classifyPlanInput (board.js's one entry point) surfaces the same refusal...
+  assert.equal(classifyPlanInput(null, 'repo:docs/x.md').error?.code, 'INVALID_STATE');
+  // ...while WITH an owning project the identical link still resolves.
+  assert.equal(resolvePlanLink(P, 'repo:docs/x.md').path, path.join(projectRepoDir(P), 'docs/x.md'));
 });
 
 test('planLink: a nested relative path is fine', () => {

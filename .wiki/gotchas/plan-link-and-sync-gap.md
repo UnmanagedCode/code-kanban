@@ -1,7 +1,8 @@
 # Plan links: the link syncs, the body does not
 
-A card's `plan` is a **link to a plan file**, never the plan text (`src/planLink.js`,
-`src/board.js`'s `resolvePlanForSet`). Three things about it are easy to get wrong.
+A `plan` is a **link to a plan file**, never the plan text (`src/planLink.js`, `src/board.js`'s
+`resolvePlanForSet`) — on a **card**, and since 2026-0025 on an **epic** too. Four things about it
+are easy to get wrong.
 
 ## The link rides sync; the body doesn't
 
@@ -13,7 +14,32 @@ file this machine does not have. Every surface degrades rather than failing: `re
 "(file not found)". The sharp edge: `update_task` **re-setting that same link** refuses
 `PLAN_UNKNOWN`, because set-time validation stats the file. That is correct, and surprising.
 
+**Epic plan bodies inherit exactly this gap**, board-level dir included: an epic's `plan` is a
+frontmatter scalar that rides whole-epic LWW while its body stays local, so `read_epic` degrades to
+`plan_missing: true`. (Its **logbook** is different — that lives *inside* the record and does ship;
+see [[cross-instance-sync]] for the LWW consequence.)
+
 Accepted gap, not a bug — see `docs/architecture.md`, "Cross-instance sync".
+
+## `board:`'s base is project-parameterised — and `epic-` in the ingest name is load-bearing
+
+`planBaseDir(project, 'board')` returns `plansDir(project)` for a real project and
+`boardPlansDir()` (`<kanbanRoot>/plans/`) when `project` is **null**. Null happens for exactly one
+owner: a **cross-project epic**, which has no owning project — the same reason cross epics live
+above `projects/`. This is deliberately **not** a third scheme: the owning record's *kind* is
+already unambiguous (`createEpic`'s `EPIC_CONFLICT` guard forbids one slug being both, and sync
+skips kind conflicts rather than flipping them), so every resolution site already knows which base
+it is on and the stored link never has to self-describe. Consequence: `repo:` has no base without
+an owning project and is refused `INVALID_STATE` on a cross-project epic. A **project-scoped** epic
+keeps using its own project's `plans/` dir — it *has* an owner, its plan sits next to its cards'
+plans, and it inherits one sync gap instead of two.
+
+An epic's ingest destination is `plans/epic-<slug>.md`, **not** `plans/<slug>.md`. That prefix is
+required, not cosmetic: `SLUG_RE` (`src/board.js`) is `^[a-z0-9._-]+$`, which admits `2026-0001` —
+so an unprefixed name would silently **overwrite card `2026-0001`'s own plan file**. Card ids are
+always `<year>-<NNNN>` and can never begin `epic-`, so the two namespaces cannot collide. Pinned by
+*"an epic ingest cannot clobber a card's plan file when the slug looks like a card id"* in
+`tests/board.test.mjs`.
 
 ## `repo:` cannot be set until the plan is merged
 
@@ -27,9 +53,10 @@ that must be attachable immediately.
 A plan wake hands the conductor a `planPath` under `~/.claude/plans/`
 (`code-conductor/src/planFile.ts`), outside `PROJECTS_ROOT`. **No scheme resolves there**, so it can
 never be linked in place. It no longer has to be copied by hand: passing that **bare absolute path**
-as `plan` (to `update_task` or `file_task`) makes the tool copy it to `plansDir(project)/<id>.md` and
-store `board:<id>.md` (`classifyPlanInput` in `src/planLink.js` → `ingestPlanFile` in
-`src/board.js`).
+as `plan` (to `update_task`, `file_task` or `create_epic`) makes the tool copy it into the board and
+store the resulting `board:` link (`classifyPlanInput` in `src/planLink.js` → `ingestPlanFile` in
+`src/board.js`). `ingestPlanFile(destDir, destName, source)` does not know which kind of record it
+serves — the caller names the destination, `<id>.md` for a card and `epic-<slug>.md` for an epic.
 
 The rule is uniform, with **no location sniffing** (owner's decision):
 

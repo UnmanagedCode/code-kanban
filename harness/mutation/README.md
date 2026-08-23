@@ -46,6 +46,7 @@ still run and report, but don't affect the exit code.
 | --- | --- | --- |
 | drop the self-copy guard | `ingestPlanFile`, `src/board.js` | With or without the guard, **nothing is written**: libuv opens the destination `O_WRONLY\|O_CREAT` (no `O_TRUNC`), compares `st_dev`/`st_ino` and returns success. Verified by `strace` on Node v24.18.0, Linux. |
 | `source === dest` string compare instead of realpaths | same | Same reason — the string compare misses the symlink form, but the copy it then performs is still a no-op. |
+| `epicLockKey` returns `t.project` for **every** kind (so a cross epic's writes take `withLock(undefined)` instead of `CROSS_LOCK`) | `epicLockKey`, `src/board.js` | Changing the key changes the exclusion domain of **every `withLock(CROSS_LOCK)` holder that read-modify-writes a cross-epic record** — `logProgress`'s epic path, `createCrossEpic`, `exportBoard`'s cross backfill, and `syncPull`'s `mergeCrossEpics`. All four critical sections are **`await`-free**, so on Node's single thread none can interleave with another whatever key it holds, and every write stays atomic; the reachable orderings are all legal serial orders, so no deterministic test can distinguish them. Same argument `.wiki/architecture/file-store-layout.md` records for the slug guard's two-lock design. **Not dead code — do not delete the branch:** the two values differ semantically and are indistinguishable only while that invariant holds; the branch is what keeps `logProgress` in the same exclusion domain as the other three writers. **Re-test condition:** no `await` may appear inside ANY `withLock(CROSS_LOCK)` callback — the first one to appear makes this mutant killable and the code defective. (The only await-inside-a-lock in the codebase today is `moveTask`, on a per-project key, cards only.) *Waived by owner 2026-08-23; equivalence independently measured by mutation review round 2, not by the author.* |
 
 Waiver reason to record: *"owner 2026-08-11: guard kept as insurance against libuv's UNSPECIFIED
 same-inode behaviour (node's fs.copyFile docs promise nothing about it) on an unrecoverable path —
@@ -56,6 +57,41 @@ Everything else on that feature must die — notably: drop the `mkdirSync`; `ren
 `copyFileSync`; name the destination from the source basename; skip the copy when the destination
 exists; ingest a `board:`/`repo:` pointer; treat a bare relative path as an ingest; set `task.plan`
 before the source is validated; write the card before the copy in `fileTask`.
+
+The epic-level plan link + logbook (2026-0025) extends that list. `planFields`,
+`resolvePlanForSet` and `ingestPlanFile` each serve **both record kinds** (card and epic), so mutate
+**at each call site**, not only inside the shared helper — a per-call-site gap otherwise hides
+behind a helper that looks covered. The call-site counts differ and matter: `planFields` has 2
+(`readTask`, `readEpic`), `resolvePlanForSet` has **3** (`fileTask`, `updateTask`, and the epic
+upsert — killing the `fileTask` destination mutant says nothing about `updateTask`), and
+`ingestPlanFile` has **1**. The same discipline applies to the **project-scoped vs cross-project**
+split, which is this feature's other recurring asymmetry: `createEpic`, the epic codecs, the sync
+backfill and the merge each have two halves, and a pin on one half proves nothing about the other.
+Named mutants that must die:
+
+| mutant | killed by |
+| --- | --- |
+| drop `create_epic`'s preserve-on-omit branch (`goal ?? ''` unconditionally) | `create_epic re-upsert preserves an OMITTED goal…` + both route tests |
+| test presence with `'goal' in args` instead of `goal !== undefined` | **only** `POST an epic twice without a goal PRESERVES it` and the cross-epic route test — `src/routes.js` is the sole caller that passes the key holding `undefined`, so no `tests/board.test.mjs` test can reach it |
+| preserve `goal` but not `plan`, or drop `logbook` from the upsert write | `…preserves an OMITTED plan…` / `…preserves the epic's LOGBOOK…` |
+| name the epic ingest destination `<slug>.md` | `an epic ingest cannot clobber a card's plan file when the slug looks like a card id` |
+| resolve a null project to some default project dir (or a member's) | `a cross-project epic's plan lives in the BOARD-LEVEL plans/ dir, never a member's`, the `planLink` base test, `repo: on a CROSS-project epic…` |
+| resolve a **project-scoped** epic against the board-level dir | `a project-scoped epic's board: link resolves under ITS project's plans/…` |
+| compute `plan_path` inside the `includePlan` branch | `read_epic returns plan_path with AND without includePlan…` **and** the card-side `update_task sets a board: plan link…` — each path pins it independently |
+| reintroduce a lane gate on the epic log path | `logging to an epic with ZERO tasks succeeds…` |
+| drop the `touch()` on the epic log write | `logging to an epic bumps its updated/node version stamp…` |
+| serialize `plan`/`logbook` without parsing them back | **only** `exportBoard's identity backfill does not destroy a legacy epic's plan link and logbook` — the backfill read-then-rewrite is the sole path that exposes it |
+| reorder `read_epic`'s extractors, or leave `logbook` in `meta` | `read_epic emits goal, logbook and plan_body as three ORDERED text blocks` |
+| drop the `id`/`epic` mutual exclusion; always prefer the cross epic | `…with BOTH id and epic -> INVALID_STATE` / `epic logbook resolution precedence matches read_epic` |
+| always echo `plan` in `create_epic`'s result — **from either writer**; the two have separate return statements | `create_epic reports the stored plan link ONLY when plan was in the call (project AND cross)` |
+| drop `plan`/`logbook` parsing, reached via the **cross** backfill (`backfillCrossEpics`) | `exportBoard's identity backfill does not destroy a legacy epic's plan link and logbook` — the fixture hand-writes one legacy epic **per kind**; each half is the only pin for its own backfill function |
+| stop resetting the parser's section at an unknown `## ` heading | `an unknown \`## \` section bleeds into neither the goal nor the logbook` |
+| emit the owner line after `created:`; `projects: [a,b]` without the space | `the serialized epic file is byte-exact, for a project AND a cross epic` (parsed-result assertions cannot see either) |
+| drop `parseEpicFile`'s `Array.isArray(epic.projects)` seed guard | `a project-scoped epic never adopts a stray \`projects:\` frontmatter line` — kind confusion here feeds `epicPlanScope`, so it decides which dir a plan resolves against |
+| drop `normalizeRemoteEpic`, or **any one of its three clauses** (`goal`, `plan`, `logbook` — each guards a different serializer call: `.trim()`, the frontmatter line, `.map()`) | `a peer serving a malformed epic goal/plan/logbook is normalised, not fatal — and cards still merge` (exercises both merge paths in one dump) |
+| drop `mergeCrossEpics`' members filter; keep it but move it AFTER the `< 2` length check; drop only its `p.trim() !== ''` clause | `a cross epic with non-string members is filtered, not fatal — and the length check sees the filtered list`. Three distinct mutants, all killed by that one fixture: a non-string member throws in `path.join`; filtering after the length check lets a junk-padded list pass as long enough; and a blank member is invisible to any parsed-result assertion — `writeCrossEpic` emits the hole (`[alpha, , beta]`) and `parseEpicFile`'s `.filter(Boolean)` swallows it on re-read, so the test asserts the **file text** and the skip of an epic that is only long enough if blanks count |
+| spread `projects` unconditionally into `readEpic`'s response (holding `undefined` on a project-scoped epic) | `epics: create, file under, rollup counts on read` — **not** the `read_epic returns plan_path…` envelope test. JSON drops an undefined value and the GUI never branches on presence, so only an explicit `'projects' in epic === false` sees it |
+| `slice(length - logTail)` without the `Math.max(0, …)` clamp | the `logTail` tests in `read_epic`/`read_task` both assert `logTail` > length returns the WHOLE log |
 
 ## `--jobs` and parallel copy runs
 

@@ -83,9 +83,10 @@ because their numeric ids auto-mint and a collision means DIFFERENT cards. **Epi
 (project epic keyed by `(project,slug)`, cross epic by `slug`) because the slug is human-chosen,
 addressable identity that cards reference via `epic:`. Consequences:
 - **No `uid` on epics.** They carry only `updated` (LWW clock, bumped by `createEpic` — the sole
-  epic mutator) and `node` (tiebreak). Both hand-rolled serializers in `store.js` (`writeEpic`,
-  `writeCrossEpic`) emit them; both parsers read them. Legacy epics get `updated = created`
-  backfilled deterministically so shared slugs match.
+  epic mutator) and `node` (tiebreak). Both codec pairs in `store.js` (`writeEpic`/`readEpic`,
+  `writeCrossEpic`/`readCrossEpic`) share one serializer/parser half (`serializeEpicFile`/
+  `parseEpicFile`), so a field added to an epic file lands on both kinds at once. Legacy epics get
+  `updated = created` backfilled deterministically so shared slugs match.
 - **Slugs are never reassigned, so `card.epic` is never translated** — it's kept verbatim and can
   never mispoint (contrast `depends_on`, which IS translated because display ids get reassigned).
   A dangling `card.epic` (slug present nowhere) is kept verbatim too — safe, just uncounted.
@@ -100,12 +101,38 @@ addressable identity that cards reference via `epic:`. Consequences:
   first, an intra-dump kind flip (same slug appearing as both cross and project in ONE dump)
   resolves deterministically: cross is written first, the project version then hits the guard and is
   skipped+logged.
+- **Malformed body fields are DROPPED, not repaired, and never reported** (the third guard,
+  alongside the slug/members skip and the kind conflict). `normalizeRemoteEpic` coerces an incoming
+  epic's `goal`/`plan`/`logbook` to safe values before the write, and `mergeCrossEpics` filters
+  `projects` to non-empty strings before its <2 check. Dropping rather than repairing is the
+  choice: a dead or absent plan link degrades to `plan_missing`, which every read already handles,
+  whereas a guessed value would be indistinguishable from a real one. **The ordering is why this is
+  a guard and not a nicety:** these fields reach hand-rolled serializers that call `.trim()`/`.map()`
+  on them, and the cross-epic phase runs FIRST, under `CROSS_LOCK`, before the per-project card
+  loop — so before the guard existed, one peer epic carrying `logbook: "GARBAGE"` threw and
+  rejected the WHOLE `syncPull`, and every well-formed card in the same dump failed to merge with
+  it. Epics are deliberately stricter than cards here; the card path has the same `goal` hole,
+  tracked as card 2026-0026.
 - **Single-project scope** carries the project's own epics PLUS every cross epic covering it —
   exactly the set a card in that project can reference (`epicVisibleIn`), so every `card.epic`
   resolves without a drop-and-log rule.
 - **Hidden-field discipline:** `board.readEpic`/`listEpics` build responses from a field whitelist
-  (`{slug,title,goal,rollup,projects}`), so `updated`/`node` never leak; `/api/sync/export` is the
-  sole exposure. Same as cards.
+  (`{slug,title,goal,plan,rollup,projects,logbook}`), so `updated`/`node` never leak;
+  `/api/sync/export` is the sole exposure. Same as cards.
+- **An epic's `plan` link and `logbook` ride along too** (2026-0025) — both live in the epic
+  record, so no sync code knows about them. Two consequences worth stating:
+  - The logbook rides **whole-epic LWW**, so the losing side's entries are **lost, not merged** —
+    identical semantics to a card's logbook, and accepted for the same reason.
+  - Plan **bodies** are not in the dump (the board-level `plans/` dir included), so a synced epic
+    can carry a dead link; `read_epic` degrades to `plan_missing: true`. Same accepted gap as a
+    card's — see [[../gotchas/plan-link-and-sync-gap]].
+- **GOTCHA — adding a field to an epic file means adding it to BOTH halves, in one change.**
+  `backfillProjectEpics`/`backfillCrossEpics` **read then rewrite** any epic missing a version
+  stamp. So a field that `serializeEpicFile` emits but `parseEpicFile` does not read is silently
+  **destroyed on every legacy epic** the next time `exportBoard` runs — the read drops it and the
+  rewrite persists the loss. No other test path exercises this; `tests/sync.test.mjs`'s
+  *"exportBoard's identity backfill does not destroy a legacy epic's plan link and logbook"* is
+  the pin.
 
 ## Scope & limitations
 - `project` = the current project; `all` = every live project (`listProjects`). A peer project

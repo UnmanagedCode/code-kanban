@@ -5,10 +5,19 @@
 ```
 <PROJECTS_ROOT>/.conduct/kanban/
   epics/<slug>.md                              # CROSS-project epic (frontmatter projects:[…])
+  plans/<rel>                                  # BOARD-LEVEL `board:` base — a cross-project
+                                               #   epic's, since it has no owning project
   projects/<project>/
     triage/ backlog/ todo/ in-progress/ done/  # <id>.md per task, one per column dir
     epics/<slug>.md                            # project-scoped epic
+    plans/<rel>                                # `board:` base for this project's cards AND
+                                               #   its own epics
 ```
+
+Epic files carry the same two hand-rolled halves for both kinds — `store.js`'s
+`serializeEpicFile`/`parseEpicFile`, which differ by one frontmatter line (`project:` vs
+`projects: […]`). An epic record holds `slug, title, project|projects, plan?, created, updated?,
+node?` + `## Goal` + `## Logbook`.
 
 A task's **state is its directory** — never stored in the file; `store.js` injects it on read.
 Task files: minimal `---` frontmatter (`id, title, project, epic?, priority?, created, owner?,
@@ -66,6 +75,12 @@ each guard-check-then-write runs **synchronously inside its lock callback** — 
 read and the write — so on Node's single thread the two can't interleave; whichever commits first,
 the other sees it and refuses. **Gotcha:** adding an `await` between the guard read and the write
 inside either lock callback would reopen this window — keep those critical sections synchronous.
+
+**No owning project ⇒ a board-level `plans/` dir.** A cross-project epic can carry a `plan` link
+like anything else, but `board:`'s usual base is per-project. Rather than mint a third scheme,
+`planBaseDir`'s `board` entry takes a **nullable** project and falls back to `boardPlansDir()`
+(`<kanbanRoot>/plans/`, a sibling of `crossEpicsDir()` for the same reason). `repo:` has no base
+without an owning project and is refused. See [[../gotchas/plan-link-and-sync-gap]].
 
 **Lock key.** Cross-epic writes serialize under `withLock(' cross-epics')` — a sentinel key with a
 leading space, which `projects.NAME_RE` forbids, so it can never collide with a project mutex. This

@@ -120,7 +120,11 @@ export function buildRoutes() {
   r.get('/board/:project/epics/:slug', wrap((req) =>
     board.readEpic({ project: req.params.project, slug: req.params.slug })));
 
-  // Create or refresh an epic (upsert: preserves `created`, refreshes title/goal).
+  // Create or refresh an epic (upsert: `title` overwrites, every omitted optional
+  // field is preserved). Deliberately does NOT pass `plan` — same precedent as
+  // POST /tasks: the GUI has no file picker. NB the destructure below always
+  // passes `goal` (holding `undefined` when absent), which is exactly why
+  // board.js tests presence with `!== undefined` and not `'goal' in args`.
   r.post('/board/:project/epics', wrap((req) => {
     const { slug, title, goal } = req.body ?? {};
     return board.createEpic({ project: req.params.project, slug, title, goal });

@@ -28,7 +28,8 @@ not folklore: code-conductor `src/plugins/mcpBridge.ts` (the `rec.text !== undef
 **Every read** uses it now (2026-0023 added `list_tasks`/`list_epics` to the set 2026-0010 started):
 `read_task` (card body, then `plan_body` when `includePlan` read a **non-empty** file — an empty
 body emits no block, and `docs/protocol.md` has the full key-by-key outcome table), `read_progress`
-(logbook entries), `read_epic` (`epic.goal`), `list_tasks` (a lane-grouped text listing, rendered by
+(logbook entries), `read_epic` (up to three blocks: `epic.goal`, the logbook as a `- ` list, then `plan_body` —
+each omitted when empty), `list_tasks` (a lane-grouped text listing, rendered by
 `src/listRender.js`), `list_epics` (an epic-roster text listing). Only the **mutators** stay on
 `{result}`. The rule that decides this — prose/document, or a listing that is the tool's whole
 payload, → text block; anything a caller branches on (scalars, flags, and the counts describing the

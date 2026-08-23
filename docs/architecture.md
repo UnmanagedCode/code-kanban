@@ -38,16 +38,27 @@ Board DATA lives in the conductor's tree, not this repo:
 
 ```
 <PROJECTS_ROOT>/.conduct/kanban/
-  epics/<slug>.md                              # CROSS-project epic: frontmatter projects:[…]
+  epics/<slug>.md                              # CROSS-project epic: frontmatter projects:[…],
+                                               #   plan?, ## Goal, ## Logbook
+  plans/<rel>                                  # BOARD-LEVEL base for a CROSS-project epic's
+                                               #   `board:` link — it has no owning project
+                                               #   (paths.js boardPlansDir, a sibling of
+                                               #   crossEpicsDir for the same reason);
+                                               #   plans/epic-<slug>.md is its INGEST destination
   projects/<project>/
     triage/ backlog/ todo/ in-progress/ done/  # one <id>.md per task
-    epics/<slug>.md                            # project-scoped epic; goal only
-    plans/<rel>                                # base for a card's `board:` plan link;
-                                               #   plans/<id>.md is the INGEST destination
-                                               #   (an absolute `plan` input is copied there
-                                               #   by board.js's ingestPlanFile, which also
-                                               #   creates plans/ if the project predates
-                                               #   store.ensureProjectDirs)
+    epics/<slug>.md                            # project-scoped epic: plan?, ## Goal, ## Logbook
+    plans/<rel>                                # base for a card's OR a project-scoped epic's
+                                               #   `board:` plan link; plans/<id>.md and
+                                               #   plans/epic-<slug>.md are the INGEST
+                                               #   destinations (an absolute `plan` input is
+                                               #   copied there by board.js's ingestPlanFile,
+                                               #   which also creates plans/ if the project
+                                               #   predates store.ensureProjectDirs). The
+                                               #   `epic-` prefix is load-bearing: SLUG_RE
+                                               #   admits a card-id-shaped slug, so an
+                                               #   unprefixed name would overwrite that card's
+                                               #   own plan file.
 ```
 
 - **No git writes from the plugin** (decision — see `.wiki/architecture/file-store-layout.md`).
@@ -92,8 +103,13 @@ export/pull under whole-card LWW like `owner`/`commit`, but plan **bodies** are 
 that same link on this machine refuses `PLAN_UNKNOWN` — but never crashes. Also accepted (YAGNI);
 not fixed. Plan **ingest** (an absolute `plan` input copied to `plans/<id>.md`) makes `board:` the
 common scheme, so this gap is hit more often, not less: a pulled card carries a dead `board:` link
-whose body never shipped. Details + rationale: `.wiki/architecture/cross-instance-sync.md`,
-`.wiki/gotchas/plan-link-and-sync-gap.md`.
+whose body never shipped. **Epic plan bodies inherit exactly this gap**, board-level `plans/` dir
+included: an epic's `plan` link is a frontmatter scalar and ships, its body does not, and
+`read_epic` degrades to `plan_missing: true` rather than refusing. Shipping bodies for epics but
+not cards would be incoherent, and no caller needs it. The epic **logbook**, by contrast, lives
+*inside* the epic record, so it ships automatically — but under **whole-epic LWW, which means the
+losing side's entries are lost, not merged**, exactly as for a card's logbook. Details + rationale:
+`.wiki/architecture/cross-instance-sync.md`, `.wiki/gotchas/plan-link-and-sync-gap.md`.
 
 - **Hidden identity.** Cards carry three sync-only frontmatter fields (`src/taskfile.js`):
   `uid` (the true match key — random `crypto.randomUUID` for new cards), `updated` (UTC ISO-8601
