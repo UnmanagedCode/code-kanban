@@ -439,6 +439,9 @@ test('read_task logTail keeps only the last N entries (0/1/2)', async () => {
     assert.deepEqual(one, full.slice(-1));
     const two = (await board.readTask({ project: 'demo', id, logTail: 2 })).task.logbook;
     assert.deepEqual(two, full.slice(-2));
+    // More than exist -> the whole log (the Math.max(0, …) clamp; a negative
+    // start index would silently return a short from-the-end tail instead).
+    assert.deepEqual((await board.readTask({ project: 'demo', id, logTail: 6 })).task.logbook, full);
   } finally { await cleanup(root); }
 });
 
@@ -2056,10 +2059,11 @@ test('create_epic re-upsert preserves an OMITTED plan; plan:null clears it (proj
   } finally { await cleanup(root); }
 });
 
-test('create_epic reports the stored plan link ONLY when plan was in the call', async () => {
+test('create_epic reports the stored plan link ONLY when plan was in the call (project AND cross)', async () => {
   const root = await freshRoot();
-  useProjects(['demo']);
+  useProjects(['demo', 'web', 'api']);
   try {
+    // --- a project-scoped epic ---
     const plain = await board.createEpic({ project: 'demo', slug: 'auth', title: 'Auth' });
     assert.equal('plan' in plain, false); // response shape unchanged for existing callers
     writeBoardPlan('demo', 'p.md', 'x');
@@ -2068,6 +2072,21 @@ test('create_epic reports the stored plan link ONLY when plan was in the call', 
     const cleared = await board.createEpic({ project: 'demo', slug: 'auth', title: 'Auth', plan: null });
     assert.equal('plan' in cleared, true); // null was in the call, so it is reported
     assert.equal(cleared.plan, null);
+
+    // --- a cross-project epic: its own return statement, its own call site ---
+    const xPlain = await board.createEpic({ projects: ['web', 'api'], slug: 'plat', title: 'Plat' });
+    assert.equal('plan' in xPlain, false);
+    writeBoardLevelPlan('x.md', 'x');
+    const xSet = await board.createEpic({ projects: ['web', 'api'], slug: 'plat', title: 'Plat', plan: 'x.md' });
+    assert.equal(xSet.plan, 'board:x.md');
+    // ...and a re-upsert that OMITS plan (so the stored link is preserved) still
+    // must not echo it — the field was not in the call.
+    const xOmitted = await board.createEpic({ projects: ['web', 'api'], slug: 'plat', title: 'Plat v2' });
+    assert.equal('plan' in xOmitted, false);
+    assert.equal((await board.readEpic({ slug: 'plat' })).epic.plan, 'board:x.md'); // still stored
+    const xCleared = await board.createEpic({ projects: ['web', 'api'], slug: 'plat', title: 'Plat', plan: null });
+    assert.equal('plan' in xCleared, true);
+    assert.equal(xCleared.plan, null);
   } finally { await cleanup(root); }
 });
 
@@ -2246,6 +2265,10 @@ test('read_epic logTail keeps only the last N logbook entries (0/1/2)', async ()
     assert.equal((await board.readEpic({ project: 'demo', slug: 'auth', logTail: 0 })).epic.logbook.length, 0);
     assert.deepEqual((await board.readEpic({ project: 'demo', slug: 'auth', logTail: 1 })).epic.logbook, full.slice(-1));
     assert.deepEqual((await board.readEpic({ project: 'demo', slug: 'auth', logTail: 2 })).epic.logbook, full.slice(-2));
+    // Asking for MORE than exist returns the whole log. Without the Math.max(0, …)
+    // clamp the start index goes negative and slice quietly returns a SHORT
+    // from-the-end tail instead (3 entries, logTail:4 -> the last 1).
+    assert.deepEqual((await board.readEpic({ project: 'demo', slug: 'auth', logTail: 4 })).epic.logbook, full);
   } finally { await cleanup(root); }
 });
 

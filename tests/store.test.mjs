@@ -133,6 +133,109 @@ test('writeEpic/readEpic round-trips every field a project epic carries', async 
   } finally { await cleanup(root); }
 });
 
+// The parsed result alone does not pin the FILE format: several plausible
+// rewrites of the serializer (owner line after `created:`, a `[a,b]` projects
+// separator) round-trip through this codec's own parser and are invisible to
+// every other test — but not to a peer, a `git diff` of the board, or anything
+// else reading the file. So assert the bytes, once per kind.
+test('the serialized epic file is byte-exact, for a project AND a cross epic', async () => {
+  const root = await freshRoot();
+  try {
+    store.ensureProjectDirs('demo');
+    store.writeEpic('demo', {
+      slug: 'auth', title: 'Auth: v2', goal: 'Sign-in\nover two lines.',
+      plan: 'board:epic-auth.md', logbook: ['one', 'two'],
+      created: '2026-07-22T00:00:00.000Z', updated: '2026-07-23T00:00:00.000Z', node: 'node-a',
+    });
+    assert.equal(
+      fs.readFileSync(path.join(epicsDir('demo'), 'auth.md'), 'utf8'),
+      '---\n'
+      + 'slug: auth\n'
+      + 'title: Auth: v2\n'
+      + 'project: demo\n'          // the owner line sits BEFORE plan/created
+      + 'plan: board:epic-auth.md\n'
+      + 'created: 2026-07-22T00:00:00.000Z\n'
+      + 'updated: 2026-07-23T00:00:00.000Z\n'
+      + 'node: node-a\n'
+      + '---\n'
+      + '## Goal\n'
+      + 'Sign-in\n'
+      + 'over two lines.\n'
+      + '\n'
+      + '## Logbook\n'
+      + '- one\n'
+      + '- two\n',
+    );
+
+    store.writeCrossEpic({
+      slug: 'plat', title: 'Plat', goal: 'Shared', projects: ['web', 'api'],
+      plan: 'board:epic-plat.md', logbook: ['one'],
+      created: '2026-07-22T00:00:00.000Z', updated: '2026-07-23T00:00:00.000Z', node: 'node-b',
+    });
+    assert.equal(
+      fs.readFileSync(path.join(crossEpicsDir(), 'plat.md'), 'utf8'),
+      '---\n'
+      + 'slug: plat\n'
+      + 'title: Plat\n'
+      + 'projects: [web, api]\n'   // ", " separated, in the same slot `project:` holds
+      + 'plan: board:epic-plat.md\n'
+      + 'created: 2026-07-22T00:00:00.000Z\n'
+      + 'updated: 2026-07-23T00:00:00.000Z\n'
+      + 'node: node-b\n'
+      + '---\n'
+      + '## Goal\n'
+      + 'Shared\n'
+      + '\n'
+      + '## Logbook\n'
+      + '- one\n',
+    );
+  } finally { await cleanup(root); }
+});
+
+// The two codecs share one parser, told apart ONLY by whether the seed carries a
+// `projects` list. Drop that guard and a project-scoped epic adopts a stray
+// `projects:` line — becoming, to every reader, a record of the other kind. That
+// feeds board.js's epicPlanScope, and so decides which directory the epic's plan
+// link resolves against.
+test('a project-scoped epic never adopts a stray `projects:` frontmatter line', async () => {
+  const root = await freshRoot();
+  try {
+    store.ensureProjectDirs('demo');
+    fs.writeFileSync(path.join(epicsDir('demo'), 'auth.md'), [
+      '---', 'slug: auth', 'title: Auth', 'project: demo',
+      'projects: [web, api]', // e.g. hand-edited, or a newer peer's cross record misfiled
+      'created: 2026-01-01T00:00:00.000Z', '---', '## Goal', 'g', '',
+    ].join('\n'));
+    const e = store.readEpic('demo', 'auth');
+    assert.equal('projects' in e, false, 'a project epic must not sprout a projects list');
+    assert.equal(e.project, 'demo');
+    // ...while the cross codec, whose seed DOES carry the list, reads it.
+    store.writeCrossEpic({ slug: 'plat', title: 'P', goal: '', projects: ['web', 'api'], created: '2026-01-01T00:00:00.000Z' });
+    assert.deepEqual(store.readCrossEpic('plat').projects, ['web', 'api']);
+  } finally { await cleanup(root); }
+});
+
+// Backward compatibility rests on the goal/logbook scan TERMINATING at any `## `
+// heading it does not know — otherwise a section added later (by a newer peer,
+// or by hand) silently bleeds into whichever section precedes it.
+test('an unknown `## ` section bleeds into neither the goal nor the logbook', async () => {
+  const root = await freshRoot();
+  try {
+    store.ensureProjectDirs('demo');
+    fs.writeFileSync(path.join(epicsDir('demo'), 'auth.md'), [
+      '---', 'slug: auth', 'title: Auth', 'project: demo',
+      'created: 2026-01-01T00:00:00.000Z', '---',
+      '## Goal', 'the real goal', '',
+      '## Notes', 'NOT THE GOAL', '- not a log entry', '',   // a section this build does not know
+      '## Logbook', '- a real entry', '',
+      '## Appendix', '- also not a log entry', '',           // ...and one AFTER the logbook
+    ].join('\n'));
+    const e = store.readEpic('demo', 'auth');
+    assert.equal(e.goal, 'the real goal');
+    assert.deepEqual(e.logbook, ['a real entry']);
+  } finally { await cleanup(root); }
+});
+
 test('both epic codecs round-trip the version stamp, and omit it entirely when unset', async () => {
   const root = await freshRoot();
   try {

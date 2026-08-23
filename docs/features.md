@@ -84,6 +84,9 @@ Every tool takes a `project` (validated against the live project list), except:
 - `log_progress`'s worker path (no `id`), where `project` is optional: if omitted, the server
   scans every project for the caller's owned in-progress card. `log_progress`'s conductor path
   (`id` given) requires `project` (see `.wiki/gotchas/owner-from-caller-sessionid.md`).
+- `log_progress`/`read_progress`'s **epic** path (`epic` given), where `project` is an optional
+  scope hint — a cross-project epic is addressed by slug alone. Given, it selects that project's
+  own epic first and falls back to a cross-project epic covering it.
 
 ## Web GUI
 

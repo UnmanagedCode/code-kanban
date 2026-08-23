@@ -22,11 +22,10 @@ workflow, not a replacement for it.
   planned but unstarted — `todo` plus a plan link. `read_task`/`read_epic` hand back `plan_path`:
   put that path in a worker's brief. `includePlan` pulls the body into *your* context — use it
   only when you must read the plan yourself.
-- **Epic plan + log.** An epic outlives every card under it, so its plan is where *strategy*
-  lives: why these choices, why this sequence. Not the graph (`depends_on` owns it), not progress
-  (the rollup owns it). Attach it with `create_epic`'s `plan` when you create the epic, and revise
-  it whenever the strategy changes. Log to the epic (`log_progress({epic})`) when a card under it
-  lands or the sequence changes — what landed, what got resequenced, why.
+- **Epic plan + log.** An epic outlives every card under it, so its plan is where *strategy* lives.
+  Attach it with `create_epic`'s `plan` when you create the epic, and revise it whenever the
+  strategy changes. Log to the epic (`log_progress({epic})`) when a card under it lands or the
+  sequence changes.
 - **Handoff.** `update_task` can reassign `owner` on an `in-progress` card (plan worker ->
   implementer) with no lane move.
 - **Don't brief workers to mutate.** Never ask a worker to move or update a card.

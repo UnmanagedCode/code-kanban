@@ -46,6 +46,7 @@ still run and report, but don't affect the exit code.
 | --- | --- | --- |
 | drop the self-copy guard | `ingestPlanFile`, `src/board.js` | With or without the guard, **nothing is written**: libuv opens the destination `O_WRONLY\|O_CREAT` (no `O_TRUNC`), compares `st_dev`/`st_ino` and returns success. Verified by `strace` on Node v24.18.0, Linux. |
 | `source === dest` string compare instead of realpaths | same | Same reason — the string compare misses the symlink form, but the copy it then performs is still a no-op. |
+| `epicLockKey` returns `t.project` for **every** kind (so a cross epic's writes take `withLock(undefined)` instead of `CROSS_LOCK`) | `epicLockKey`, `src/board.js` | Both critical sections involved are **fully synchronous** — `logProgress`'s epic callback and `exportBoard`'s `backfillCrossEpics` callback contain no `await` — so on Node's single thread neither can interleave with the other whatever key it holds, and each write stays atomic. The two possible orderings are both legal serial orders, so no deterministic test can distinguish them. Same argument [[file-store-layout]] already records for the slug guard's two-lock design. **The key still matters**: add an `await` inside either callback and this becomes a real lost-update window, at which point the mutant is both killable and a genuine defect. |
 
 Waiver reason to record: *"owner 2026-08-11: guard kept as insurance against libuv's UNSPECIFIED
 same-inode behaviour (node's fs.copyFile docs promise nothing about it) on an unrecoverable path —
@@ -58,16 +59,21 @@ exists; ingest a `board:`/`repo:` pointer; treat a bare relative path as an inge
 before the source is validated; write the card before the copy in `fileTask`.
 
 The epic-level plan link + logbook (2026-0025) extends that list. `planFields`,
-`resolvePlanForSet` and `ingestPlanFile` now each serve **two** call sites (card and epic), so
-mutate **at each call site**, not only inside the shared helper — a per-call-site gap otherwise
-hides behind a helper that looks covered. Named mutants that must die:
+`resolvePlanForSet` and `ingestPlanFile` each serve **both record kinds** (card and epic), so mutate
+**at each call site**, not only inside the shared helper — a per-call-site gap otherwise hides
+behind a helper that looks covered. The call-site counts differ and matter: `planFields` has 2
+(`readTask`, `readEpic`), `resolvePlanForSet` has **3** (`fileTask`, `updateTask`, and the epic
+upsert — killing the `fileTask` destination mutant says nothing about `updateTask`), and
+`ingestPlanFile` has **1**. The same discipline applies to the **project-scoped vs cross-project**
+split, which is this feature's other recurring asymmetry: `createEpic`, the epic codecs, the sync
+backfill and the merge each have two halves, and a pin on one half proves nothing about the other.
+Named mutants that must die:
 
 | mutant | killed by |
 | --- | --- |
 | drop `create_epic`'s preserve-on-omit branch (`goal ?? ''` unconditionally) | `create_epic re-upsert preserves an OMITTED goal…` + both route tests |
 | test presence with `'goal' in args` instead of `goal !== undefined` | **only** `POST an epic twice without a goal PRESERVES it` and the cross-epic route test — `src/routes.js` is the sole caller that passes the key holding `undefined`, so no `tests/board.test.mjs` test can reach it |
 | preserve `goal` but not `plan`, or drop `logbook` from the upsert write | `…preserves an OMITTED plan…` / `…preserves the epic's LOGBOOK…` |
-| always echo `plan` in `create_epic`'s result | `create_epic reports the stored plan link ONLY when plan was in the call` |
 | name the epic ingest destination `<slug>.md` | `an epic ingest cannot clobber a card's plan file when the slug looks like a card id` |
 | resolve a null project to some default project dir (or a member's) | `a cross-project epic's plan lives in the BOARD-LEVEL plans/ dir, never a member's`, the `planLink` base test, `repo: on a CROSS-project epic…` |
 | resolve a **project-scoped** epic against the board-level dir | `a project-scoped epic's board: link resolves under ITS project's plans/…` |
@@ -77,6 +83,13 @@ hides behind a helper that looks covered. Named mutants that must die:
 | serialize `plan`/`logbook` without parsing them back | **only** `exportBoard's identity backfill does not destroy a legacy epic's plan link and logbook` — the backfill read-then-rewrite is the sole path that exposes it |
 | reorder `read_epic`'s extractors, or leave `logbook` in `meta` | `read_epic emits goal, logbook and plan_body as three ORDERED text blocks` |
 | drop the `id`/`epic` mutual exclusion; always prefer the cross epic | `…with BOTH id and epic -> INVALID_STATE` / `epic logbook resolution precedence matches read_epic` |
+| always echo `plan` in `create_epic`'s result — **from either writer**; the two have separate return statements | `create_epic reports the stored plan link ONLY when plan was in the call (project AND cross)` |
+| drop `plan`/`logbook` parsing, reached via the **cross** backfill (`backfillCrossEpics`) | `exportBoard's identity backfill does not destroy a legacy epic's plan link and logbook` — the fixture hand-writes one legacy epic **per kind**; each half is the only pin for its own backfill function |
+| stop resetting the parser's section at an unknown `## ` heading | `an unknown \`## \` section bleeds into neither the goal nor the logbook` |
+| emit the owner line after `created:`; `projects: [a,b]` without the space | `the serialized epic file is byte-exact, for a project AND a cross epic` (parsed-result assertions cannot see either) |
+| drop `parseEpicFile`'s `Array.isArray(epic.projects)` seed guard | `a project-scoped epic never adopts a stray \`projects:\` frontmatter line` — kind confusion here feeds `epicPlanScope`, so it decides which dir a plan resolves against |
+| drop `normalizeRemoteEpic`, or either of its two clauses | `a peer serving a malformed epic logbook/plan is normalised, not fatal…` (both merge paths in one dump) |
+| `slice(length - logTail)` without the `Math.max(0, …)` clamp | the `logTail` tests in `read_epic`/`read_task` both assert `logTail` > length returns the WHOLE log |
 
 ## `--jobs` and parallel copy runs
 

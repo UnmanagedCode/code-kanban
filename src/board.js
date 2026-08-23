@@ -448,7 +448,7 @@ export async function deleteTask({ project, id } = {}) {
   });
 }
 
-// Two resolution paths, chosen by whether `id` is given:
+// Three resolution paths, chosen by whether `id` / `epic` is given:
 // - `id` given (conductor path): targets that exact card directly, BYPASSING the
 //   owner check — the conductor owns no card. `project` is required alongside `id`
 //   (ids are per-project, not globally unique). The card must be `in-progress` or
@@ -1011,6 +1011,26 @@ function ensureEpicIdentity(epic) {
   return changed;
 }
 
+// Normalise an INCOMING remote epic's body fields before it can reach the store,
+// mirroring what mergeProject's `write` already does for a card's
+// acceptance/logbook. Without this a peer serving `logbook: "GARBAGE"` makes
+// serializeEpicFile's .map() throw — and because the cross-epic merge runs
+// BEFORE the per-project loop, that throw rejects the ENTIRE syncPull, so
+// well-formed cards fail to merge too. `plan` must additionally be one clean
+// line: it lands verbatim on a frontmatter key, the same hazard parsePlanLink
+// refuses at set time. A value that fails either check is dropped, not repaired
+// — a dead/absent link degrades to plan_missing, which every read handles.
+// In-memory only, and it touches NO identity field, so the kind-conflict guards
+// still run unchanged on the normalised record.
+function normalizeRemoteEpic(epic) {
+  return {
+    ...epic,
+    plan: (typeof epic.plan === 'string' && !/[\n\r]/.test(epic.plan) && epic.plan.trim())
+      ? epic.plan.trim() : null,
+    logbook: Array.isArray(epic.logbook) ? epic.logbook.filter((l) => typeof l === 'string') : [],
+  };
+}
+
 // Read + persist-backfill a project's epics. MUST run inside withLock(project).
 function backfillProjectEpics(project) {
   const out = [];
@@ -1054,10 +1074,11 @@ function mergeCrossEpics(remoteCross, localProjects, summary) {
     if (!members.some((p) => localProjects.has(p))) continue; // covers no local project — irrelevant
     const clash = members.find((p) => store.epicExists(p, re.slug));
     if (clash) { summary.epicConflicts.push({ slug: re.slug, kind: 'cross-vs-project', project: clash }); continue; }
-    ensureEpicIdentity(re);
-    const local = localBySlug.get(re.slug);
-    if (!local) { store.writeCrossEpic({ ...re, projects: members }); summary.epicsAdded += 1; }
-    else if (remoteWins(re, local)) { store.writeCrossEpic({ ...re, projects: members }); summary.epicsUpdated += 1; }
+    const safe = normalizeRemoteEpic(re);
+    ensureEpicIdentity(safe);
+    const local = localBySlug.get(safe.slug);
+    if (!local) { store.writeCrossEpic({ ...safe, projects: members }); summary.epicsAdded += 1; }
+    else if (remoteWins(safe, local)) { store.writeCrossEpic({ ...safe, projects: members }); summary.epicsUpdated += 1; }
   }
 }
 
@@ -1077,10 +1098,11 @@ function mergeProjectEpics(project, remoteEpics, summary) {
       summary.epicConflicts.push({ slug: re.slug, kind: 'project-vs-cross', project });
       continue;
     }
-    ensureEpicIdentity(re);
-    const local = localBySlug.get(re.slug);
-    if (!local) { store.writeEpic(project, re); summary.epicsAdded += 1; }
-    else if (remoteWins(re, local)) { store.writeEpic(project, re); summary.epicsUpdated += 1; }
+    const safe = normalizeRemoteEpic(re);
+    ensureEpicIdentity(safe);
+    const local = localBySlug.get(safe.slug);
+    if (!local) { store.writeEpic(project, safe); summary.epicsAdded += 1; }
+    else if (remoteWins(safe, local)) { store.writeEpic(project, safe); summary.epicsUpdated += 1; }
   }
 }
 
