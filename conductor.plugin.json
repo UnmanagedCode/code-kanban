@@ -32,7 +32,7 @@
     "tools": [
       {
         "name": "file_task",
-        "description": "File a new task for a project. Worker + conductor. Returns the server-assigned id. Set `priority` here — it is the one moment the level is cheap to judge; omitting it leaves the card unjudged, and an unjudged card sorts below every judged one.",
+        "description": "File a new task for a project. Worker + conductor. Set `priority` here — it is the one moment the level is cheap to judge; omitting it leaves the card unjudged, and an unjudged card sorts below every judged one.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -64,14 +64,14 @@
       },
       {
         "name": "list_tasks",
-        "description": "List a project's tasks as a lane-grouped PLAIN-TEXT listing plus one small JSON block (per-lane counts). HIDES `done` BY DEFAULT: the default set is triage + backlog + todo + in-progress, and the header states how many done cards were hidden. Pass state:'done' to read those, or includeDone:true for every lane. Any explicit `state` returns exactly that lane, as before. Rows are grouped by lane in board order and sorted by priority within a lane (an unjudged card sorts below LOW); each row carries id, priority, title and created date, plus epic / owner / deps / plan only when set. `project` is not repeated per row. Conductor.",
+        "description": "List a project's tasks. HIDES `done` BY DEFAULT — pass state:'done' to read that lane, or includeDone:true for every lane. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
             "project": { "type": "string", "minLength": 1 },
             "state": { "type": "string", "enum": ["triage", "backlog", "todo", "in-progress", "done"] },
             "epic": { "type": "string" },
-            "includeDone": { "type": "boolean", "default": false, "description": "Include the `done` lane instead of collapsing it to a `N done hidden` note in the header (default false). No effect when `state` is given — that filter already names the lane." }
+            "includeDone": { "type": "boolean", "default": false, "description": "Include the `done` lane too (default false). No effect when `state` is given." }
           },
           "required": ["project"]
         }
@@ -120,7 +120,7 @@
       },
       {
         "name": "update_task",
-        "description": "Update task fields. `fields` may contain any of: title, goal, epic, priority, depends_on, plan, owner, acceptance (other keys ignored). `priority` is one of CRITICAL, HIGH, MEDIUM, LOW, or null to clear it back to unset (anything else is INVALID_STATE). `plan` takes the same three input forms as `file_task`'s `plan`; `null` clears the link. `owner` may only be set on an in-progress card (else INVALID_STATE). `acceptance` accepts exactly one of three shapes: `{ops:[...]}` — a list of `{op:'add', text}` / `{op:'remove', index}` / `{op:'rename', index, text}` / `{op:'done', index, done}` operations, where `index` is the 0-based position in the card's acceptance list as `read_task` returns it; every op resolves against that single PRE-EDIT snapshot in one pass (two `remove`s in the same call never shift each other), survivors keep their pre-edit relative order, `add`s are appended after all survivors in the order they appear in `ops`; `{replace:[...]}` — sets the list from strings, preserving each item's `done` flag when the new (trimmed) text exactly matches a pre-edit item's text, unmatched items start unchecked; or `null`, which clears the list. Stored criterion text is always trimmed. `file_task`'s `acceptance: string[]` filing-time form is separate and unchanged. Conductor.",
+        "description": "Update task fields. `fields` may contain any of: title, goal, epic, priority, depends_on, plan, owner, acceptance (other keys ignored). `priority` is one of CRITICAL, HIGH, MEDIUM, LOW, or null to clear it back to unset (anything else is INVALID_STATE). `plan` takes the same three input forms as `file_task`'s `plan`; `null` clears the link. `owner` may only be set on an in-progress card (else INVALID_STATE). `acceptance` accepts exactly one of three shapes: `{ops:[...]}` — a list of `{op:'add', text}` / `{op:'remove', index}` / `{op:'rename', index, text}` / `{op:'done', index, done}` operations, where `index` is the 0-based position in the card's acceptance list as `read_task` returns it; every op resolves against that single PRE-EDIT snapshot in one pass (two `remove`s in the same call never shift each other), survivors keep their pre-edit relative order, `add`s are appended after all survivors in the order they appear in `ops`; `{replace:[...]}` — sets the list from strings, preserving each item's `done` flag when the new (trimmed) text exactly matches a pre-edit item's text, unmatched items start unchecked; or `null`, which clears the list. Stored criterion text is always trimmed. `file_task`'s `acceptance: string[]` filing-time form is a different shape. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -149,7 +149,7 @@
       },
       {
         "name": "list_epics",
-        "description": "List a project's epics — including cross-project epics that span it — as PLAIN TEXT: one block per epic with its slug, title, per-state rollup, and member projects for a cross-project epic. Plus a small JSON block carrying the epic count. Conductor.",
+        "description": "List a project's epics, including cross-project epics that span it. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {

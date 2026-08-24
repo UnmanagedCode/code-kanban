@@ -103,12 +103,11 @@ test('list_tasks advertises includeDone (boolean, default false) and describes t
   assert.equal(listTasks.inputSchema.required.includes('includeDone'), false);
   assert.match(listTasks.description, /state:'done'/);
   assert.match(listTasks.description, /includeDone/);
-  assert.match(listTasks.description, /PLAIN.TEXT/i);
-});
-
-test('list_epics advertises the plain-text listing in its description', () => {
-  const listEpics = manifest.mcp.tools.find((t) => t.name === 'list_epics');
-  assert.match(listEpics.description, /PLAIN.TEXT/i);
+  // The surprising default itself — a caller who does not know it reads an
+  // empty result as an empty lane. The plain-text rendering is NOT asserted
+  // here: 2026-0027 cut that narration (the reader is holding the text), and
+  // the channel is pinned where it is implemented, in tests/mcp.test.mjs.
+  assert.match(listTasks.description, /HIDES `done` BY DEFAULT/);
 });
 
 test('file_task advertises the priority enum from src/priority.js, with NO default', () => {
@@ -272,4 +271,30 @@ test('no description restates what the result already returns', () => {
   assert.equal(/includePlan also returns/.test(tool('read_epic').description), false);
   assert.equal(/includePlan also returns/.test(tool('read_task').description), false);
   assert.equal(/Returns the stored/.test(tool('create_epic').description), false);
+  assert.equal(/server-assigned id/.test(tool('file_task').description), false);
+});
+
+// T10 — the prose budget. Every description in this file loads into the system
+// prompt of every session using the plugin, so its size is a recurring
+// per-session cost, not a one-off. 940 is the pre-20e4f31 figure BY THIS
+// MEASURE (tool + param `description` words). The 1537 figure card 2026-0027
+// originally carried was a whole-file `wc -w` including JSON punctuation — never
+// a prose budget, and void. Adding a fact is allowed; adding it twice is not.
+test('the manifest prose budget holds (<= 940 description words)', () => {
+  const words = (s) => (s ?? '').trim().split(/\s+/).filter(Boolean).length;
+  const total = manifest.mcp.tools.reduce((n, t) => n + words(t.description)
+    + Object.values(t.inputSchema.properties ?? {}).reduce((a, p) => a + words(p.description), 0), 0);
+  assert.ok(total <= 940, `manifest prose is ${total} words, budget is 940`);
+});
+
+// T11 — a changelog artifact is a phrase whose meaning depends on having seen an
+// EARLIER version of the text ("…, as before"). A tool description has no
+// readers who saw the previous one, so the phrase spends system-prompt words on
+// nothing. State the fact instead of its history.
+test('no description contains a changelog artifact', () => {
+  for (const desc of allDescriptions()) {
+    const hit = desc.match(/\b(as before|unchanged|previously|used to|no longer)\b/i);
+    assert.equal(hit, null,
+      `"${hit?.[0]}" is a changelog artifact — nobody reading this saw the earlier version. State the fact, not its history: ${desc}`);
+  }
 });
