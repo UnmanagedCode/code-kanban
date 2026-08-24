@@ -77,9 +77,10 @@ test('caller.sessionId is threaded into owner-scoped tools', async () => {
     await mcp.handle({ tool: 'move_task', arguments: { project: 'demo', id, to: 'todo' } });
     await mcp.handle({ tool: 'move_task', arguments: { project: 'demo', id, to: 'in-progress', owner: 'sid-123' } });
 
-    // log_progress takes no id; the card is resolved from caller.sessionId.
+    // M1 — log_card takes no id; the card is resolved from caller.sessionId,
+    // which only reaches board.js if the dispatch threads it through.
     const res = await mcp.handle(
-      { tool: 'log_progress', arguments: { project: 'demo', entry: 'via-mcp' }, caller: { sessionId: 'sid-123' } },
+      { tool: 'log_card', arguments: { project: 'demo', entry: 'via-mcp' }, caller: { sessionId: 'sid-123' } },
     );
     assert.equal(res.body.result.ok, true);
     // read_progress' entries ride the raw-text channel, not {result.entries}.
@@ -297,7 +298,7 @@ test('read_progress: entries become a bulleted text block, meta keeps total + co
     const id = f.body.result.id;
     await mcp.handle({ tool: 'move_task', arguments: { project: 'demo', id, to: 'todo' } });
     await mcp.handle({ tool: 'move_task', arguments: { project: 'demo', id, to: 'in-progress', owner: 'w' } });
-    await mcp.handle({ tool: 'log_progress', arguments: { project: 'demo', id, entry: 'third' } });
+    await mcp.handle({ tool: 'log_card', arguments: { project: 'demo', id, entry: 'third' } });
 
     const all = await mcp.handle({ tool: 'read_progress', arguments: { project: 'demo', id } });
     assert.equal(all.body.result, undefined);
@@ -657,7 +658,7 @@ test('read_epic emits goal, logbook and plan_body as three ORDERED text blocks',
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, '# the strategy\n');
     await mcp.handle({ tool: 'create_epic', arguments: { project: 'demo', slug: 'reads', title: 'Reads', plan: 'board:p.md' } });
-    await mcp.handle({ tool: 'log_progress', arguments: { project: 'demo', epic: 'reads', entry: 'first card landed' } });
+    await mcp.handle({ tool: 'log_epic', arguments: { project: 'demo', slug: 'reads', entry: 'first card landed' } });
 
     const r = await mcp.handle({ tool: 'read_epic', arguments: { project: 'demo', slug: 'reads', includePlan: true } });
     assert.equal(r.body.result, undefined);
@@ -684,7 +685,7 @@ test('read_epic without includePlan emits goal + logbook only (no plan block)', 
   useProjects(['demo']);
   try {
     await mcp.handle({ tool: 'create_epic', arguments: { project: 'demo', slug: 'reads', title: 'R', goal: 'G' } });
-    await mcp.handle({ tool: 'log_progress', arguments: { project: 'demo', epic: 'reads', entry: 'landed' } });
+    await mcp.handle({ tool: 'log_epic', arguments: { project: 'demo', slug: 'reads', entry: 'landed' } });
     const r = await mcp.handle({ tool: 'read_epic', arguments: { project: 'demo', slug: 'reads' } });
     assert.equal(r.body.text.length, 2);
     assert.equal(r.body.text[0], 'G');
@@ -692,19 +693,56 @@ test('read_epic without includePlan emits goal + logbook only (no plan block)', 
   } finally { await cleanup(root); }
 });
 
-test('read_progress({epic}) rides the same raw-text channel as a card\'s', async () => {
+// M2 — log_epic is a MUTATOR, so it stays on the plain {result} contract. Kills
+// a mutant that adds it to RAW_TEXT (which would emit {meta,text} and leave every
+// `body.result.ok` reader with undefined).
+test('log_epic dispatches as a mutator, on the plain {result} envelope', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
     await mcp.handle({ tool: 'create_epic', arguments: { project: 'demo', slug: 'auth', title: 'A' } });
-    await mcp.handle({ tool: 'log_progress', arguments: { project: 'demo', epic: 'auth', entry: 'resequenced 0004 before 0003' } });
-    const r = await mcp.handle({ tool: 'read_progress', arguments: { project: 'demo', epic: 'auth' } });
-    assert.equal(r.body.text.length, 1);
-    assert.ok(r.body.text[0].startsWith('- '));
-    assert.match(r.body.text[0], /resequenced 0004 before 0003/);
-    assert.equal(r.body.meta.total, 1);
-    assert.equal(r.body.meta.count, 1);
-    assert.equal('entries' in r.body.meta, false); // progressEntries needed no change
+    const r = await mcp.handle({ tool: 'log_epic', arguments: { project: 'demo', slug: 'auth', entry: 'resequenced 0004 before 0003' } });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.result.ok, true);
+    assert.equal(r.body.text, undefined);
+    assert.equal(r.body.meta, undefined);
+    // ...and the entry really landed on the epic.
+    const e = await mcp.handle({ tool: 'read_epic', arguments: { project: 'demo', slug: 'auth' } });
+    assert.match(e.body.text[0] ?? e.body.text[1], /resequenced 0004 before 0003/);
+  } finally { await cleanup(root); }
+});
+
+// M3 — the old union name is really gone. An unknown tool is a loud,
+// self-describing 200 {error}; this kills a back-compat alias quietly re-added
+// to `handlers`, which would keep log_progress alive in habit and transcripts.
+test('log_progress is no longer a tool — no back-compat alias', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const r = await mcp.handle({ tool: 'log_progress', arguments: { project: 'demo', entry: 'x' }, caller: { sessionId: 's' } });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.error, 'unknown tool: log_progress');
+    assert.equal(r.body.result, undefined);
+  } finally { await cleanup(root); }
+});
+
+// M4 — logbook_total is a scalar, so the split rule keeps it in the METADATA
+// block while the tail'd entries ride the text block. Kills both a mutant that
+// promotes it into a text block and one that computes it after the slice.
+test('read_epic keeps logbook_total in the metadata block, at full length', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    await mcp.handle({ tool: 'create_epic', arguments: { project: 'demo', slug: 'auth', title: 'A' } });
+    for (const e of ['a', 'b', 'c', 'd', 'e']) {
+      await mcp.handle({ tool: 'log_epic', arguments: { project: 'demo', slug: 'auth', entry: e } });
+    }
+    const r = await mcp.handle({ tool: 'read_epic', arguments: { project: 'demo', slug: 'auth', logTail: 2 } });
+    assert.equal(r.body.meta.logbook_total, 5);
+    const logbook = r.body.text[r.body.text.length - 1];
+    assert.equal(logbook.split('\n').length, 2, 'only the tail rides the text block');
+    assert.match(logbook, /· d$/m);
+    assert.match(logbook, /· e$/m);
   } finally { await cleanup(root); }
 });
 

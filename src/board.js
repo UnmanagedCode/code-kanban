@@ -329,7 +329,7 @@ function findOwnedInProgressCard(project, sessionId) {
     .sort((a, b) => b._mtimeMs - a._mtimeMs)[0] ?? null;
 }
 
-// Scans every project for the session's owned in-progress card when logProgress isn't
+// Scans every project for the session's owned in-progress card when logCard isn't
 // given one, picking the most-recently-modified across all of them. Unlocked best-effort
 // snapshot — the caller re-verifies under the winning project's lock before writing (see
 // .wiki/gotchas/owner-from-caller-sessionid.md).
@@ -448,48 +448,20 @@ export async function deleteTask({ project, id } = {}) {
   });
 }
 
-// Three resolution paths, chosen by whether `id` / `epic` is given:
+// Two resolution paths, chosen by whether `id` is given:
 // - `id` given (conductor path): targets that exact card directly, BYPASSING the
 //   owner check — the conductor owns no card. `project` is required alongside `id`
 //   (ids are per-project, not globally unique). The card must be `in-progress` or
 //   this returns TASK_UNKNOWN. Logged with conductor attribution (logLine's
 //   sessionId ?? 'conductor' convention — see taskfile.js), matching how moveTask
 //   attributes its own logbook lines.
-// - `id` omitted (worker path, unchanged): resolves the in-progress card owned by
+// - `id` omitted (worker path): resolves the in-progress card owned by
 //   sessionId server-side. Workers never handle a task id. `project`, if given,
 //   scopes the lookup directly (fast path); if omitted, every project is scanned for
 //   the owned card. If a session owns MORE THAN ONE in-progress card, resolve to the
 //   most recently modified one, across projects when scanning.
-// - `epic` given (conductor path): logs to that EPIC's logbook instead of a card's.
-//   There is deliberately NO lane gate — an epic has no state and no owner, and the
-//   two entries most worth having (a resequencing decision before any card starts, a
-//   retrospective after the last one lands) both happen with no in-progress card. So
-//   EPIC_UNKNOWN is the only refusal on this path. Mutually exclusive with `id`.
 // (see .wiki/gotchas/owner-from-caller-sessionid.md)
-export async function logProgress({ project, id, epic, entry, sessionId } = {}) {
-  if (epic !== undefined) {
-    if (id !== undefined) return fail('INVALID_STATE', 'give at most one of id or epic');
-    if (project !== undefined) {
-      const bad = await requireProject(project);
-      if (bad) return bad;
-    }
-    if (typeof entry !== 'string' || !entry.trim()) {
-      return fail('INVALID_STATE', 'entry is required and must be a non-empty string');
-    }
-    const t = resolveEpic(project, epic);
-    if (!t) return fail('EPIC_UNKNOWN', `unknown epic: ${epic}`);
-    return withLock(epicLockKey(t), () => {
-      // Re-read under the lock — the resolve above ran unlocked.
-      const fresh = rereadEpic(t);
-      if (!fresh) return fail('EPIC_UNKNOWN', `unknown epic: ${epic}`);
-      fresh.epic.logbook.push(logLine(nowIso(), null, entry.trim())); // conductor attribution
-      // touch() is load-bearing: an edit that does not move `updated` is
-      // invisible to the LWW merge.
-      writeResolvedEpic({ ...fresh, epic: touch(fresh.epic) });
-      return { ok: true };
-    });
-  }
-
+export async function logCard({ project, id, entry, sessionId } = {}) {
   if (id !== undefined) {
     if (project === undefined) {
       return fail('INVALID_STATE', 'project is required when id is given (ids are per-project)');
@@ -539,6 +511,34 @@ export async function logProgress({ project, id, epic, entry, sessionId } = {}) 
   });
 }
 
+// Appends to an EPIC's logbook. There is deliberately NO lane gate — an epic has
+// no state and no owner, and the two entries most worth having (a resequencing
+// decision before any card starts, a retrospective after the last one lands) both
+// happen with no in-progress card. So EPIC_UNKNOWN is the only refusal here.
+// Conductor-only: entries are always conductor-attributed, since an epic has no
+// owner to credit.
+export async function logEpic({ project, slug, entry } = {}) {
+  if (project !== undefined) {
+    const bad = await requireProject(project);
+    if (bad) return bad;
+  }
+  if (typeof entry !== 'string' || !entry.trim()) {
+    return fail('INVALID_STATE', 'entry is required and must be a non-empty string');
+  }
+  const t = resolveEpic(project, slug);
+  if (!t) return fail('EPIC_UNKNOWN', `unknown epic: ${slug}`);
+  return withLock(epicLockKey(t), () => {
+    // Re-read under the lock — the resolve above ran unlocked.
+    const fresh = rereadEpic(t);
+    if (!fresh) return fail('EPIC_UNKNOWN', `unknown epic: ${slug}`);
+    fresh.epic.logbook.push(logLine(nowIso(), null, entry.trim())); // conductor attribution
+    // touch() is load-bearing: an edit that does not move `updated` is
+    // invisible to the LWW merge.
+    writeResolvedEpic({ ...fresh, epic: touch(fresh.epic) });
+    return { ok: true };
+  });
+}
+
 // ---- conductor: reads ----
 
 export async function listTasks({ project, state, epic } = {}) {
@@ -571,19 +571,7 @@ export async function readTask({ project, id, logTail, includePlan } = {}) {
   return { ok: true, task: stripHidden(task), ...planFields(project, plan, includePlan) };
 }
 
-// `epic` reads that epic's logbook instead of a card's — same envelope, so every
-// consumer (incl. src/mcp.js's progressEntries) reads one shape.
-export async function readProgress({ project, id, epic, limit } = {}) {
-  if (epic !== undefined) {
-    if (id !== undefined) return fail('INVALID_STATE', 'give at most one of id or epic');
-    if (project !== undefined) {
-      const bad = await requireProject(project);
-      if (bad) return bad;
-    }
-    const t = resolveEpic(project, epic);
-    if (!t) return fail('EPIC_UNKNOWN', `unknown epic: ${epic}`);
-    return tail(t.epic.logbook ?? [], limit);
-  }
+export async function readProgress({ project, id, limit } = {}) {
   const bad = await requireProject(project);
   if (bad) return bad;
   const task = store.readTaskById(project, id);
@@ -591,8 +579,9 @@ export async function readProgress({ project, id, epic, limit } = {}) {
   return tail(task.logbook, limit);
 }
 
-// A logbook, most-recent first, optionally capped. One implementation for the
-// card and epic paths so their envelopes cannot drift.
+// A card's logbook, most-recent first, optionally capped. (An epic's logbook is
+// read by readEpic, in chronological order — see
+// .wiki/architecture/card-epic-tool-split.md.)
 function tail(logbook, limit) {
   const recent = [...logbook].reverse();
   const entries = Number.isFinite(limit) && limit >= 0 ? recent.slice(0, limit) : recent;
@@ -738,8 +727,8 @@ function epicVisibleIn(project, slug) {
   return !!x && x.projects.includes(project);
 }
 
-// The ONE epic resolver: readEpic, logProgress and readProgress all route
-// through it, so the three can never disagree about which record a
+// The ONE epic resolver: readEpic and logEpic both route
+// through it, so the two can never disagree about which record a
 // (project, slug) pair names. A project-scoped epic wins when `project` is
 // given (the EPIC_CONFLICT guard makes that unambiguous), else a cross-project
 // epic covering it; with no `project`, a cross epic by slug alone. A cross epic
@@ -1373,9 +1362,12 @@ export async function listEpics({ project } = {}) {
   return { ok: true, epics };
 }
 
-// Envelope: {ok, epic, plan_path[, plan_body, plan_truncated, plan_missing], tasks}.
-// Like read_task, the plan fields sit TOP-LEVEL and `epic` mirrors the record
-// (minus the hidden updated/node stamp — the response is a field whitelist).
+// Envelope: {ok, epic, logbook_total, plan_path[, plan_body, plan_truncated,
+// plan_missing], tasks}. Like read_task, the plan fields sit TOP-LEVEL and `epic`
+// mirrors the record (minus the hidden updated/node stamp — the response is a
+// field whitelist), so `logbook_total` — the FULL logbook length, before any
+// logTail cap, which is what tells a tail'd caller 5 entries from 50 — sits
+// top-level too rather than inside `epic`.
 export async function readEpic({ project, slug, logTail, includePlan } = {}) {
   if (project !== undefined) {
     const bad = await requireProject(project);
@@ -1390,6 +1382,7 @@ export async function readEpic({ project, slug, logTail, includePlan } = {}) {
     members.flatMap((p) => store.listTasks(p).filter((x) => x.epic === slug)),
   ).map(summary);
   let logbook = e.logbook ?? [];
+  const logbookTotal = logbook.length;
   if (Number.isFinite(logTail) && logTail >= 0) {
     // slice(-0) === slice(0) returns everything, so compute the start index
     // explicitly — logTail:0 must yield 0 entries (same trap as readTask).
@@ -1401,5 +1394,5 @@ export async function readEpic({ project, slug, logTail, includePlan } = {}) {
     ...(isCross ? { projects: e.projects } : {}),
     logbook,
   };
-  return { ok: true, epic, ...planFields(epicPlanScope(t), e.plan, includePlan), tasks };
+  return { ok: true, epic, logbook_total: logbookTotal, ...planFields(epicPlanScope(t), e.plan, includePlan), tasks };
 }

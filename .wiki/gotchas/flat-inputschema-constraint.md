@@ -21,5 +21,8 @@ Consequences for our tools:
   [priority-legacy-tolerance.md](priority-legacy-tolerance.md)).
 - `integer`+`minimum` is allowed — `read_task.logTail`, `read_progress.limit`.
 
+The `oneOf` ban is also why a card|epic union tool does not exist — see
+[[card-epic-tool-split]].
+
 `tests/pluginManifest.test.mjs` guards this — it asserts the subset and that
 `manifest.version === package.json version` (the host also checks the latter).

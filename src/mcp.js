@@ -10,7 +10,8 @@ import { STATES } from './paths.js';
 // {error}. Owner-scoped tools receive the caller's server-resolved sessionId.
 const handlers = {
   file_task:   (a, sid) => board.fileTask({ ...a, sessionId: sid }),
-  log_progress: (a, sid) => board.logProgress({ project: a.project, id: a.id, epic: a.epic, entry: a.entry, sessionId: sid }),
+  log_card:    (a, sid) => board.logCard({ project: a.project, id: a.id, entry: a.entry, sessionId: sid }),
+  log_epic:    (a) => board.logEpic({ project: a.project, slug: a.slug, entry: a.entry }),
   list_tasks:  (a) => board.listTasks(a),
   read_task:   (a) => board.readTask(a),
   read_progress: (a) => board.readProgress(a),
