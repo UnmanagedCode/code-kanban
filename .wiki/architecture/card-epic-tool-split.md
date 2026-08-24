@@ -1,8 +1,9 @@
 # Decision: card|epic logging is two tools, not one union (card 2026-0027)
 
-Merge `20e4f31` overloaded `log_progress` and `read_card_log` onto a card|epic union whose
+Merge `20e4f31` overloaded `log_progress` and `read_progress` onto a card|epic union whose
 exclusivity was enforced only in **sentences** ("mutually exclusive with `id`"). Card 2026-0027
-split them: `log_card` / `log_epic`, and `read_card_log` (card) / `read_epic` (epic).
+split them: `log_card` / `log_epic`, and `read_progress` (card, renamed to `read_card_log` by
+card 2026-0028 — see Naming) / `read_epic` (epic).
 
 ## Why not `oneOf`
 
@@ -21,7 +22,7 @@ epic-resolution prose. `conventions/board.md` is `scope: "conductor"`; workers l
 `board.readEpic` (`src/board.js`) already returns `epic.logbook` and already caps it with the same
 slice-guard `read_card` uses; `src/mcp.js`'s `epicLogbook` extractor already renders it as a raw
 text block. The arm was duplicate surface, and deleting it also restored
-`required:["project","id"]`, which the union had dropped (so `read_card_log({})` had become
+`required:["project","id"]`, which the union had dropped (so `read_progress({})` had become
 schema-legal).
 
 Two deltas the deletion cost:

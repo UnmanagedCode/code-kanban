@@ -93,6 +93,17 @@ Named mutants that must die:
 | spread `projects` unconditionally into `readEpic`'s response (holding `undefined` on a project-scoped epic) | `epics: create, file under, rollup counts on read` — **not** the `read_epic returns plan_path…` envelope test. JSON drops an undefined value and the GUI never branches on presence, so only an explicit `'projects' in epic === false` sees it |
 | `slice(length - logTail)` without the `Math.max(0, …)` clamp | the `logTail` tests in `read_epic`/`read_card` both assert `logTail` > length returns the WHOLE log |
 
+## Ungradeable mutant shapes (pick a different mutation)
+
+- **Reverting a LIVE HTTP route path** (e.g. `/board/:project/cards` back to `/tasks` in
+  `src/routes.js`). Ungradeable here, and it looks like a build break rather than a survivor: the
+  positive-path route tests call a `json()` helper that does `res.json()` on every response, so an
+  unrouted path returns Express's HTML 404 page and the helper throws
+  `SyntaxError: Unexpected token '<'`. The adapter's compile-error heuristic reads that as a broken
+  build, not as a killed mutant. Mutate by **adding an alias route** for the old path instead — it
+  grades cleanly, and it is the realistic regression anyway (a back-compat alias quietly re-added,
+  which is exactly what `tests/routes.test.mjs`'s 404 guard exists to catch).
+
 ## `--jobs` and parallel copy runs
 
 `--jobs N` in `copy` mode is safe for this project. Verified 2026-08-10 as part of

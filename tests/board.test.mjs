@@ -68,6 +68,41 @@ test('file_card -> triage, then full lifecycle to done', async () => {
   } finally { await cleanup(root); }
 });
 
+// 2026-0028 — the unknown-id refusal code on the two MUTATORS. readCard's arm
+// is covered by the refusal-codes test below, but moveCard and updateCard were
+// never called with a nonexistent id anywhere in the suite, so their
+// fail('CARD_UNKNOWN', ...) sites were unpinned: renaming either back to the
+// pre-rename TASK_UNKNOWN left the whole suite green. CARD_UNKNOWN is wire
+// vocabulary that callers branch on (conventions/reporting.md tells workers to
+// test for it by name), and it is vocabulary THIS card renamed, so a silent
+// revert on a mutator is exactly the regression worth catching. Asserted on the
+// code, not the reason prose — the code is the branchable half of the contract.
+test('move_card on an unknown card id refuses CARD_UNKNOWN', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    // A real project with a real card in it, so the refusal can only be about
+    // the id — never PROJECT_UNKNOWN, and never an empty-board artefact.
+    await board.fileCard({ project: 'demo', title: 'a real card' });
+    const r = await board.moveCard({ project: 'demo', id: '2026-9999', to: 'backlog' });
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'CARD_UNKNOWN');
+    assert.match(r.reason, /2026-9999/);
+  } finally { await cleanup(root); }
+});
+
+test('update_card on an unknown card id refuses CARD_UNKNOWN', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    await board.fileCard({ project: 'demo', title: 'a real card' });
+    const r = await board.updateCard({ project: 'demo', id: '2026-9999', fields: { title: 'x' } });
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'CARD_UNKNOWN');
+    assert.match(r.reason, /2026-9999/);
+  } finally { await cleanup(root); }
+});
+
 test('refusal codes: PROJECT_UNKNOWN, CARD_UNKNOWN, EPIC_UNKNOWN, INVALID_STATE', async () => {
   const root = await freshRoot();
   useProjects(['demo']);

@@ -25,7 +25,7 @@ unescaped** block after it, rather than JSON-escaping a multi-KB document into o
 not folklore: code-conductor `src/plugins/mcpBridge.ts` (the `rec.text !== undefined` branch) →
 `src/mcp/content.ts`'s `textPayload`.
 
-**Every read** uses it now (2026-0023 added `list_cards`/`list_epics` to the set 2026-0010 started):
+**Every read** uses it now (2026-0023 added `list_tasks`/`list_epics` to the set 2026-0010 started):
 `read_card` (card body, then `plan_body` when `includePlan` read a **non-empty** file — an empty
 body emits no block, and `docs/protocol.md` has the full key-by-key outcome table), `read_card_log`
 (logbook entries), `read_epic` (up to three blocks: `epic.goal`, the logbook as a `- ` list, then `plan_body` —

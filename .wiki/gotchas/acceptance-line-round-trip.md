@@ -26,7 +26,7 @@ just set.
 
 ## `file_card` is knowingly asymmetric
 
-`file_card`'s `acceptance: string[]` filing-time form (`src/board.js:286`) does **not** run through
+`file_card`'s `acceptance: string[]` filing-time form (`src/board.js:418`) does **not** run through
 this validator — it accepts any string, untrimmed, newline included. So `update_card` can refuse a
 criterion that `file_card` happily accepted at filing time. This is intentional for 2026-0020 (the
 owner is tracking the asymmetry separately, not fixing it here): the two input forms are deliberately

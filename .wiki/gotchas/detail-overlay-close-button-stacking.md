@@ -10,5 +10,5 @@ comes later in the document.
 Consequence: any button placed at the right edge of `.detail-head` (e.g. the card-detail Edit
 button) will visually collide with, and have its clicks intercepted by, the close button unless
 `.detail-head` reserves clearance. Fixed via `padding-right: 28px` on `.detail-head`
-(`frontend/styles.css:180`) — keep that clearance (or increase it) if `.detail-head`'s content
+(`frontend/styles.css:192`) — keep that clearance (or increase it) if `.detail-head`'s content
 grows.
