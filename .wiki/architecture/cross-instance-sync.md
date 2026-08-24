@@ -1,14 +1,14 @@
 # Cross-instance board sync
 
-How one board syncs with another instance on a different machine (task
+How one board syncs with another instance on a different machine (card
 code-kanban/2026-0005). Transport is a code-hub-forwarded URL — no git.
 
 ## Model
 - **Two-click, one-way pull per click.** A click pulls the peer's FULL board dump for a scope
   and merges it locally. Converging both machines = clicking Sync on each side. There is no
   push/bidirectional exchange.
-- **Grow-only merge.** `delete_task` exists (a plain hard delete) but is NOT sync-integrated — no
-  tombstone concept, so the merge itself is still a pure union + overwrite. Consequence: a task
+- **Grow-only merge.** `delete_card` exists (a plain hard delete) but is NOT sync-integrated — no
+  tombstone concept, so the merge itself is still a pure union + overwrite. Consequence: a card
   deleted locally can reappear on a future pull from a peer that still holds it. See
   `docs/architecture.md` "Cross-instance sync" for the accepted-tradeoff rationale.
 
@@ -19,17 +19,17 @@ therefore NOT identity. The fix: a hidden `uid` in frontmatter is the true match
 by `uid`, and display ids are reassigned/translated at the sync boundary.
 
 ## Frontmatter version stamp (all hidden except from export)
-- `uid` — the match key. New cards: `crypto.randomUUID()` (`board.fileTask`). Legacy cards
+- `uid` — the match key. New cards: `crypto.randomUUID()` (`board.fileCard`). Legacy cards
   (pre-feature, no uid): `deriveUid(project, id, created)` — **deterministic**, so two machines
   holding the same shared-lineage legacy card derive the identical uid and union instead of
   duplicating. This is the whole reason backfill is a hash and not a random id.
 - `updated` — UTC ISO-8601, the LWW clock. **Bumped by every mutator** via `board.js`'s
-  `touch()` (fileTask sets it = `created`). GOTCHA: an edit that fails to move `updated` is
+  `touch()` (fileCard sets it = `created`). GOTCHA: an edit that fails to move `updated` is
   invisible to sync — if you add a new mutation path, call `touch()`.
 - `node` — the machine that produced this version (`src/nodeId.js`, minted once at
   `<kanbanRoot>/.node-id`). Only used as the LWW tiebreak.
 
-`uid`/`node` are stripped from every read (`board.readTask`'s `stripHidden`; `summary()` never
+`uid`/`node` are stripped from every read (`board.readCard`'s `stripHidden`; `summary()` never
 carried them). `GET /api/sync/export` is the ONE intentional exposure. Keep it that way — the
 short display id must stay the MCP-facing handle.
 
@@ -42,7 +42,7 @@ short display id must stay the MCP-facing handle.
      changes. (Free ids are reserved before reassignments to minimise churn.)
 3. Pass B — write winners wholesale (fields, goal, acceptance, logbook, uid, updated, node), with
    `depends_on` translated `remote display id → remote uid → local display id` from the pulled
-   set. A state change moves the file (`store.moveTask`).
+   set. A state change moves the file (`store.moveCard`).
 
 ## depends_on translation rule (confirmed decision)
 `depends_on` is display-id sugar over `uid`. Entries that don't resolve from the pulled set are
@@ -54,7 +54,7 @@ dep drops.
 ## Trust / URL (confirmed decisions)
 - **No auth.** Possession of the code-hub-forwarded URL is the capability — code-hub already exposes
   the *entire* board API (including mutating routes) at that URL, so a token on just the read export
-  would harden nothing. Hardening the whole plugin is a separate future task.
+  would harden nothing. Hardening the whole plugin is separate future work.
 - **Own URL is client-side.** The backend can't know its public forwarded URL (only
   `PORT/HOST/PROJECTS_ROOT/CONDUCTOR_URL` are injected). The GUI reached the board *through* that
   URL, so the dialog reads `window.location` for the copyable "this board's URL".
@@ -65,7 +65,7 @@ dep drops.
   fetch does not follow redirects, and it is bounded by a timeout + size cap (`board.js`
   `isBlockedSyncHost`, `defaultSyncFetch`). Lightweight only — hostnames are NOT DNS-resolved (a
   code-hub peer is public), so DNS-rebinding-style targets aren't caught; hardening the whole plugin
-  is the separate future task. `CODE_KANBAN_SYNC_ALLOW_PRIVATE=1` bypasses the host block for local
+  is separate future work. `CODE_KANBAN_SYNC_ALLOW_PRIVATE=1` bypasses the host block for local
   dev / the visual harness (both instances run on 127.0.0.1).
 
 ## The pull summary is GUI-facing — display ids only

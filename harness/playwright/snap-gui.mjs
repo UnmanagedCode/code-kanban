@@ -57,43 +57,43 @@ async function seed(base, projectsRoot) {
   await call(`/api/board/${PROJECT}/epics`, { method: 'POST', body: { slug: 'auth', title: 'Auth flow', goal: 'Sign-in + sessions' } }, 'epic auth');
   await call(`/api/board/${PROJECT}/epics`, { method: 'POST', body: { slug: 'search', title: 'Search', goal: 'Full-text search' } }, 'epic search');
 
-  // fileTask takes priority, so the level is set at the capture point. One card
+  // fileCard takes priority, so the level is set at the capture point. One card
   // per level (HIGH/CRITICAL/LOW/MEDIUM), plus d, which OMITS it and is therefore
   // unset. d and e are the load-bearing pair: e is a judged MEDIUM and d has
   // never been judged, and the whole point of this card is that a person can
   // tell them apart without opening either. They sit in the same column so the
   // screenshot shows them side by side. Without both, a missing badge and a
   // broken badge look identical in a screenshot.
-  const a = await call(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Design login screen', goal: 'Email + password form', acceptance: ['Matches design spec', 'Accessible labels'], epic: 'auth', priority: 'HIGH' } }, 'file a');
-  const b = await call(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Hash passwords with argon2', goal: 'No plaintext at rest', epic: 'auth', priority: 'CRITICAL' } }, 'file b');
-  const c = await call(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Build search index', goal: 'Inverted index over docs', epic: 'search', priority: 'LOW' } }, 'file c');
-  const d = await call(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Triage: spike caching layer', goal: 'Decide redis vs in-memory' } }, 'file d');
-  const e = await call(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Rotate the signing key', goal: 'Quarterly rotation', priority: 'MEDIUM' } }, 'file e');
+  const a = await call(`/api/board/${PROJECT}/cards`, { method: 'POST', body: { title: 'Design login screen', goal: 'Email + password form', acceptance: ['Matches design spec', 'Accessible labels'], epic: 'auth', priority: 'HIGH' } }, 'file a');
+  const b = await call(`/api/board/${PROJECT}/cards`, { method: 'POST', body: { title: 'Hash passwords with argon2', goal: 'No plaintext at rest', epic: 'auth', priority: 'CRITICAL' } }, 'file b');
+  const c = await call(`/api/board/${PROJECT}/cards`, { method: 'POST', body: { title: 'Build search index', goal: 'Inverted index over docs', epic: 'search', priority: 'LOW' } }, 'file c');
+  const d = await call(`/api/board/${PROJECT}/cards`, { method: 'POST', body: { title: 'Triage: spike caching layer', goal: 'Decide redis vs in-memory' } }, 'file d');
+  const e = await call(`/api/board/${PROJECT}/cards`, { method: 'POST', body: { title: 'Rotate the signing key', goal: 'Quarterly rotation', priority: 'MEDIUM' } }, 'file e');
 
   // Spread cards across columns via LEGAL transitions. b reaches in-progress
   // through triage→todo→in-progress (NOT triage→in-progress, which is illegal),
   // so the In Progress column is populated and b carries an owner badge (owner
   // is set only on entering in-progress). a→todo, c→backlog, d stays in triage.
-  await call(`/api/board/${PROJECT}/tasks/${a.id}/move`, { method: 'POST', body: { to: 'todo' } }, 'move a → todo');
-  await call(`/api/board/${PROJECT}/tasks/${b.id}/move`, { method: 'POST', body: { to: 'todo' } }, 'move b → todo');
-  await call(`/api/board/${PROJECT}/tasks/${b.id}/move`, { method: 'POST', body: { to: 'in-progress' } }, 'move b → in-progress');
-  await call(`/api/board/${PROJECT}/tasks/${c.id}/move`, { method: 'POST', body: { to: 'backlog' } }, 'move c → backlog');
+  await call(`/api/board/${PROJECT}/cards/${a.id}/move`, { method: 'POST', body: { to: 'todo' } }, 'move a → todo');
+  await call(`/api/board/${PROJECT}/cards/${b.id}/move`, { method: 'POST', body: { to: 'todo' } }, 'move b → todo');
+  await call(`/api/board/${PROJECT}/cards/${b.id}/move`, { method: 'POST', body: { to: 'in-progress' } }, 'move b → in-progress');
+  await call(`/api/board/${PROJECT}/cards/${c.id}/move`, { method: 'POST', body: { to: 'backlog' } }, 'move c → backlog');
 
-  // Cross-project epic spanning demo + web, with a task under it in EACH project,
+  // Cross-project epic spanning demo + web, with a card under it in EACH project,
   // so demo's board shows the cross-project epic row with an aggregated rollup.
   await call('/api/epics', { method: 'POST', body: { slug: 'platform', title: 'Platform', goal: 'Shared infra across services', projects: [PROJECT, PROJECT2] } }, 'cross epic platform');
-  await call(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: { title: 'Shared logging', goal: 'One logger', epic: 'platform' } }, 'file demo platform task');
-  await call(`/api/board/${PROJECT2}/tasks`, { method: 'POST', body: { title: 'Config service', goal: 'Central config', epic: 'platform' } }, 'file web platform task');
+  await call(`/api/board/${PROJECT}/cards`, { method: 'POST', body: { title: 'Shared logging', goal: 'One logger', epic: 'platform' } }, 'file demo platform card');
+  await call(`/api/board/${PROJECT2}/cards`, { method: 'POST', body: { title: 'Config service', goal: 'Central config', epic: 'platform' } }, 'file web platform card');
 
   // A plan link on exactly ONE card (c, which stays put in backlog): the other
   // cards are the witness that the badge and the "Has plan" filter really
   // discriminate, rather than matching everything. The plan FILE must exist
-  // before update_task will accept the link (PLAN_UNKNOWN otherwise) — the
+  // before update_card will accept the link (PLAN_UNKNOWN otherwise) — the
   // board: base is <kanbanRoot>/projects/<project>/plans/.
   const planFile = path.join(plansDir(PROJECT), `${c.id}.md`);
   await fs.mkdir(path.dirname(planFile), { recursive: true });
   await fs.writeFile(planFile, `# Plan — build the search index\n\n1. Tokenize documents.\n2. Build the inverted index.\n3. Wire the query path.\n`);
-  await call(`/api/board/${PROJECT}/tasks/${c.id}`, { method: 'PATCH', body: { plan: `${c.id}.md` } }, 'plan link on c');
+  await call(`/api/board/${PROJECT}/cards/${c.id}`, { method: 'PATCH', body: { plan: `${c.id}.md` } }, 'plan link on c');
 
   return { a, b, c, d, e };
 }
@@ -128,7 +128,7 @@ async function main() {
       console.log('snapped board');
 
       // 1b. Cross-project epic detail: open the row carrying the cross badge and
-      //     confirm it renders member projects + tasks from both projects.
+      //     confirm it renders member projects + cards from both projects.
       await page.locator('.epic-row', { has: page.locator('.badge.epic-cross') }).getByRole('button', { name: 'open' }).click();
       await page.waitForSelector('#detail-overlay:not(.hidden) .detail-title', { timeout: 10_000 });
       await page.waitForFunction(() => [...document.querySelectorAll('#detail-overlay .detail-section h3')].some((h) => h.textContent === 'Projects'), { timeout: 10_000 });
@@ -171,7 +171,7 @@ async function main() {
       //    sandboxed project isn't a real git repo, so auto-capture would
       //    resolve to null; passing commit explicitly is what actually
       //    exercises the rendered Commit field.
-      const landed = await fetch(`${srv.url}/api/board/${PROJECT}/tasks/${seeded.b.id}/move`, {
+      const landed = await fetch(`${srv.url}/api/board/${PROJECT}/cards/${seeded.b.id}/move`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ to: 'done', commit: 'abc1234def5678' }),
@@ -306,15 +306,15 @@ async function main() {
       await page.screenshot({ path: path.join(SHOTS, 'gui-12b-priority-cleared.png'), fullPage: true });
       console.log('snapped board after clearing MEDIUM -> unset (badge removed)');
 
-      // 13. The capture point: the New-task form asks for a priority up front,
+      // 13. The capture point: the New-card form asks for a priority up front,
       //     but does NOT pre-answer it — a pre-selected MEDIUM would be the same
       //     fabrication as a server-side default, just through a different door.
-      await page.click('#new-task-btn');
+      await page.click('#new-card-btn');
       await page.waitForSelector('#form-overlay select[name="priority"]', { timeout: 10_000 });
       const newValue = await page.inputValue('#form-overlay select[name="priority"]');
-      if (newValue !== '') throw new Error(`new-task form must open on the unset option, saw ${newValue}`);
-      await page.screenshot({ path: path.join(SHOTS, 'gui-13-new-task-priority.png'), fullPage: true });
-      console.log('snapped new-task form priority select (opens unset)');
+      if (newValue !== '') throw new Error(`new-card form must open on the unset option, saw ${newValue}`);
+      await page.screenshot({ path: path.join(SHOTS, 'gui-13-new-card-priority.png'), fullPage: true });
+      console.log('snapped new-card form priority select (opens unset)');
       await page.click('#form-overlay .overlay-close');
       await page.waitForSelector('#form-overlay', { state: 'hidden', timeout: 10_000 });
 
@@ -322,7 +322,7 @@ async function main() {
       //     criterion over the API — there is no per-item toggle in the GUI,
       //     {op:'done'} is MCP/HTTP-only — then open Edit and confirm the
       //     textarea is prefilled one criterion per line.
-      const preTick = await fetch(`${srv.url}/api/board/${PROJECT}/tasks/${seeded.a.id}`, {
+      const preTick = await fetch(`${srv.url}/api/board/${PROJECT}/cards/${seeded.a.id}`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ acceptance: { ops: [{ op: 'done', index: 0, done: true }] } }),

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Conductor's private, file-backed task board — a code-conductor MCP plugin",
+  "description": "Conductor's private, file-backed kanban board — a code-conductor MCP plugin",
   "scripts": {
     "start": "node server.js",
     "test": "node tests/run.mjs"

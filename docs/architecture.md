@@ -16,20 +16,20 @@ Env this plugin reads: `PORT`, `HOST` (`server.js`), `PROJECTS_ROOT` (`src/paths
 |--------|----------------|
 | `src/board.js` | **Single source of truth** — all board logic (transitions, id assignment, validation, log stamping, refusal codes). The GUI seam. Exports `ALLOWED_TRANSITIONS` read-only for the GUI's legal-move rendering. |
 | `src/store.js` | File store: state dirs, atomic writes, moves, id sequence, epic files. **No git.** |
-| `src/taskfile.js` | Task markdown ⇄ object (frontmatter + Goal/Acceptance/Logbook). |
+| `src/cardfile.js` | Card markdown ⇄ object (frontmatter + Goal/Acceptance/Logbook). |
 | `src/paths.js` | Resolve `PROJECTS_ROOT` → `.conduct/kanban/...` paths (incl. each scheme's plan base dir). Ordered `STATES`. |
 | `src/planLink.js` | Plan-link grammar (`board:`/`repo:`/bare) + the one containment guard, and `classifyPlanInput` — pointer vs **ingest** (a bare absolute input) discrimination. Pure — no fs; `board.js` owns stat-ing, the copy and every refusal shape. |
 | `src/projects.js` | `validateProject` — shape check + live list via `CONDUCTOR_URL/api/projects` (scan fallback standalone). `listProjects` — same source, for the GUI selector. |
 | `src/mutex.js` | Per-project async mutex — the one serialized write path. |
-| `src/mcp.js` | Thin tool dispatch → `board.js`; MCP envelope. Also owns two MCP-only presentation defaults: hiding `done` from `list_tasks` and rendering listings/prose as raw text blocks (`src/listRender.js`) — neither reaches the GUI. |
-| `src/listRender.js` | Pure text renderers for `list_tasks`/`list_epics`'s raw-text blocks. No imports beyond `STATES`; never sorts (renders `board.js`'s pre-sorted order as-is). |
+| `src/mcp.js` | Thin tool dispatch → `board.js`; MCP envelope. Also owns two MCP-only presentation defaults: hiding `done` from `list_cards` and rendering listings/prose as raw text blocks (`src/listRender.js`) — neither reaches the GUI. |
+| `src/listRender.js` | Pure text renderers for `list_cards`/`list_epics`'s raw-text blocks. No imports beyond `STATES`; never sorts (renders `board.js`'s pre-sorted order as-is). |
 | `src/routes.js` / `server.js` | Express `/api/health` + `/api/mcp` + the GUI's `/api/projects`, `/api/board/*` routes; `express.static(frontend/)` serves the GUI at `/`. Listen wiring. |
 
 Thin surfaces (`mcp.js`, the GUI routes) call `board.js`; they never duplicate logic or call each
 other. The GUI's additions to `board.js`/`projects.js` are **export-only** — `ALLOWED_TRANSITIONS`
 and `listProjects` are read out; no service-layer logic changed. An MCP-only **presentation
-default** (hiding `done` from `list_tasks`, rendering a listing as text) is not board logic and
-deliberately does not reach the GUI — `board.listTasks`'s own default (every lane) is unchanged, so
+default** (hiding `done` from `list_cards`, rendering a listing as text) is not board logic and
+deliberately does not reach the GUI — `board.listCards`'s own default (every lane) is unchanged, so
 the two surfaces legitimately disagree about what the same call returns.
 
 ## On-disk state
@@ -46,7 +46,7 @@ Board DATA lives in the conductor's tree, not this repo:
                                                #   crossEpicsDir for the same reason);
                                                #   plans/epic-<slug>.md is its INGEST destination
   projects/<project>/
-    triage/ backlog/ todo/ in-progress/ done/  # one <id>.md per task
+    triage/ backlog/ todo/ in-progress/ done/  # one <id>.md per card
     epics/<slug>.md                            # project-scoped epic: plan?, ## Goal, ## Logbook
     plans/<rel>                                # base for a card's OR a project-scoped epic's
                                                #   `board:` plan link; plans/<id>.md and
@@ -69,21 +69,28 @@ Board DATA lives in the conductor's tree, not this repo:
 - **Priority: legacy tolerance instead of a migration.** `priority` moved from an integer ladder
   to `src/priority.js`'s `CRITICAL|HIGH|MEDIUM|LOW` plus a first-class unset state, and no migration
   script was written.
-  `taskfile.parse` coerces tolerantly (`1→CRITICAL, 2→HIGH, 3→MEDIUM, 4→LOW, 5→LOW`; **anything
+  `cardfile.parse` coerces tolerantly (`1→CRITICAL, 2→HIGH, 3→MEDIUM, 4→LOW, 5→LOW`; **anything
   else, including `0`, a missing key and an unknown word → unset (`null`)**) and never throws or
   drops a card, so a loaded legacy card already holds its true state in memory and the first write
-  of any kind persists the new vocabulary; `taskfile.serialize` applies the same coercion as a guard
+  of any kind persists the new vocabulary; `cardfile.serialize` applies the same coercion as a guard
   on card objects that never came through `parse`, and **omits the frontmatter key entirely** when
   the card is unset. `0` maps to unset rather than to a level precisely because `0` meant "never
   judged": all 166 pre-existing cards hold it, and mapping it to `MEDIUM` would invent that many
   judgements. Live caller input is validated **strictly**
   instead (`INVALID_STATE`) — the two rules and the mixed-version sync hazard are in
   `.wiki/gotchas/priority-legacy-tolerance.md`.
-- **Epic rollups** are never stored — recomputed by scanning tasks on each read. A cross-project
+- **The `task` → `card` rename carried no store migration.** The on-disk format never held the
+  noun: `src/paths.js` was not edited, and `src/cardfile.js`'s `SCALAR_KEYS`, `serialize` and
+  `parse` are byte-identical across the rename. So a board written by an older build reads here,
+  a board written here reads on an older build, and `/api/sync/export` interoperates with an
+  un-renamed peer. Only live MCP callers break, deliberately: a session holding the pre-rename
+  tool registry gets `unknown tool: file_task` until it refreshes.
+
+- **Epic rollups** are never stored — recomputed by scanning cards on each read. A cross-project
   epic aggregates the scan across every project in its frontmatter `projects:[…]` list.
-- **Cross-project epics** live in the top-level `epics/` dir (above `projects/`) and join tasks by
+- **Cross-project epics** live in the top-level `epics/` dir (above `projects/`) and join cards by
   the same `epic:<slug>` field. A slug can't be both a cross-project epic and a per-project epic in
-  one of its members (`createEpic` refuses `EPIC_CONFLICT` in both orders), so a task's epic slug is
+  one of its members (`createEpic` refuses `EPIC_CONFLICT` in both orders), so a card's epic slug is
   unambiguous. Their writes serialize on a dedicated `withLock(' cross-epics')` key — distinct from
   every project name — so the per-project single-writer invariant is untouched.
 
@@ -92,14 +99,14 @@ Board DATA lives in the conductor's tree, not this repo:
 Sync one board with another instance on a different machine, reachable at a code-hub-forwarded
 URL (no git). **Two-click, one-way pull per click**: each click pulls the peer's FULL board dump
 for a scope and merges it in; converging both machines means clicking Sync on each side. The merge
-itself is grow-only: it unions by `uid` and never deletes a card it doesn't recognize. `delete_task`
-(a plain hard delete, not a sync-aware tombstone) is a real gap this leaves: a task deleted on one
+itself is grow-only: it unions by `uid` and never deletes a card it doesn't recognize. `delete_card`
+(a plain hard delete, not a sync-aware tombstone) is a real gap this leaves: a card deleted on one
 machine can reappear the next time that machine pulls from a peer that still holds it. Accepted for
 now (YAGNI — no caller needs cross-machine delete propagation); revisit if that changes. A second,
 smaller gap of the same kind: a card's `plan` **link** is ordinary frontmatter and rides
 export/pull under whole-card LWW like `owner`/`commit`, but plan **bodies** are not shipped by
-`exportBoard`/`syncPull`, so a synced card can carry a dead link. It degrades — `read_task` returns
-`plan_missing`, `delete_task`'s unlink is a no-op, the GUI shows "(file not found)", and re-setting
+`exportBoard`/`syncPull`, so a synced card can carry a dead link. It degrades — `read_card` returns
+`plan_missing`, `delete_card`'s unlink is a no-op, the GUI shows "(file not found)", and re-setting
 that same link on this machine refuses `PLAN_UNKNOWN` — but never crashes. Also accepted (YAGNI);
 not fixed. Plan **ingest** (an absolute `plan` input copied to `plans/<id>.md`) makes `board:` the
 common scheme, so this gap is hit more often, not less: a pulled card carries a dead `board:` link
@@ -111,11 +118,11 @@ not cards would be incoherent, and no caller needs it. The epic **logbook**, by 
 losing side's entries are lost, not merged**, exactly as for a card's logbook. Details + rationale:
 `.wiki/architecture/cross-instance-sync.md`, `.wiki/gotchas/plan-link-and-sync-gap.md`.
 
-- **Hidden identity.** Cards carry three sync-only frontmatter fields (`src/taskfile.js`):
+- **Hidden identity.** Cards carry three sync-only frontmatter fields (`src/cardfile.js`):
   `uid` (the true match key — random `crypto.randomUUID` for new cards), `updated` (UTC ISO-8601
   version stamp, bumped by **every** mutator via `board.js`'s `touch()`), and `node` (the machine
   that wrote this version — the LWW tiebreak). `uid`/`node` are stripped from every MCP/GUI read
-  (`board.readTask`'s `stripHidden`; `summary()` never included them); `GET /api/sync/export` is
+  (`board.readCard`'s `stripHidden`; `summary()` never included them); `GET /api/sync/export` is
   the sole exposure. The short `${year}-${NNNN}` display id stays the MCP handle and never grows.
 - **Node id**: a per-machine id minted once at `<kanbanRoot>/.node-id` (`src/nodeId.js`).
 - **Merge** (`board.syncPull` → `mergeProject`, inside the same per-project `withLock`): union by

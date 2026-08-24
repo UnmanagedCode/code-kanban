@@ -1,9 +1,9 @@
 // Card priority: four verbal levels plus a first-class UNSET state. The SINGLE
-// source of the level catalog — src/taskfile.js (disk parse + serialize),
+// source of the level catalog — src/cardfile.js (disk parse + serialize),
 // src/board.js (sort + input validation), conductor.plugin.json's advertised
 // enum (guarded by tests/pluginManifest.test.mjs) and the GUI (via
 // /api/board/meta) all read it from here. A leaf module with no imports, so
-// taskfile.js can use it without a cycle.
+// cardfile.js can use it without a cycle.
 //
 // Unset is `null`, and it is NOT a level — it is the absence of a judgement.
 // There is deliberately no default: a card nobody has judged reads as unjudged,
@@ -11,7 +11,7 @@
 // the fact. Nothing here ever invents a level.
 //
 // Two DISTINCT entry points, and the distinction is load-bearing:
-//   isPriority        — strict. Guards live caller input (file_task/update_task);
+//   isPriority        — strict. Guards live caller input (file_card/update_card);
 //                       a bad value is the author's bug and gets INVALID_STATE.
 //   normalizePriority — tolerant. Disk-parse ONLY. A card may predate this build
 //                       or arrive by sync from a peer still writing integers; we
@@ -19,7 +19,7 @@
 //                       card is ever dropped.
 // See .wiki/gotchas/priority-legacy-tolerance.md.
 
-// Declaration order IS rank order — highest first. sortTasks ranks by index.
+// Declaration order IS rank order — highest first. sortCards ranks by index.
 // Unset is not in here: it ranks after the last entry (priorityRank).
 export const PRIORITIES = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
 

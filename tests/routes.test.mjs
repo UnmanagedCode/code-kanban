@@ -66,36 +66,36 @@ test('GET /api/board/meta returns states + transitions from the single source', 
 
 test('file -> list -> read round-trip through the routes', async () => {
   await withServer(async ({ json }) => {
-    const filed = await json('/api/board/demo/tasks', { method: 'POST', body: { title: 't1', goal: 'g', acceptance: ['a', 'b'], epic: undefined } });
+    const filed = await json('/api/board/demo/cards', { method: 'POST', body: { title: 't1', goal: 'g', acceptance: ['a', 'b'], epic: undefined } });
     assert.equal(filed.status, 200);
     assert.equal(filed.body.ok, true);
     const id = filed.body.id;
 
-    const listed = await json('/api/board/demo/tasks');
+    const listed = await json('/api/board/demo/cards');
     assert.equal(listed.body.ok, true);
-    assert.equal(listed.body.tasks.length, 1);
-    assert.equal(listed.body.tasks[0].id, id);
-    assert.equal(listed.body.tasks[0].state, 'triage');
+    assert.equal(listed.body.cards.length, 1);
+    assert.equal(listed.body.cards[0].id, id);
+    assert.equal(listed.body.cards[0].state, 'triage');
 
-    const read = await json(`/api/board/demo/tasks/${id}`);
+    const read = await json(`/api/board/demo/cards/${id}`);
     assert.equal(read.body.ok, true);
-    assert.equal(read.body.task.title, 't1');
-    assert.deepEqual(read.body.task.acceptance, [{ text: 'a', done: false }, { text: 'b', done: false }]);
-    assert.ok(read.body.task.logbook.length >= 1);
+    assert.equal(read.body.card.title, 't1');
+    assert.deepEqual(read.body.card.acceptance, [{ text: 'a', done: false }, { text: 'b', done: false }]);
+    assert.ok(read.body.card.logbook.length >= 1);
   });
 });
 
 test('legal move returns {ok:true,from,to}; illegal move returns 200 INVALID_STATE', async () => {
   await withServer(async ({ json }) => {
-    const id = (await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'm' } })).body.id;
+    const id = (await json('/api/board/demo/cards', { method: 'POST', body: { title: 'm' } })).body.id;
 
-    const legal = await json(`/api/board/demo/tasks/${id}/move`, { method: 'POST', body: { to: 'backlog' } });
+    const legal = await json(`/api/board/demo/cards/${id}/move`, { method: 'POST', body: { to: 'backlog' } });
     assert.equal(legal.status, 200);
     assert.deepEqual(legal.body, { ok: true, from: 'triage', to: 'backlog' });
 
     // triage -> done is not in ALLOWED_TRANSITIONS; the refusal is a normal 200.
-    const id2 = (await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'm2' } })).body.id;
-    const illegal = await json(`/api/board/demo/tasks/${id2}/move`, { method: 'POST', body: { to: 'done' } });
+    const id2 = (await json('/api/board/demo/cards', { method: 'POST', body: { title: 'm2' } })).body.id;
+    const illegal = await json(`/api/board/demo/cards/${id2}/move`, { method: 'POST', body: { to: 'done' } });
     assert.equal(illegal.status, 200);
     assert.equal(illegal.body.ok, false);
     assert.equal(illegal.body.code, 'INVALID_STATE');
@@ -103,73 +103,73 @@ test('legal move returns {ok:true,from,to}; illegal move returns 200 INVALID_STA
   });
 });
 
-test('move to done forwards an explicit commit through to the stamped task', async () => {
+test('move to done forwards an explicit commit through to the stamped card', async () => {
   await withServer(async ({ json }) => {
-    const id = (await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'c' } })).body.id;
-    await json(`/api/board/demo/tasks/${id}/move`, { method: 'POST', body: { to: 'todo' } });
-    await json(`/api/board/demo/tasks/${id}/move`, { method: 'POST', body: { to: 'in-progress' } });
-    const moved = await json(`/api/board/demo/tasks/${id}/move`, { method: 'POST', body: { to: 'done', commit: 'cafe1234' } });
+    const id = (await json('/api/board/demo/cards', { method: 'POST', body: { title: 'c' } })).body.id;
+    await json(`/api/board/demo/cards/${id}/move`, { method: 'POST', body: { to: 'todo' } });
+    await json(`/api/board/demo/cards/${id}/move`, { method: 'POST', body: { to: 'in-progress' } });
+    const moved = await json(`/api/board/demo/cards/${id}/move`, { method: 'POST', body: { to: 'done', commit: 'cafe1234' } });
     assert.equal(moved.body.ok, true);
 
-    const read = await json(`/api/board/demo/tasks/${id}`);
-    assert.equal(read.body.task.commit, 'cafe1234');
+    const read = await json(`/api/board/demo/cards/${id}`);
+    assert.equal(read.body.card.commit, 'cafe1234');
   });
 });
 
 test('move to a non-in-progress destination clears owner (no stuck gui owner)', async () => {
   await withServer(async ({ json }) => {
-    const id = (await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'o' } })).body.id;
+    const id = (await json('/api/board/demo/cards', { method: 'POST', body: { title: 'o' } })).body.id;
     // triage -> backlog (not in-progress): owner must not be set even though the
     // route passes GUI_ACTOR.
-    await json(`/api/board/demo/tasks/${id}/move`, { method: 'POST', body: { to: 'backlog' } });
-    const read = await json(`/api/board/demo/tasks/${id}`);
-    assert.equal(read.body.task.owner, null);
+    await json(`/api/board/demo/cards/${id}/move`, { method: 'POST', body: { to: 'backlog' } });
+    const read = await json(`/api/board/demo/cards/${id}`);
+    assert.equal(read.body.card.owner, null);
   });
 });
 
 test('PATCH updates whitelisted fields; acceptance edits via {replace}, but a bare array is refused', async () => {
   await withServer(async ({ json }) => {
-    const id = (await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'u', acceptance: ['x'] } })).body.id;
-    const patched = await json(`/api/board/demo/tasks/${id}`, {
+    const id = (await json('/api/board/demo/cards', { method: 'POST', body: { title: 'u', acceptance: ['x'] } })).body.id;
+    const patched = await json(`/api/board/demo/cards/${id}`, {
       method: 'PATCH', body: { title: 'u2', priority: 'HIGH', acceptance: { replace: ['y'] } },
     });
     assert.equal(patched.status, 200);
     assert.equal(patched.body.ok, true);
-    const read = await json(`/api/board/demo/tasks/${id}`);
-    assert.equal(read.body.task.title, 'u2');
-    assert.equal(read.body.task.priority, 'HIGH');
-    assert.deepEqual(read.body.task.acceptance, [{ text: 'y', done: false }]);
+    const read = await json(`/api/board/demo/cards/${id}`);
+    assert.equal(read.body.card.title, 'u2');
+    assert.equal(read.body.card.priority, 'HIGH');
+    assert.deepEqual(read.body.card.acceptance, [{ text: 'y', done: false }]);
 
-    // A bare array (the natural `string[]` guess, since that is file_task's
+    // A bare array (the natural `string[]` guess, since that is file_card's
     // filing-time shape) was PREVIOUSLY silently ignored — this is the
     // deliberate 2026-0020 behaviour change: it now refuses INVALID_STATE, and
     // the reason names all three accepted shapes.
-    const bad = await json(`/api/board/demo/tasks/${id}`, {
+    const bad = await json(`/api/board/demo/cards/${id}`, {
       method: 'PATCH', body: { title: 'u3', acceptance: [{ text: 'z', done: true }] },
     });
     assert.equal(bad.status, 200);
     assert.equal(bad.body.ok, false);
     assert.equal(bad.body.code, 'INVALID_STATE');
     assert.equal(bad.body.reason, 'acceptance must be {ops:[…]}, {replace:[…]}, or null');
-    const unchanged = await json(`/api/board/demo/tasks/${id}`);
-    assert.equal(unchanged.body.task.title, 'u2'); // the accompanying title change did NOT land either
-    assert.deepEqual(unchanged.body.task.acceptance, [{ text: 'y', done: false }]);
+    const unchanged = await json(`/api/board/demo/cards/${id}`);
+    assert.equal(unchanged.body.card.title, 'u2'); // the accompanying title change did NOT land either
+    assert.deepEqual(unchanged.body.card.acceptance, [{ text: 'y', done: false }]);
   });
 });
 
 test('the GUI textarea round-trip keeps ticks: {op:done} then {replace} with the exact textarea payload', async () => {
   await withServer(async ({ json }) => {
-    const id = (await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'u', acceptance: ['a', 'b'] } })).body.id;
-    await json(`/api/board/demo/tasks/${id}`, {
+    const id = (await json('/api/board/demo/cards', { method: 'POST', body: { title: 'u', acceptance: ['a', 'b'] } })).body.id;
+    await json(`/api/board/demo/cards/${id}`, {
       method: 'PATCH', body: { acceptance: { ops: [{ op: 'done', index: 0, done: true }] } },
     });
     // What the edit form's textarea actually sends: one line per criterion.
-    const patched = await json(`/api/board/demo/tasks/${id}`, {
+    const patched = await json(`/api/board/demo/cards/${id}`, {
       method: 'PATCH', body: { acceptance: { replace: ['a', 'b', 'c'] } },
     });
     assert.equal(patched.body.ok, true);
-    const read = await json(`/api/board/demo/tasks/${id}`);
-    assert.deepEqual(read.body.task.acceptance, [
+    const read = await json(`/api/board/demo/cards/${id}`);
+    assert.deepEqual(read.body.card.acceptance, [
       { text: 'a', done: true }, { text: 'b', done: false }, { text: 'c', done: false },
     ]);
   });
@@ -177,11 +177,11 @@ test('the GUI textarea round-trip keeps ticks: {op:done} then {replace} with the
 
 test('PATCH {acceptance:null} clears the list over HTTP', async () => {
   await withServer(async ({ json }) => {
-    const id = (await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'u', acceptance: ['a', 'b'] } })).body.id;
-    const patched = await json(`/api/board/demo/tasks/${id}`, { method: 'PATCH', body: { acceptance: null } });
+    const id = (await json('/api/board/demo/cards', { method: 'POST', body: { title: 'u', acceptance: ['a', 'b'] } })).body.id;
+    const patched = await json(`/api/board/demo/cards/${id}`, { method: 'PATCH', body: { acceptance: null } });
     assert.equal(patched.body.ok, true);
-    const read = await json(`/api/board/demo/tasks/${id}`);
-    assert.deepEqual(read.body.task.acceptance, []);
+    const read = await json(`/api/board/demo/cards/${id}`);
+    assert.deepEqual(read.body.card.acceptance, []);
   });
 });
 
@@ -195,19 +195,19 @@ test('PATCH {acceptance:null} clears the list over HTTP', async () => {
 // that omitting it is what keeps the list byte-identical end to end.
 test('a title-only GUI edit (acceptance textarea untouched) leaves a duplicate-text, mixed-done list byte-identical', async () => {
   await withServer(async ({ json }) => {
-    const id = (await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'orig' } })).body.id;
+    const id = (await json('/api/board/demo/cards', { method: 'POST', body: { title: 'orig' } })).body.id;
     // Two ops.add calls (a single-call `ops` batch resolves against the
     // PRE-EDIT snapshot, so 'done' couldn't target index 0 in the same call
     // that adds it — it would be out of range against the still-empty list).
-    await json(`/api/board/demo/tasks/${id}`, {
+    await json(`/api/board/demo/cards/${id}`, {
       method: 'PATCH',
       body: { acceptance: { ops: [{ op: 'add', text: 'a' }, { op: 'add', text: 'a' }] } },
     });
-    await json(`/api/board/demo/tasks/${id}`, {
+    await json(`/api/board/demo/cards/${id}`, {
       method: 'PATCH',
       body: { acceptance: { ops: [{ op: 'done', index: 0, done: true }] } },
     });
-    const before = (await json(`/api/board/demo/tasks/${id}`)).body.task.acceptance;
+    const before = (await json(`/api/board/demo/cards/${id}`)).body.card.acceptance;
     assert.deepEqual(before, [{ text: 'a', done: true }, { text: 'a', done: false }]);
 
     // What renderEditForm prefilled the textarea with, and what the user left
@@ -218,10 +218,10 @@ test('a title-only GUI edit (acceptance textarea untouched) leaves a duplicate-t
 
     const fields = { title: 'renamed' };
     if (acceptanceField !== undefined) fields.acceptance = acceptanceField;
-    const patched = await json(`/api/board/demo/tasks/${id}`, { method: 'PATCH', body: fields });
+    const patched = await json(`/api/board/demo/cards/${id}`, { method: 'PATCH', body: fields });
     assert.equal(patched.body.ok, true);
 
-    const after = (await json(`/api/board/demo/tasks/${id}`)).body.task;
+    const after = (await json(`/api/board/demo/cards/${id}`)).body.card;
     assert.equal(after.title, 'renamed');
     // Literal expected list — not derived from replaceAcceptance's own rule.
     assert.deepEqual(after.acceptance, [{ text: 'a', done: true }, { text: 'a', done: false }]);
@@ -239,15 +239,15 @@ test('epics: create (upsert) -> list -> read with rollup', async () => {
     assert.equal(reread.epic.title, 'Auth v2');
     assert.equal(reread.epic.created, reread0);
 
-    // File a task under the epic and confirm the rollup counts it.
-    await json('/api/board/demo/tasks', { method: 'POST', body: { title: 't', epic: 'auth' } });
+    // File a card under the epic and confirm the rollup counts it.
+    await json('/api/board/demo/cards', { method: 'POST', body: { title: 't', epic: 'auth' } });
     const listed = await json('/api/board/demo/epics');
     const auth = listed.body.epics.find((e) => e.slug === 'auth');
     assert.equal(auth.rollup.triage, 1);
 
     const read = await json('/api/board/demo/epics/auth');
     assert.equal(read.body.ok, true);
-    assert.equal(read.body.tasks.length, 1);
+    assert.equal(read.body.cards.length, 1);
   });
 });
 
@@ -288,15 +288,15 @@ test('cross-project epics: POST /api/epics -> GET /api/epics/:slug -> appears in
     assert.equal(preserved.title, 'Platform v2');
 
     // File under it in both members.
-    await srv.json('/api/board/web/tasks', { method: 'POST', body: { title: 'w', epic: 'platform' } });
-    await srv.json('/api/board/api/tasks', { method: 'POST', body: { title: 'a', epic: 'platform' } });
+    await srv.json('/api/board/web/cards', { method: 'POST', body: { title: 'w', epic: 'platform' } });
+    await srv.json('/api/board/api/cards', { method: 'POST', body: { title: 'a', epic: 'platform' } });
 
     // Direct read by slug aggregates across members.
     const read = await srv.json('/api/epics/platform');
     assert.equal(read.body.ok, true);
     assert.deepEqual(read.body.epic.projects, ['web', 'api']);
     assert.equal(read.body.epic.rollup.triage, 2);
-    assert.equal(read.body.tasks.length, 2);
+    assert.equal(read.body.cards.length, 2);
 
     // It also shows up in a member project's epic list, flagged with projects.
     const list = await srv.json('/api/board/web/epics');
@@ -317,7 +317,7 @@ test('cross-project epics: POST /api/epics -> GET /api/epics/:slug -> appears in
 
 test('unknown project -> 200 PROJECT_UNKNOWN (not a transport error)', async () => {
   await withServer(async ({ json }) => {
-    const { status, body } = await json('/api/board/ghost/tasks');
+    const { status, body } = await json('/api/board/ghost/cards');
     assert.equal(status, 200);
     assert.equal(body.ok, false);
     assert.equal(body.code, 'PROJECT_UNKNOWN');
@@ -328,7 +328,7 @@ test('malformed JSON body -> 400 {error}', async () => {
   await withServer(async ({ json, server }) => {
     // Bypass the json() helper to send raw bad JSON.
     const port = server.address().port;
-    const res = await fetch(`http://127.0.0.1:${port}/api/board/demo/tasks`, {
+    const res = await fetch(`http://127.0.0.1:${port}/api/board/demo/cards`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: '{not json',
@@ -339,9 +339,9 @@ test('malformed JSON body -> 400 {error}', async () => {
   });
 });
 
-test('unknown epic on file_task -> 200 EPIC_UNKNOWN', async () => {
+test('unknown epic on file_card -> 200 EPIC_UNKNOWN', async () => {
   await withServer(async ({ json }) => {
-    const { status, body } = await json('/api/board/demo/tasks', { method: 'POST', body: { title: 't', epic: 'nope' } });
+    const { status, body } = await json('/api/board/demo/cards', { method: 'POST', body: { title: 't', epic: 'nope' } });
     assert.equal(status, 200);
     assert.equal(body.ok, false);
     assert.equal(body.code, 'EPIC_UNKNOWN');
@@ -350,7 +350,7 @@ test('unknown epic on file_task -> 200 EPIC_UNKNOWN', async () => {
 
 test('GET /api/sync/export returns the full card set incl. the hidden uid stamp', async () => {
   await withServer(async ({ json }) => {
-    await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'Exportable' } });
+    await json('/api/board/demo/cards', { method: 'POST', body: { title: 'Exportable' } });
     const { status, body } = await json('/api/sync/export?scope=project&project=demo');
     assert.equal(status, 200);
     assert.equal(body.ok, true);
@@ -393,8 +393,8 @@ test('POST /api/sync/pull merges a stubbed peer dump and returns a summary', asy
       assert.equal(status, 200);
       assert.equal(body.ok, true);
       assert.equal(body.summary.added, 1);
-      const read = await json('/api/board/demo/tasks/2026-0001');
-      assert.equal(read.body.task.title, 'FromPeer');
+      const read = await json('/api/board/demo/cards/2026-0001');
+      assert.equal(read.body.card.title, 'FromPeer');
     } finally {
       board._setSyncFetcher(null);
     }
@@ -421,38 +421,38 @@ test('unexpected throw in a board fn -> 500 {error}, not a hung response', async
     // would hang (the json() helper would await res.json() until the test
     // timeout). The wrapper turns the throw into 500 {error}.
     _setProjectFetcher(async () => { throw new Error('boom'); });
-    const { status, body } = await json('/api/board/demo/tasks');
+    const { status, body } = await json('/api/board/demo/cards');
     assert.equal(status, 500);
     assert.equal(body.error, 'boom');
   });
 });
-test('GET /tasks/:id?includePlan=1 returns plan_path + plan_body; without it, only plan_path', async () => {
+test('GET /cards/:id?includePlan=1 returns plan_path + plan_body; without it, only plan_path', async () => {
   await withServer(async ({ json }) => {
-    const id = (await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'planned' } })).body.id;
+    const id = (await json('/api/board/demo/cards', { method: 'POST', body: { title: 'planned' } })).body.id;
     const file = path.join(plansDir('demo'), 'p.md');
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, '# plan body\nsecond line\n');
-    const patched = await json(`/api/board/demo/tasks/${id}`, { method: 'PATCH', body: { plan: 'p.md' } });
+    const patched = await json(`/api/board/demo/cards/${id}`, { method: 'PATCH', body: { plan: 'p.md' } });
     assert.equal(patched.body.ok, true);
 
-    const plain = await json(`/api/board/demo/tasks/${id}`);
-    assert.equal(plain.body.task.plan, 'board:p.md');
+    const plain = await json(`/api/board/demo/cards/${id}`);
+    assert.equal(plain.body.card.plan, 'board:p.md');
     assert.equal(plain.body.plan_path, file);
     assert.equal('plan_body' in plain.body, false); // no body unless asked
 
-    const withPlan = await json(`/api/board/demo/tasks/${id}?includePlan=1`);
+    const withPlan = await json(`/api/board/demo/cards/${id}?includePlan=1`);
     assert.equal(withPlan.body.plan_body, '# plan body\nsecond line\n');
     assert.equal(withPlan.body.plan_missing, false);
-    assert.equal((await json(`/api/board/demo/tasks/${id}?includePlan=true`)).body.plan_body, '# plan body\nsecond line\n');
+    assert.equal((await json(`/api/board/demo/cards/${id}?includePlan=true`)).body.plan_body, '# plan body\nsecond line\n');
     // Any other value is falsy — the route coerces, it doesn't guess.
-    assert.equal('plan_body' in (await json(`/api/board/demo/tasks/${id}?includePlan=0`)).body, false);
+    assert.equal('plan_body' in (await json(`/api/board/demo/cards/${id}?includePlan=0`)).body, false);
   });
 });
 
 test('PATCH with an unresolvable plan field returns 200 PLAN_UNKNOWN', async () => {
   await withServer(async ({ json }) => {
-    const id = (await json('/api/board/demo/tasks', { method: 'POST', body: { title: 't' } })).body.id;
-    const res = await json(`/api/board/demo/tasks/${id}`, { method: 'PATCH', body: { plan: 'ghost.md' } });
+    const id = (await json('/api/board/demo/cards', { method: 'POST', body: { title: 't' } })).body.id;
+    const res = await json(`/api/board/demo/cards/${id}`, { method: 'PATCH', body: { plan: 'ghost.md' } });
     assert.equal(res.status, 200);
     assert.equal(res.body.ok, false);
     assert.equal(res.body.code, 'PLAN_UNKNOWN');
@@ -463,18 +463,18 @@ test('PATCH with an unresolvable plan field returns 200 PLAN_UNKNOWN', async () 
 // it for free (routes.js passes req.body through as `fields`, zero edits).
 test('PATCH with an ABSOLUTE plan path ingests the file and returns the board: link', async () => {
   await withServer(async ({ json }) => {
-    const id = (await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'planned' } })).body.id;
+    const id = (await json('/api/board/demo/cards', { method: 'POST', body: { title: 'planned' } })).body.id;
     const srcDir = fs.mkdtempSync(path.join(os.tmpdir(), 'code-kanban-src-'));
     try {
       const source = path.join(srcDir, 'host-plan.md');
       fs.writeFileSync(source, '# ingested over HTTP\n');
-      const res = await json(`/api/board/demo/tasks/${id}`, { method: 'PATCH', body: { plan: source } });
+      const res = await json(`/api/board/demo/cards/${id}`, { method: 'PATCH', body: { plan: source } });
       assert.equal(res.status, 200);
       assert.equal(res.body.ok, true);
       assert.equal(res.body.plan, `board:${id}.md`);
       assert.equal(fs.readFileSync(path.join(plansDir('demo'), `${id}.md`), 'utf8'), '# ingested over HTTP\n');
-      const read = await json(`/api/board/demo/tasks/${id}?includePlan=1`);
-      assert.equal(read.body.task.plan, `board:${id}.md`);
+      const read = await json(`/api/board/demo/cards/${id}?includePlan=1`);
+      assert.equal(read.body.card.plan, `board:${id}.md`);
       assert.equal(read.body.plan_body, '# ingested over HTTP\n');
     } finally { fs.rmSync(srcDir, { recursive: true, force: true }); }
   });
@@ -492,19 +492,19 @@ test('GET /api/board/meta advertises the priority levels in rank order', async (
   });
 });
 
-test('POST /api/board/:project/tasks captures priority at filing time', async () => {
+test('POST /api/board/:project/cards captures priority at filing time', async () => {
   await withServer(async ({ json }) => {
-    const filed = await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'urgent thing', priority: 'CRITICAL' } });
+    const filed = await json('/api/board/demo/cards', { method: 'POST', body: { title: 'urgent thing', priority: 'CRITICAL' } });
     assert.equal(filed.body.ok, true);
-    const read = await json(`/api/board/demo/tasks/${filed.body.id}`);
-    assert.equal(read.body.task.priority, 'CRITICAL');
+    const read = await json(`/api/board/demo/cards/${filed.body.id}`);
+    assert.equal(read.body.card.priority, 'CRITICAL');
 
-    // Omitted -> unset (the GUI's New-task select opens on the unset option too,
+    // Omitted -> unset (the GUI's New-card select opens on the unset option too,
     // so the two filing surfaces agree).
-    const bare = await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'ordinary thing' } });
-    const bareRead = await json(`/api/board/demo/tasks/${bare.body.id}`);
-    assert.equal(bareRead.body.task.priority, null);
-    assert.notEqual(bareRead.body.task.priority, 'MEDIUM');
+    const bare = await json('/api/board/demo/cards', { method: 'POST', body: { title: 'ordinary thing' } });
+    const bareRead = await json(`/api/board/demo/cards/${bare.body.id}`);
+    assert.equal(bareRead.body.card.priority, null);
+    assert.notEqual(bareRead.body.card.priority, 'MEDIUM');
   });
 });
 
@@ -513,25 +513,56 @@ test('PATCH with priority:null clears the level over HTTP', async () => {
     // The GUI's edit form submits its '— unset —' option as null; this is that
     // wire path end to end, JSON null included (which survives serialization
     // where `undefined` would not).
-    const id = (await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'z', priority: 'HIGH' } })).body.id;
-    const patched = await json(`/api/board/demo/tasks/${id}`, { method: 'PATCH', body: { priority: null } });
+    const id = (await json('/api/board/demo/cards', { method: 'POST', body: { title: 'z', priority: 'HIGH' } })).body.id;
+    const patched = await json(`/api/board/demo/cards/${id}`, { method: 'PATCH', body: { priority: null } });
     assert.equal(patched.body.ok, true, JSON.stringify(patched.body));
-    assert.equal((await json(`/api/board/demo/tasks/${id}`)).body.task.priority, null);
+    assert.equal((await json(`/api/board/demo/cards/${id}`)).body.card.priority, null);
   });
 });
 
 test('a bad priority is a 200 domain refusal, not a transport error', async () => {
   await withServer(async ({ json }) => {
-    const filed = await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'x', priority: 'URGENT' } });
+    const filed = await json('/api/board/demo/cards', { method: 'POST', body: { title: 'x', priority: 'URGENT' } });
     assert.equal(filed.status, 200);
     assert.equal(filed.body.ok, false);
     assert.equal(filed.body.code, 'INVALID_STATE');
 
-    const id = (await json('/api/board/demo/tasks', { method: 'POST', body: { title: 'y', priority: 'LOW' } })).body.id;
-    const patched = await json(`/api/board/demo/tasks/${id}`, { method: 'PATCH', body: { priority: 3 } });
+    const id = (await json('/api/board/demo/cards', { method: 'POST', body: { title: 'y', priority: 'LOW' } })).body.id;
+    const patched = await json(`/api/board/demo/cards/${id}`, { method: 'PATCH', body: { priority: 3 } });
     assert.equal(patched.status, 200);
     assert.equal(patched.body.ok, false);
     assert.equal(patched.body.code, 'INVALID_STATE');
-    assert.equal((await json(`/api/board/demo/tasks/${id}`)).body.task.priority, 'LOW');
+    assert.equal((await json(`/api/board/demo/cards/${id}`)).body.card.priority, 'LOW');
+  });
+});
+
+// T-new-5 (card 2026-0028) — the five pre-rename /tasks routes are really gone.
+// A leftover route is invisible from the GUI side (app.js only calls /cards),
+// so nothing else would notice one surviving. Asserted with a RAW fetch, not
+// the json() helper: an unrouted path gets Express's HTML 404 page, and 404 is
+// distinct from both this app's 200 {ok:false} domain refusals and its
+// 400/500 {error}s. `demo` is a REAL project here, so a 404 can only mean "no
+// such route" — never PROJECT_UNKNOWN wearing a different hat.
+test('the pre-rename /tasks routes are gone — each returns 404', async () => {
+  await withServer(async ({ server, json }) => {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const f = await json('/api/board/demo/cards', { method: 'POST', body: { title: 'live' } });
+    assert.equal(f.body.ok, true); // the renamed route works, so the 404s below are about the path
+    const id = f.body.id;
+    const dead = [
+      ['GET', `/api/board/demo/tasks`],
+      ['GET', `/api/board/demo/tasks/${id}`],
+      ['POST', `/api/board/demo/tasks`],
+      ['PATCH', `/api/board/demo/tasks/${id}`],
+      ['POST', `/api/board/demo/tasks/${id}/move`],
+    ];
+    for (const [method, route] of dead) {
+      const res = await fetch(base + route, {
+        method,
+        headers: { 'content-type': 'application/json' },
+        body: method === 'GET' ? undefined : '{}',
+      });
+      assert.equal(res.status, 404, `${method} ${route}`);
+    }
   });
 });

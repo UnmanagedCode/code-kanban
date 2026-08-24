@@ -7,8 +7,8 @@ in the DOM, absolutely positioned at `top:10px; right:12px` relative to `.overla
 close button always paints *above* it regardless of DOM order, even though `.detail-head`
 comes later in the document.
 
-Consequence: any button placed at the right edge of `.detail-head` (e.g. the task-detail Edit
+Consequence: any button placed at the right edge of `.detail-head` (e.g. the card-detail Edit
 button) will visually collide with, and have its clicks intercepted by, the close button unless
 `.detail-head` reserves clearance. Fixed via `padding-right: 28px` on `.detail-head`
-(`frontend/styles.css:180`) — keep that clearance (or increase it) if `.detail-head`'s content
+(`frontend/styles.css:192`) — keep that clearance (or increase it) if `.detail-head`'s content
 grows.

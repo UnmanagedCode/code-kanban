@@ -55,7 +55,7 @@ export function isContained(base, resolved) {
 // parsePlanLink(link) -> {scheme, rel} | {error:{code, reason}}
 export function parsePlanLink(link) {
   if (typeof link !== 'string') return bad('plan link must be a string');
-  // A frontmatter value is ONE verbatim line (taskfile.serialize) — an embedded
+  // A frontmatter value is ONE verbatim line (cardfile.serialize) — an embedded
   // newline would inject a spurious key, the same hazard sanitizeCommit guards.
   if (/[\n\r]/.test(link)) return bad('plan link must not contain a newline');
   // Frontmatter parsing trims on read, so an untrimmed value would not

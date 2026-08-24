@@ -8,7 +8,7 @@
   plans/<rel>                                  # BOARD-LEVEL `board:` base — a cross-project
                                                #   epic's, since it has no owning project
   projects/<project>/
-    triage/ backlog/ todo/ in-progress/ done/  # <id>.md per task, one per column dir
+    triage/ backlog/ todo/ in-progress/ done/  # <id>.md per card, one per column dir
     epics/<slug>.md                            # project-scoped epic
     plans/<rel>                                # `board:` base for this project's cards AND
                                                #   its own epics
@@ -19,14 +19,23 @@ Epic files carry the same two hand-rolled halves for both kinds — `store.js`'s
 `projects: […]`). An epic record holds `slug, title, project|projects, plan?, created, updated?,
 node?` + `## Goal` + `## Logbook`.
 
-A task's **state is its directory** — never stored in the file; `store.js` injects it on read.
-Task files: minimal `---` frontmatter (`id, title, project, epic?, priority?, created, owner?,
+A card's **state is its directory** — never stored in the file; `store.js` injects it on read.
+Card files: minimal `---` frontmatter (`id, title, project, epic?, priority?, created, owner?,
 depends_on`) + `## Goal`, `## Acceptance` (checkboxes), `## Logbook` (append-only). Parsed by
-`src/taskfile.js` (hand-rolled, no YAML dep).
+`src/cardfile.js` (hand-rolled, no YAML dep).
+
+**The `task` → `card` rename needed no store migration**, in either skew direction: the on-disk
+format never carried the noun. No path segment in `src/paths.js` says `task` (a card's filename is
+its bare id; its column is its directory), and no frontmatter key does either — `SCALAR_KEYS`
+(`src/cardfile.js:15`) plus `depends_on`, `## Goal`/`## Acceptance`/`## Logbook`. The rename left
+`src/paths.js` untouched and `src/cardfile.js`'s codec byte-identical, so an older build reads a
+board this one wrote and vice versa, and the `/api/sync/export` wire is unchanged between a renamed
+and an un-renamed peer. The one break is deliberate and process-level, not on-disk: a live MCP
+caller holding the pre-rename tool registry gets `unknown tool: file_task` and must refresh.
 
 `priority` is one of `src/priority.js`'s `PRIORITIES` (`CRITICAL|HIGH|MEDIUM|LOW`), written
 verbatim — and **optional**: an unset card has no `priority:` line at all, like `epic`/`owner`
-(`src/taskfile.js`'s `serialize`). A missing key is also what a pre-enum peer writes as `0`, so
+(`src/cardfile.js`'s `serialize`). A missing key is also what a pre-enum peer writes as `0`, so
 unset survives a round trip through one. It used to be an integer, and cards holding the old values
 still exist on disk and still arrive by sync — reading one never fails, and writing it back
 rewrites it in the new vocabulary:
@@ -43,15 +52,15 @@ repo. A second git writer would contend with the conductor's index/commits and r
 half-staged board changes into unrelated commits. Per-card history already lives in the Logbook;
 any git snapshotting of the board is the conductor's concern at its own cadence.
 
-This decision is scoped to `.conduct`, not to git entirely: landing a task (`move_task` to
+This decision is scoped to `.conduct`, not to git entirely: landing a card (`move_card` to
 `done`) does one narrow **read** — `git rev-parse HEAD` (`src/git.js:headSha`) — to stamp a
-`commit` field on the task. It never touches `.conduct` and never writes.
+`commit` field on the card. It never touches `.conduct` and never writes.
 
 **Crucially, that read targets the owning worker's live working directory, never the base
 project checkout.** A worker typically runs on a git *worktree* (its own branch, e.g.
 `code-conductor/<hash>`); its commits aren't in the base checkout's history until a merge, so
-reading the base checkout's HEAD would silently stamp the wrong sha. Instead, `moveTask` captures
-the task's prior (`in-progress`) `owner` sessionId *before* it's cleared, and resolves it to a
+reading the base checkout's HEAD would silently stamp the wrong sha. Instead, `moveCard` captures
+the card's prior (`in-progress`) `owner` sessionId *before* it's cleared, and resolves it to a
 live working directory via `src/ownerWorktree.js:ownerCwd` — which calls the conductor's
 `GET /api/instances` (the same `CONDUCTOR_URL` HTTP channel `projects.js` uses for `/api/projects`)
 and reads the matching instance's `cwd` (the worktree path, or the base checkout if the worker
@@ -63,13 +72,13 @@ hard failure.
 ## Cross-project epics (slug guard + lock key)
 
 A cross-project epic is a top-level `epics/<slug>.md` naming ≥2 member projects in frontmatter
-`projects:[…]` (`store.js` `writeCrossEpic`/`readCrossEpic`). Tasks join it by the **same**
-`epic:<slug>` field — no task-file change. `board.js` resolves a task's slug to the cross-project
-epic iff one covers the task's project, else the project's own epic.
+`projects:[…]` (`store.js` `writeCrossEpic`/`readCrossEpic`). Cards join it by the **same**
+`epic:<slug>` field — no card-file change. `board.js` resolves a card's slug to the cross-project
+epic iff one covers the card's project, else the project's own epic.
 
 **Slug guard.** `createEpic` refuses `EPIC_CONFLICT` if a slug would be *both* a cross-project epic
 and a per-project epic in one of its members — checked in **both** create orders (per-project→cross
-and cross→per-project). This keeps every task's `epic` slug unambiguous. The guard is effectively
+and cross→per-project). This keeps every card's `epic` slug unambiguous. The guard is effectively
 global even though the two create paths take **different** locks (project mutex vs the cross key):
 each guard-check-then-write runs **synchronously inside its lock callback** — no `await` between the
 read and the write — so on Node's single thread the two can't interleave; whichever commits first,
@@ -85,7 +94,7 @@ without an owning project and is refused. See [[../gotchas/plan-link-and-sync-ga
 **Lock key.** Cross-epic writes serialize under `withLock(' cross-epics')` — a sentinel key with a
 leading space, which `projects.NAME_RE` forbids, so it can never collide with a project mutex. This
 is the *same* single-writer mechanism keyed on a different domain, **not** a second write path: it
-does not touch per-project task/epic files, so invariant #1 in [[overview]] holds.
+does not touch per-project card/epic files, so invariant #1 in [[overview]] holds.
 
 ## ID sequence (year rollover, persisted floor)
 
@@ -94,12 +103,12 @@ all of the project's cards) + 1`. The sequence is **project-wide monotonic and d
 year** — ids stay globally sortable within a project and a deleted id is never reused (a deletion
 is *supposed* to leave a gap; the guarantee is that the gap is never re-filled); the year is a
 human-readable creation prefix only. Assignment happens inside the project mutex, so concurrent
-`file_task` calls never collide.
+`file_card` calls never collide.
 
 **Persisted floor (`store.js`'s `<projectDir>/.id-seq`).** A pure live-directory-scan sequence
-regresses the moment `delete_task` removes the highest-numbered card: the scanned max drops, and
+regresses the moment `delete_card` removes the highest-numbered card: the scanned max drops, and
 the next id reuses the freed number — silently re-satisfying any dangling `depends_on` that pointed
-at the deleted card. `store.writeTask` bumps this floor to at least every id it ever actually
+at the deleted card. `store.writeCard` bumps this floor to at least every id it ever actually
 commits to disk (never on a `nextId()` peek alone — see the gap-free-sequence test in
 `tests/store.test.mjs`, which calls `nextId()` without writing), so a later delete can never pull it
 back down. Sync's `mergeProject` seeds its own id allocator from this same floor for the identical

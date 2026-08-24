@@ -25,7 +25,7 @@ const state = {
   meta: { states: [], transitions: [], priorities: [] },
   projects: [],
   current: null,
-  tasks: [],
+  cards: [],
   epics: [],
   planOnly: false, // "Has plan" filter — session-only, deliberately not persisted
 };
@@ -111,7 +111,7 @@ async function init() {
   $('#detail-overlay').addEventListener('click', (e) => { if (e.target.id === 'detail-overlay') closeDetail(); });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeDetail(); closeOverlay(); } });
 
-  $('#new-task-btn').addEventListener('click', () => renderTaskForm());
+  $('#new-card-btn').addEventListener('click', () => renderCardForm());
   $('#new-epic-btn').addEventListener('click', () => renderEpicForm());
   $('#sync-btn').addEventListener('click', () => renderSyncForm());
   $('#refresh-btn').addEventListener('click', () => loadBoard());
@@ -139,7 +139,7 @@ function renderProjectSelect() {
 }
 
 function setBoardEnabled(on) {
-  for (const id of ['new-task-btn', 'new-epic-btn', 'sync-btn', 'refresh-btn']) $('#' + id).disabled = !on;
+  for (const id of ['new-card-btn', 'new-epic-btn', 'sync-btn', 'refresh-btn']) $('#' + id).disabled = !on;
 }
 
 // ---- board load + render --------------------------------------------------
@@ -163,16 +163,16 @@ async function loadBoard() {
   if (!state.current) return;
   setStatus('Loading…');
   try {
-    const [tasksRes, epicsRes] = await Promise.all([
-      api(`api/board/${encodeURIComponent(state.current)}/tasks`),
+    const [cardsRes, epicsRes] = await Promise.all([
+      api(`api/board/${encodeURIComponent(state.current)}/cards`),
       api(`api/board/${encodeURIComponent(state.current)}/epics`),
     ]);
-    const tr = refusalReason(tasksRes), er = refusalReason(epicsRes);
-    if (tr) { setStatus(`${tr}`, 'err'); state.tasks = []; state.epics = []; }
-    else { state.tasks = tasksRes.tasks || []; state.epics = epicsRes.ok ? (epicsRes.epics || []) : []; }
+    const tr = refusalReason(cardsRes), er = refusalReason(epicsRes);
+    if (tr) { setStatus(`${tr}`, 'err'); state.cards = []; state.epics = []; }
+    else { state.cards = cardsRes.cards || []; state.epics = epicsRes.ok ? (epicsRes.epics || []) : []; }
     renderBoard();
     renderEpics();
-    if (!tr) setStatus(`Loaded ${state.tasks.length} card(s) across ${state.epics.length} epic(s).`, 'ok');
+    if (!tr) setStatus(`Loaded ${state.cards.length} card(s) across ${state.epics.length} epic(s).`, 'ok');
   } catch (e) {
     setStatus(`Load failed: ${e.message}`, 'err');
   }
@@ -188,7 +188,7 @@ function renderBoard() {
   const board = $('#board');
   board.replaceChildren();
   for (const st of state.meta.states) {
-    const cards = state.tasks.filter((t) => t.state === st && (!state.planOnly || t.plan));
+    const cards = state.cards.filter((t) => t.state === st && (!state.planOnly || t.plan));
     const body = cards.length
       ? cards.map(renderCard)
       : [el('div', { class: 'column-empty' }, '— empty —')];
@@ -266,8 +266,8 @@ async function openEpic(e) {
     cross ? detailSection('Projects', cross.join(', ')) : null,
     detailSection('Goal', data.epic.goal || '—'),
     detailSection('Rollup', null, renderRollup(data.epic.rollup)),
-    detailSection('Tasks', data.tasks.length ? null : '— none —',
-      el('ul', { class: 'acceptance' }, data.tasks.map((t) => el('li', {}, [
+    detailSection('Cards', data.cards.length ? null : '— none —',
+      el('ul', { class: 'acceptance' }, data.cards.map((t) => el('li', {}, [
         el('span', { class: 'card-id' }, t.id), ' ', t.title, ' · ', el('span', { class: 'badge' }, t.state),
         cross ? el('span', { class: 'badge' }, t.project) : null,
       ]))),
@@ -288,12 +288,12 @@ function detailSection(label, text, node) {
 async function openDetail(id) {
   let data;
   // includePlan=1 pulls the linked plan file's body (bounded server-side); the
-  // plan fields ride TOP-LEVEL on the envelope, not inside `task`.
-  try { data = await api(`api/board/${encodeURIComponent(state.current)}/tasks/${encodeURIComponent(id)}?includePlan=1`); }
-  catch (e) { return setStatus(`Read task failed: ${e.message}`, 'err'); }
+  // plan fields ride TOP-LEVEL on the envelope, not inside `card`.
+  try { data = await api(`api/board/${encodeURIComponent(state.current)}/cards/${encodeURIComponent(id)}?includePlan=1`); }
+  catch (e) { return setStatus(`Read card failed: ${e.message}`, 'err'); }
   const r = refusalReason(data);
   if (r) return setStatus(r, 'err');
-  openDetailNode(data.task, false, {
+  openDetailNode(data.card, false, {
     body: data.plan_body, missing: data.plan_missing, truncated: data.plan_truncated,
   });
 }
@@ -405,7 +405,7 @@ async function doEdit(e, id) {
   if (acceptanceField !== undefined) fields.acceptance = acceptanceField;
   if (!fields.title) { form.querySelector('.form-error').textContent = 'title is required'; return; }
   let data;
-  try { data = await api(`api/board/${encodeURIComponent(state.current)}/tasks/${encodeURIComponent(id)}`, { method: 'PATCH', body: fields }); }
+  try { data = await api(`api/board/${encodeURIComponent(state.current)}/cards/${encodeURIComponent(id)}`, { method: 'PATCH', body: fields }); }
   catch (e2) { form.querySelector('.form-error').textContent = e2.message; return; }
   const r = refusalReason(data);
   if (r) { form.querySelector('.form-error').textContent = r; return; }
@@ -426,7 +426,7 @@ async function doMoveFromDetail(id, ev) {
 
 async function moveCard(id, to) {
   let data;
-  try { data = await api(`api/board/${encodeURIComponent(state.current)}/tasks/${encodeURIComponent(id)}/move`, { method: 'POST', body: { to } }); }
+  try { data = await api(`api/board/${encodeURIComponent(state.current)}/cards/${encodeURIComponent(id)}/move`, { method: 'POST', body: { to } }); }
   catch (e) { return setStatus(`Move failed: ${e.message}`, 'err'); }
   const r = refusalReason(data);
   if (r) { setStatus(`Move refused: ${r}`, 'err'); return; }
@@ -434,12 +434,12 @@ async function moveCard(id, to) {
   await loadBoard();
 }
 
-// ---- new task form --------------------------------------------------------
+// ---- new card form --------------------------------------------------------
 
-function renderTaskForm() {
+function renderCardForm() {
   const epicOpts = [el('option', { value: '' }, '— none —'), ...state.epics.map((e) => el('option', { value: e.slug }, e.slug))];
-  const form = el('form', { class: 'form-grid', onsubmit: doFileTask }, [
-    el('h2', {}, 'New task'),
+  const form = el('form', { class: 'form-grid', onsubmit: doFileCard }, [
+    el('h2', {}, 'New card'),
     el('label', { class: 'field' }, ['Title', el('input', { name: 'title', required: '' })]),
     el('label', { class: 'field' }, ['Goal', el('textarea', { name: 'goal', rows: '3' })]),
     el('label', { class: 'field' }, ['Acceptance (one per line)', el('textarea', { name: 'acceptance', rows: '3' })]),
@@ -458,7 +458,7 @@ function renderTaskForm() {
   ]));
 }
 
-async function doFileTask(e) {
+async function doFileCard(e) {
   e.preventDefault();
   const form = e.target;
   const fd = new FormData(form);
@@ -471,7 +471,7 @@ async function doFileTask(e) {
     depends_on: fd.get('depends_on')?.toString().split(',').map((s) => s.trim()).filter(Boolean),
   };
   let data;
-  try { data = await api(`api/board/${encodeURIComponent(state.current)}/tasks`, { method: 'POST', body }); }
+  try { data = await api(`api/board/${encodeURIComponent(state.current)}/cards`, { method: 'POST', body }); }
   catch (e2) { form.querySelector('.form-error').textContent = e2.message; return; }
   const r = refusalReason(data);
   if (r) { form.querySelector('.form-error').textContent = r; return; }

@@ -10,13 +10,13 @@ GUI relies on — the things a reader can't quickly re-derive by skimming the ro
 |---|---|---|
 | `GET /api/projects` | `projects.listProjects` | Catalog for the selector; same source `validateProject` uses. Not board state — does **not** take the project mutex. |
 | `GET /api/board/meta` | `STATES` + `ALLOWED_TRANSITIONS` | Returns `{states, transitions:["from>to"]}`. The GUI's single source for legal move targets. |
-| `GET /api/board/:project/tasks` | `listTasks` | `?state`/`?epic` filters. |
-| `GET /api/board/:project/tasks/:id` | `readTask` | Full task: goal, acceptance, logbook. |
-| `POST /api/board/:project/tasks` | `fileTask` | `sessionId: GUI_ACTOR`. Lands in `triage`. |
-| `PATCH /api/board/:project/tasks/:id` | `updateTask` | Body **is** the `fields` object. |
-| `POST /api/board/:project/tasks/:id/move` | `moveTask` | `owner: owner || GUI_ACTOR`; `commit` passed through as-is. |
+| `GET /api/board/:project/cards` | `listCards` | `?state`/`?epic` filters. |
+| `GET /api/board/:project/cards/:id` | `readCard` | Full card: goal, acceptance, logbook. |
+| `POST /api/board/:project/cards` | `fileCard` | `sessionId: GUI_ACTOR`. Lands in `triage`. |
+| `PATCH /api/board/:project/cards/:id` | `updateCard` | Body **is** the `fields` object. |
+| `POST /api/board/:project/cards/:id/move` | `moveCard` | `owner: owner || GUI_ACTOR`; `commit` passed through as-is. |
 | `GET /api/board/:project/epics` | `listEpics` | With rollups. |
-| `GET /api/board/:project/epics/:slug` | `readEpic` | Epic + its tasks. |
+| `GET /api/board/:project/epics/:slug` | `readEpic` | Epic + its cards. |
 | `POST /api/board/:project/epics` | `createEpic` | **Upsert** — see below. |
 
 ## Envelope pass-through
@@ -36,7 +36,7 @@ status line rather than treating it as a thrown error.
 
 `GUI_ACTOR = 'gui'` (`src/routes.js`) is the logbook attribution for human GUI mutations — the
 GUI has no session identity, so `'gui'` is the honest actor. The `move` route passes
-`owner: owner || GUI_ACTOR`. The crucial invariant is in `board.js` `moveTask`:
+`owner: owner || GUI_ACTOR`. The crucial invariant is in `board.js` `moveCard`:
 
 ```
 task.owner = to === 'in-progress' ? (owner ?? null) : null;
@@ -55,7 +55,7 @@ the GUI cannot supply; `log_epic` has no route either. The two epic-detail route
 `logbook_total` (additive; the GUI reads named fields and ignores it).
 
 Acceptance, by contrast, **is** PATCHable: the Edit form's textarea sends
-`{acceptance: {replace: [...]}}` (2026-0020), and `update_task`'s `acceptance` validator
+`{acceptance: {replace: [...]}}` (2026-0020), and `update_card`'s `acceptance` validator
 (`resolveAcceptanceForSet` in `src/board.js`) is in `UPDATABLE`, so a PATCH lands it like any other
 field. The read-view checkboxes stay `disabled` regardless — there is no **per-item toggle** route
 in the GUI (no way to tick one box without resubmitting the whole textarea); `{op:'done'}` covers

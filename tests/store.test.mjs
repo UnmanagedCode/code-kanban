@@ -16,12 +16,12 @@ function baseTask(id) {
   };
 }
 
-test('writeTask/readTaskById round-trips all fields', async () => {
+test('writeCard/readCardById round-trips all fields', async () => {
   const root = await freshRoot();
   try {
     store.ensureProjectDirs('demo');
-    store.writeTask('demo', 'triage', baseTask('2026-0003'));
-    const t = store.readTaskById('demo', '2026-0003');
+    store.writeCard('demo', 'triage', baseTask('2026-0003'));
+    const t = store.readCardById('demo', '2026-0003');
     assert.equal(t.state, 'triage');
     assert.equal(t.title, 'A task: with colon');
     assert.equal(t.priority, 'HIGH');
@@ -34,12 +34,12 @@ test('writeTask/readTaskById round-trips all fields', async () => {
   } finally { await cleanup(root); }
 });
 
-// This writes an ALREADY-TRIMMED text straight through store.writeTask,
-// bypassing update_task's validator entirely — it does NOT exercise
+// This writes an ALREADY-TRIMMED text straight through store.writeCard,
+// bypassing update_card's validator entirely — it does NOT exercise
 // cleanAcceptanceText's trim-before-persist behavior (that's
 // tests/board.test.mjs's "replace trims, and the TRIMMED value is what
 // matches", which drives it through the real validator). What this pins is
-// narrower: store/taskfile is a faithful pass-through — it introduces no
+// narrower: store/cardfile is a faithful pass-through — it introduces no
 // padding on write and no trimming of its own on read — so a value the
 // validator hands over already trimmed is what actually lands in the file
 // (see .wiki/gotchas/acceptance-line-round-trip.md).
@@ -48,10 +48,10 @@ test('a renamed acceptance text is stored TRIMMED (no padding in the file) and r
   try {
     store.ensureProjectDirs('demo');
     const id = '2026-0004';
-    store.writeTask('demo', 'triage', { ...baseTask(id), id, acceptance: [{ text: 'trimmed value', done: true }] });
+    store.writeCard('demo', 'triage', { ...baseTask(id), id, acceptance: [{ text: 'trimmed value', done: true }] });
     const raw = fs.readFileSync(path.join(stateDir('demo', 'triage'), `${id}.md`), 'utf8');
     assert.ok(raw.includes('- [x] trimmed value\n'), raw); // exactly one separating space, no leading/trailing padding
-    const t = store.readTaskById('demo', id);
+    const t = store.readCardById('demo', id);
     assert.deepEqual(t.acceptance, [{ text: 'trimmed value', done: true }]);
   } finally { await cleanup(root); }
 });
@@ -62,8 +62,8 @@ test('nextId is a gap-free project-wide sequence across states', async () => {
     store.ensureProjectDirs('demo');
     const year = new Date().getFullYear();
     assert.equal(store.nextId('demo'), `${year}-0001`);
-    store.writeTask('demo', 'triage', baseTask(store.nextId('demo')));
-    store.writeTask('demo', 'done', baseTask(store.nextId('demo')));
+    store.writeCard('demo', 'triage', baseTask(store.nextId('demo')));
+    store.writeCard('demo', 'done', baseTask(store.nextId('demo')));
     assert.equal(store.nextId('demo'), `${year}-0003`);
   } finally { await cleanup(root); }
 });
@@ -73,26 +73,26 @@ test('nextId does not regress after the highest-numbered card is deleted', async
   try {
     store.ensureProjectDirs('demo');
     const year = new Date().getFullYear();
-    store.writeTask('demo', 'triage', baseTask(store.nextId('demo'))); // 0001
+    store.writeCard('demo', 'triage', baseTask(store.nextId('demo'))); // 0001
     const id2 = store.nextId('demo');
-    store.writeTask('demo', 'triage', baseTask(id2)); // 0002, the highest so far
-    assert.equal(store.deleteTask('demo', id2), true);
+    store.writeCard('demo', 'triage', baseTask(id2)); // 0002, the highest so far
+    assert.equal(store.deleteCard('demo', id2), true);
     // Without the persisted floor this would reuse 0002 (the live scan's new
     // max, since 0001 is now the only file left).
     assert.equal(store.nextId('demo'), `${year}-0003`);
   } finally { await cleanup(root); }
 });
 
-test('moveTask relocates the file and removes the old one', async () => {
+test('moveCard relocates the file and removes the old one', async () => {
   const root = await freshRoot();
   try {
     store.ensureProjectDirs('demo');
     const task = baseTask('2026-0007');
-    store.writeTask('demo', 'todo', task);
-    store.moveTask('demo', '2026-0007', 'todo', 'in-progress', task);
+    store.writeCard('demo', 'todo', task);
+    store.moveCard('demo', '2026-0007', 'todo', 'in-progress', task);
     assert.equal(fs.existsSync(`${stateDir('demo', 'todo')}/2026-0007.md`), false);
     assert.equal(fs.existsSync(`${stateDir('demo', 'in-progress')}/2026-0007.md`), true);
-    assert.equal(store.findTaskFile('demo', '2026-0007').state, 'in-progress');
+    assert.equal(store.findCardFile('demo', '2026-0007').state, 'in-progress');
   } finally { await cleanup(root); }
 });
 
@@ -100,7 +100,7 @@ test('atomicWrite leaves no .tmp- residue', async () => {
   const root = await freshRoot();
   try {
     store.ensureProjectDirs('demo');
-    store.writeTask('demo', 'triage', baseTask('2026-0001'));
+    store.writeCard('demo', 'triage', baseTask('2026-0001'));
     const names = fs.readdirSync(stateDir('demo', 'triage'));
     assert.equal(names.some((n) => n.includes('.tmp-')), false);
   } finally { await cleanup(root); }

@@ -31,17 +31,17 @@
     "endpoint": "/api/mcp",
     "tools": [
       {
-        "name": "file_task",
-        "description": "File a new task for a project. Worker + conductor. Set `priority` here — it is the one moment the level is cheap to judge; omitting it leaves the card unjudged, and an unjudged card sorts below every judged one.",
+        "name": "file_card",
+        "description": "File a new card for a project. Worker + conductor. Set `priority` here — it is the one moment the level is cheap to judge; omitting it leaves the card unjudged, and an unjudged card sorts below every judged one.",
         "inputSchema": {
           "type": "object",
           "properties": {
             "project": { "type": "string", "minLength": 1, "description": "Target project (must be a live project)." },
-            "title": { "type": "string", "minLength": 1, "description": "Short task title." },
+            "title": { "type": "string", "minLength": 1, "description": "Short card title." },
             "goal": { "type": "string", "description": "What + why." },
             "acceptance": { "type": "array", "items": { "type": "string" }, "description": "Acceptance criteria; each becomes an unchecked checkbox." },
             "epic": { "type": "string", "description": "Epic slug to file under; the epic must already exist (create_epic)." },
-            "depends_on": { "type": "array", "items": { "type": "string" }, "description": "Task ids this task depends on." },
+            "depends_on": { "type": "array", "items": { "type": "string" }, "description": "Card ids this card depends on." },
             "category": { "type": "string", "enum": ["todo", "backlog"], "description": "Land directly in this lane instead of triage. Omit to file into triage (default)." },
             "priority": { "type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"], "description": "How urgent this is. There is no default: omit it (or send null) and the card stays unset — unjudged, sorting after LOW. An unrecognised value is refused (INVALID_STATE)." },
             "plan": { "type": "string", "description": "Link to a plan file, in one of three input forms: `board:<rel>` (under the board's plans/ dir) or `repo:<rel>` (under the project's base checkout) — a pointer that must already resolve to a file and is never copied; a bare relative path (means board:); or an ABSOLUTE path, which is COPIED IN — the file is copied to the board's plans/<id>.md and stored as `board:<id>.md` (the source is never moved or modified; an existing copy is overwritten). Missing/unreadable source or pointer → PLAN_UNKNOWN and no card is created." }
@@ -63,8 +63,8 @@
         }
       },
       {
-        "name": "list_tasks",
-        "description": "List a project's tasks. HIDES `done` BY DEFAULT — pass state:'done' to read that lane, or includeDone:true for every lane. Conductor.",
+        "name": "list_cards",
+        "description": "List a project's cards. HIDES `done` BY DEFAULT — pass state:'done' to read that lane, or includeDone:true for every lane. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -77,8 +77,8 @@
         }
       },
       {
-        "name": "read_task",
-        "description": "Read a single task including its logbook (optionally only the last logTail entries). Returns plan_path always. Conductor.",
+        "name": "read_card",
+        "description": "Read a single card including its logbook (optionally only the last logTail entries). Returns plan_path always. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -91,8 +91,8 @@
         }
       },
       {
-        "name": "read_progress",
-        "description": "Read a task's logbook only, most-recent first, optionally capped at `limit`. Conductor.",
+        "name": "read_card_log",
+        "description": "Read a card's logbook only, most-recent first, optionally capped at `limit`. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -104,8 +104,8 @@
         }
       },
       {
-        "name": "move_task",
-        "description": "Move a task between board states. Legal: triage->backlog/todo, backlog->todo, todo->in-progress, in-progress->done, plus corrective todo->backlog, in-progress->todo, done->in-progress. Conductor.",
+        "name": "move_card",
+        "description": "Move a card between board states. Legal: triage->backlog/todo, backlog->todo, todo->in-progress, in-progress->done, plus corrective todo->backlog, in-progress->todo, done->in-progress. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -119,8 +119,8 @@
         }
       },
       {
-        "name": "update_task",
-        "description": "Update task fields. `fields` may contain any of: title, goal, epic, priority, depends_on, plan, owner, acceptance (other keys ignored). `priority` is one of CRITICAL, HIGH, MEDIUM, LOW, or null to clear it back to unset (anything else is INVALID_STATE). `plan` takes the same three input forms as `file_task`'s `plan`; `null` clears the link. `owner` may only be set on an in-progress card (else INVALID_STATE). `acceptance` accepts exactly one of three shapes: `{ops:[...]}` — a list of `{op:'add', text}` / `{op:'remove', index}` / `{op:'rename', index, text}` / `{op:'done', index, done}` operations, where `index` is the 0-based position in the card's acceptance list as `read_task` returns it; every op resolves against that single PRE-EDIT snapshot in one pass (two `remove`s in the same call never shift each other), survivors keep their pre-edit relative order, `add`s are appended after all survivors in the order they appear in `ops`; `{replace:[...]}` — sets the list from strings, preserving each item's `done` flag when the new (trimmed) text exactly matches a pre-edit item's text, unmatched items start unchecked; or `null`, which clears the list. Stored criterion text is always trimmed. `file_task`'s `acceptance: string[]` filing-time form is a different shape. Conductor.",
+        "name": "update_card",
+        "description": "Update card fields. `fields` may contain any of: title, goal, epic, priority, depends_on, plan, owner, acceptance (other keys ignored). `priority` is one of CRITICAL, HIGH, MEDIUM, LOW, or null to clear it back to unset (anything else is INVALID_STATE). `plan` takes the same three input forms as `file_card`'s `plan`; `null` clears the link. `owner` may only be set on an in-progress card (else INVALID_STATE). `acceptance` accepts exactly one of three shapes: `{ops:[...]}` — a list of `{op:'add', text}` / `{op:'remove', index}` / `{op:'rename', index, text}` / `{op:'done', index, done}` operations, where `index` is the 0-based position in the card's acceptance list as `read_card` returns it; every op resolves against that single PRE-EDIT snapshot in one pass (two `remove`s in the same call never shift each other), survivors keep their pre-edit relative order, `add`s are appended after all survivors in the order they appear in `ops`; `{replace:[...]}` — sets the list from strings, preserving each item's `done` flag when the new (trimmed) text exactly matches a pre-edit item's text, unmatched items start unchecked; or `null`, which clears the list. Stored criterion text is always trimmed. `file_card`'s `acceptance: string[]` filing-time form is a different shape. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -142,7 +142,7 @@
             "slug": { "type": "string", "minLength": 1, "pattern": "^[a-z0-9._-]+$" },
             "title": { "type": "string", "minLength": 1 },
             "goal": { "type": "string", "description": "What + why." },
-            "plan": { "type": "string", "description": "Link to the epic's PLAN file. Same three input forms as `file_task`'s `plan`, with these deltas: an ABSOLUTE path is copied to the board's `plans/epic-<slug>.md` and stored as `board:epic-<slug>.md`; a cross-project epic has no owning project, so its `board:` resolves under the BOARD-LEVEL plans/ dir and `repo:` is refused (INVALID_STATE). Missing/unreadable source or pointer → PLAN_UNKNOWN and nothing is written, leaving an existing epic untouched." }
+            "plan": { "type": "string", "description": "Link to the epic's PLAN file. Same three input forms as `file_card`'s `plan`, with these deltas: an ABSOLUTE path is copied to the board's `plans/epic-<slug>.md` and stored as `board:epic-<slug>.md`; a cross-project epic has no owning project, so its `board:` resolves under the BOARD-LEVEL plans/ dir and `repo:` is refused (INVALID_STATE). Missing/unreadable source or pointer → PLAN_UNKNOWN and nothing is written, leaving an existing epic untouched." }
           },
           "required": ["slug", "title"]
         }
@@ -160,7 +160,7 @@
       },
       {
         "name": "read_epic",
-        "description": "Read an epic (goal + plan link + logbook + computed rollup) and its tasks; a cross-project epic aggregates across its member projects. Returns plan_path always. Conductor.",
+        "description": "Read an epic (goal + plan link + logbook + computed rollup) and its cards; a cross-project epic aggregates across its member projects. Returns plan_path always. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -186,8 +186,8 @@
         }
       },
       {
-        "name": "delete_task",
-        "description": "Permanently delete a task by id. Conductor. Irreversible.",
+        "name": "delete_card",
+        "description": "Permanently delete a card by id. Conductor. Irreversible.",
         "inputSchema": {
           "type": "object",
           "properties": {

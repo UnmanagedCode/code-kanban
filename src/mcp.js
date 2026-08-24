@@ -1,6 +1,6 @@
 import * as board from './board.js';
-import { serializeBody } from './taskfile.js';
-import { renderTaskList, renderEpicList } from './listRender.js';
+import { serializeBody } from './cardfile.js';
+import { renderCardList, renderEpicList } from './listRender.js';
 import { STATES } from './paths.js';
 
 // Thin dispatch over board.js. Domain refusals from the service layer are
@@ -9,19 +9,24 @@ import { STATES } from './paths.js';
 // malformed envelope (missing/unknown tool) or an unexpected exception maps to
 // {error}. Owner-scoped tools receive the caller's server-resolved sessionId.
 const handlers = {
-  file_task:   (a, sid) => board.fileTask({ ...a, sessionId: sid }),
+  file_card:   (a, sid) => board.fileCard({ ...a, sessionId: sid }),
   log_card:    (a, sid) => board.logCard({ project: a.project, id: a.id, entry: a.entry, sessionId: sid }),
   log_epic:    (a) => board.logEpic({ project: a.project, slug: a.slug, entry: a.entry }),
-  list_tasks:  (a) => board.listTasks(a),
-  read_task:   (a) => board.readTask(a),
-  read_progress: (a) => board.readProgress(a),
-  move_task:   (a) => board.moveTask(a),
-  update_task: (a) => board.updateTask(a),
-  delete_task: (a) => board.deleteTask(a),
+  list_cards:  (a) => board.listCards(a),
+  read_card:   (a) => board.readCard(a),
+  read_card_log: (a) => board.readCardLog(a),
+  move_card:   (a) => board.moveCard(a),
+  update_card: (a) => board.updateCard(a),
+  delete_card: (a) => board.deleteCard(a),
   create_epic: (a) => board.createEpic(a),
   list_epics:  (a) => board.listEpics(a),
   read_epic:   (a) => board.readEpic(a),
 };
+
+// Test seam (mirrors board.js's _setSyncFetcher / projects.js's
+// _setProjectFetcher): exposes the dispatch map's key set so a test can assert
+// it equals the manifest's advertised tool-name set, in BOTH directions.
+export function _toolNames() { return Object.keys(handlers); }
 
 // Raw-text channel (additive to the pinned {result} contract, opt-in per tool):
 // a success body of {meta, text} makes the HOST emit `meta` as one compact-JSON
@@ -41,8 +46,8 @@ const handlers = {
 // Everything a caller BRANCHES on stays in the single compact-JSON metadata
 // block: scalars, ids, flags, and the counts describing the listing as a
 // whole — including the count of what the listing did not show. One
-// exception: read_epic's `tasks` stays JSON — a secondary field of a
-// card-detail read, not the payload the caller asked for (list_tasks({epic})
+// exception: read_epic's `cards` stays JSON — a secondary field of a
+// card-detail read, not the payload the caller asked for (list_cards({epic})
 // is the text rendering of that same set).
 //
 // Per tool, an ORDERED list of extractors: each takes (result, meta, args) ->
@@ -51,10 +56,10 @@ const handlers = {
 // array, so two-block reads (card body then plan body) are explicit and
 // testable.
 const RAW_TEXT = {
-  read_task: [cardBody, promote('plan_body')],
-  read_progress: [progressEntries],
+  read_card: [cardBody, promote('plan_body')],
+  read_card_log: [progressEntries],
   read_epic: [epicGoal, epicLogbook, promote('plan_body')],
-  list_tasks: [taskListing],
+  list_cards: [cardListing],
   list_epics: [epicListing],
 };
 
@@ -67,14 +72,14 @@ function promote(key) {
   };
 }
 
-// The card body is RE-RENDERED from the task object, not read off disk: the
-// object is what logTail/stripHidden already shaped (board.readTask), so the
+// The card body is RE-RENDERED from the card object, not read off disk: the
+// object is what logTail/stripHidden already shaped (board.readCard), so the
 // text block always describes the same card the JSON block does.
 function cardBody(result, meta) {
-  if (!result.task) return null;
-  const { goal, acceptance, logbook, ...rest } = result.task;
-  meta.task = rest;
-  return serializeBody(result.task);
+  if (!result.card) return null;
+  const { goal, acceptance, logbook, ...rest } = result.card;
+  meta.card = rest;
+  return serializeBody(result.card);
 }
 
 // `entries` leaves the JSON block, which keeps `total` and gains `count` (how
@@ -106,25 +111,25 @@ function epicLogbook(result) {
   return entries.map((e) => `- ${e}`).join('\n');
 }
 
-// `state` reaches board.listTasks verbatim, so board.js stays the one
+// `state` reaches board.listCards verbatim, so board.js stays the one
 // validator (unknown state -> INVALID_STATE) and `counts` describes exactly
 // the lanes this call read: all five when no state was given, that one lane
 // when it was.
-function taskListing(result, meta, args) {
-  const all = result.tasks ?? [];
+function cardListing(result, meta, args) {
+  const all = result.cards ?? [];
   const state = args.state ?? null;
   // Strict === true: the manifest advertises a boolean, and if a non-boolean
   // ever arrives the conservative branch still prints "N done hidden", so
   // nothing is hidden silently.
   const everyLane = state === null && args.includeDone === true;
   const shown = (state !== null || everyLane) ? all : all.filter((t) => t.state !== 'done');
-  delete meta.tasks;
+  delete meta.cards;
   meta.counts = state !== null
     ? { [state]: all.length }
     : Object.fromEntries(STATES.map((s) => [s, all.filter((t) => t.state === s).length]));
   meta.shown = shown.length;
   meta.done_hidden = all.length - shown.length;
-  return renderTaskList(shown, {
+  return renderCardList(shown, {
     project: args.project, doneHidden: meta.done_hidden, state,
     epic: args.epic ?? null, everyLane,
   });
