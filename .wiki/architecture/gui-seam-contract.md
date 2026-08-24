@@ -50,8 +50,9 @@ target is `in-progress` — it can never leave a stuck `gui` owner on a non-`in-
 ## Read-only logbook; editable acceptance
 
 The Logbook stays **read-only, append-only-by-worker**: there is no route to append a log line.
-`log_progress` stays worker/conductor-only — it resolves the card from `caller.sessionId`, which
-the GUI cannot supply.
+`log_card` stays worker/conductor-only — it resolves the card from `caller.sessionId`, which
+the GUI cannot supply; `log_epic` has no route either. The two epic-detail routes' envelopes gained
+`logbook_total` (additive; the GUI reads named fields and ignores it).
 
 Acceptance, by contrast, **is** PATCHable: the Edit form's textarea sends
 `{acceptance: {replace: [...]}}` (2026-0020), and `update_task`'s `acceptance` validator

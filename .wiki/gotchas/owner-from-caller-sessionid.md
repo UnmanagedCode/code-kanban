@@ -1,12 +1,12 @@
-# Gotcha: `log_progress` resolves the card from the session, not an id — except for the conductor
+# Gotcha: `log_card` resolves the card from the session, not an id — except for the conductor
 
-Workers are pure emitters and never handle a task id. `log_progress({project?, entry})` finds its
+Workers are pure emitters and never handle a task id. `log_card({project?, entry})` finds its
 target **server-side**: the `in-progress` card whose `owner === caller.sessionId`. `project` is
 optional — supplied, it scopes the lookup directly (fast path); omitted, every project is scanned.
 The `owner` is stamped by `move_task(..., to:"in-progress", owner:<sessionId>)` — the conductor
 sets it when it hands the card to the worker.
 
-The conductor owns no card, so it can't use that path. `log_progress({project, id, entry})` gives
+The conductor owns no card, so it can't use that path. `log_card({project, id, entry})` gives
 it a second, id-based path: `id` targets that exact card directly, **bypassing** the owner check
 entirely. Because ids are per-project (not globally unique), `project` becomes **required** when
 `id` is given → `INVALID_STATE` if missing. The card must be `in-progress` (in-progress-only, by
@@ -16,7 +16,7 @@ worker path's re-verify. Attribution reuses `taskfile.logLine`'s existing conven
 `null`/absent → `'conductor'`) — the same one `move_task` already uses for its own logbook lines
 — rather than inventing a new actor label.
 
-Resolution rules (`board.logProgress`, worker/session path — unaffected by the id path):
+Resolution rules (`board.logCard`, worker/session path — unaffected by the id path):
 - No `sessionId` (host couldn't resolve the caller) → `{ok:false, code:"TASK_UNKNOWN"}`.
 - No `in-progress` card owned by that session (in the given project, or anywhere when scanning) →
   `TASK_UNKNOWN`.
@@ -28,7 +28,7 @@ Resolution rules (`board.logProgress`, worker/session path — unaffected by the
 **Cross-project scan locking:** `withLock` (`src/mutex.js`) is a per-project, in-process key —
 never nested, no cross-project variant. So the scan-for-owning-project step (`resolveOwningProject`
 in `board.js`) runs **unlocked** across all of `listProjects()` (same as any other read in
-`board.js` — reads never take the mutex), then `logProgress` takes `withLock` on only the winning
+`board.js` — reads never take the mutex), then `logCard` takes `withLock` on only the winning
 project and **redoes the owned-card lookup inside the lock** before writing. If the card
 disappeared or changed owner between the scan and the lock (rare), that re-check returns
 `TASK_UNKNOWN` rather than falling back to re-scan other projects — the write itself stays

@@ -100,7 +100,7 @@ test('corrective transitions are allowed (demote, abandon, reopen)', async () =>
   } finally { await cleanup(root); }
 });
 
-test('log_progress resolves the in-progress card owned by the session', async () => {
+test('log_card resolves the in-progress card owned by the session', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
@@ -109,17 +109,17 @@ test('log_progress resolves the in-progress card owned by the session', async ()
     await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'worker-xyz' });
 
     // wrong / missing session -> refusal
-    assert.equal((await board.logProgress({ project: 'demo', entry: 'hi', sessionId: 'other' })).code, 'TASK_UNKNOWN');
-    assert.equal((await board.logProgress({ project: 'demo', entry: 'hi', sessionId: null })).code, 'TASK_UNKNOWN');
+    assert.equal((await board.logCard({ project: 'demo', entry: 'hi', sessionId: 'other' })).code, 'TASK_UNKNOWN');
+    assert.equal((await board.logCard({ project: 'demo', entry: 'hi', sessionId: null })).code, 'TASK_UNKNOWN');
 
-    const ok = await board.logProgress({ project: 'demo', entry: 'made progress', sessionId: 'worker-xyz' });
+    const ok = await board.logCard({ project: 'demo', entry: 'made progress', sessionId: 'worker-xyz' });
     assert.equal(ok.ok, true);
     const log = await board.readProgress({ project: 'demo', id });
     assert.match(log.entries[0], /made progress/); // most-recent first
   } finally { await cleanup(root); }
 });
 
-test('log_progress with two owned cards resolves to the most recently modified', async () => {
+test('log_card with two owned cards resolves to the most recently modified', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
@@ -133,13 +133,13 @@ test('log_progress with two owned cards resolves to the most recently modified',
     // of how close together the moves above land on a coarse-mtime filesystem.
     stampMtime('demo', 'in-progress', a, 1_000_000);
     stampMtime('demo', 'in-progress', b, 2_000_000);
-    await board.logProgress({ project: 'demo', entry: 'target-b', sessionId: 'w' });
+    await board.logCard({ project: 'demo', entry: 'target-b', sessionId: 'w' });
     const logB = await board.readProgress({ project: 'demo', id: b });
     assert.match(logB.entries[0], /target-b/);
   } finally { await cleanup(root); }
 });
 
-test('log_progress with id (conductor path) logs to the specified card, bypassing ownership', async () => {
+test('log_card with id (conductor path) logs to the specified card, bypassing ownership', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
@@ -148,7 +148,7 @@ test('log_progress with id (conductor path) logs to the specified card, bypassin
     await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'worker-xyz' });
 
     // No sessionId at all, and it doesn't match the card's owner -- id bypasses that check.
-    const ok = await board.logProgress({ project: 'demo', id, entry: 'checked in', sessionId: null });
+    const ok = await board.logCard({ project: 'demo', id, entry: 'checked in', sessionId: null });
     assert.equal(ok.ok, true);
     const log = await board.readProgress({ project: 'demo', id });
     // logLine's null-sessionId -> 'conductor' convention (same one move_task uses).
@@ -156,7 +156,7 @@ test('log_progress with id (conductor path) logs to the specified card, bypassin
   } finally { await cleanup(root); }
 });
 
-test('log_progress with id but no project -> INVALID_STATE (ids are per-project)', async () => {
+test('log_card with id but no project -> INVALID_STATE (ids are per-project)', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
@@ -165,37 +165,37 @@ test('log_progress with id but no project -> INVALID_STATE (ids are per-project)
     await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w' });
 
     assert.equal(
-      (await board.logProgress({ id, entry: 'hi' })).code,
+      (await board.logCard({ id, entry: 'hi' })).code,
       'INVALID_STATE',
     );
   } finally { await cleanup(root); }
 });
 
-test('log_progress with id targeting a non-existent card -> TASK_UNKNOWN', async () => {
+test('log_card with id targeting a non-existent card -> TASK_UNKNOWN', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
     assert.equal(
-      (await board.logProgress({ project: 'demo', id: 'ghost-0001', entry: 'hi' })).code,
+      (await board.logCard({ project: 'demo', id: 'ghost-0001', entry: 'hi' })).code,
       'TASK_UNKNOWN',
     );
   } finally { await cleanup(root); }
 });
 
-test('log_progress with id targeting a card that is not in-progress -> TASK_UNKNOWN', async () => {
+test('log_card with id targeting a card that is not in-progress -> TASK_UNKNOWN', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
     // filed into triage, never moved -> not in-progress
     const { id } = await board.fileTask({ project: 'demo', title: 't' });
     assert.equal(
-      (await board.logProgress({ project: 'demo', id, entry: 'hi' })).code,
+      (await board.logCard({ project: 'demo', id, entry: 'hi' })).code,
       'TASK_UNKNOWN',
     );
   } finally { await cleanup(root); }
 });
 
-test('log_progress with no id (worker path) is unaffected by the id path', async () => {
+test('log_card with no id (worker path) is unaffected by the id path', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
@@ -205,14 +205,14 @@ test('log_progress with no id (worker path) is unaffected by the id path', async
 
     // Same session/ownership resolution as before -- explicitly passing id:undefined
     // (as a naive spread of {..., id: a.id} would when id is omitted) must not change behavior.
-    const ok = await board.logProgress({ project: 'demo', id: undefined, entry: 'still owner-based', sessionId: 'worker-xyz' });
+    const ok = await board.logCard({ project: 'demo', id: undefined, entry: 'still owner-based', sessionId: 'worker-xyz' });
     assert.equal(ok.ok, true);
     const log = await board.readProgress({ project: 'demo', id });
     assert.match(log.entries[0], /still owner-based/);
   } finally { await cleanup(root); }
 });
 
-test('log_progress with no project resolves the owned card in the only project', async () => {
+test('log_card with no project resolves the owned card in the only project', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
@@ -220,14 +220,14 @@ test('log_progress with no project resolves the owned card in the only project',
     await board.moveTask({ project: 'demo', id, to: 'todo' });
     await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'worker-xyz' });
 
-    const ok = await board.logProgress({ entry: 'no project needed', sessionId: 'worker-xyz' });
+    const ok = await board.logCard({ entry: 'no project needed', sessionId: 'worker-xyz' });
     assert.equal(ok.ok, true);
     const log = await board.readProgress({ project: 'demo', id });
     assert.match(log.entries[0], /no project needed/);
   } finally { await cleanup(root); }
 });
 
-test('log_progress with no project scans across projects for the owned card', async () => {
+test('log_card with no project scans across projects for the owned card', async () => {
   const root = await freshRoot();
   useProjects(['demo', 'other']);
   try {
@@ -235,14 +235,14 @@ test('log_progress with no project scans across projects for the owned card', as
     await board.moveTask({ project: 'other', id, to: 'todo' });
     await board.moveTask({ project: 'other', id, to: 'in-progress', owner: 'worker-xyz' });
 
-    const ok = await board.logProgress({ entry: 'found in other', sessionId: 'worker-xyz' });
+    const ok = await board.logCard({ entry: 'found in other', sessionId: 'worker-xyz' });
     assert.equal(ok.ok, true);
     const log = await board.readProgress({ project: 'other', id });
     assert.match(log.entries[0], /found in other/);
   } finally { await cleanup(root); }
 });
 
-test('log_progress with no project ties-break by most-recently-modified across projects', async () => {
+test('log_card with no project ties-break by most-recently-modified across projects', async () => {
   const root = await freshRoot();
   useProjects(['demo', 'other']);
   try {
@@ -259,7 +259,7 @@ test('log_progress with no project ties-break by most-recently-modified across p
     stampMtime('demo', 'in-progress', a, 1_000_000);
     stampMtime('other', 'in-progress', b, 2_000_000);
 
-    await board.logProgress({ entry: 'target-b', sessionId: 'w' });
+    await board.logCard({ entry: 'target-b', sessionId: 'w' });
     const logB = await board.readProgress({ project: 'other', id: b });
     assert.match(logB.entries[0], /target-b/);
     // a is untouched: still just its baseline filed + 2 moves, nothing appended.
@@ -269,7 +269,7 @@ test('log_progress with no project ties-break by most-recently-modified across p
   } finally { await cleanup(root); }
 });
 
-test('log_progress with an explicit project stays scoped to it (fast path unaffected by scan)', async () => {
+test('log_card with an explicit project stays scoped to it (fast path unaffected by scan)', async () => {
   const root = await freshRoot();
   useProjects(['demo', 'other']);
   try {
@@ -282,7 +282,7 @@ test('log_progress with an explicit project stays scoped to it (fast path unaffe
     await board.moveTask({ project: 'other', id: b, to: 'in-progress', owner: 'w' });
     // b is the most-recently-modified overall, but an explicit project: 'demo' must target a.
 
-    const ok = await board.logProgress({ project: 'demo', entry: 'target-a', sessionId: 'w' });
+    const ok = await board.logCard({ project: 'demo', entry: 'target-a', sessionId: 'w' });
     assert.equal(ok.ok, true);
     const logA = await board.readProgress({ project: 'demo', id: a });
     assert.match(logA.entries[0], /target-a/);
@@ -293,25 +293,25 @@ test('log_progress with an explicit project stays scoped to it (fast path unaffe
   } finally { await cleanup(root); }
 });
 
-test('log_progress with no project -> TASK_UNKNOWN when nothing is owned anywhere', async () => {
+test('log_card with no project -> TASK_UNKNOWN when nothing is owned anywhere', async () => {
   const root = await freshRoot();
   useProjects(['demo', 'other']);
   try {
     await board.fileTask({ project: 'demo', title: 'untouched' });
     assert.equal(
-      (await board.logProgress({ entry: 'hi', sessionId: 'nobody' })).code,
+      (await board.logCard({ entry: 'hi', sessionId: 'nobody' })).code,
       'TASK_UNKNOWN',
     );
   } finally { await cleanup(root); }
 });
 
-test('log_progress with no project and no sessionId -> TASK_UNKNOWN before any scan', async () => {
+test('log_card with no project and no sessionId -> TASK_UNKNOWN before any scan', async () => {
   const root = await freshRoot();
   let calls = 0;
   _setProjectFetcher(async () => { calls += 1; return ['demo', 'other']; });
   try {
     assert.equal(
-      (await board.logProgress({ entry: 'hi', sessionId: null })).code,
+      (await board.logCard({ entry: 'hi', sessionId: null })).code,
       'TASK_UNKNOWN',
     );
     // The no-sessionId refusal must short-circuit before resolveOwningProject
@@ -2100,16 +2100,16 @@ test('create_epic re-upsert preserves the epic\'s LOGBOOK (project AND cross epi
   useProjects(['demo', 'web', 'api']);
   try {
     await board.createEpic({ project: 'demo', slug: 'auth', title: 'Auth' });
-    await board.logProgress({ project: 'demo', epic: 'auth', entry: 'first card landed' });
+    await board.logEpic({ project: 'demo', slug: 'auth', entry: 'first card landed' });
     await board.createEpic({ project: 'demo', slug: 'auth', title: 'Auth renamed', goal: 'g' });
-    const log = await board.readProgress({ project: 'demo', epic: 'auth' });
-    assert.equal(log.total, 1); // no caller can pass a logbook, so an upsert must never wipe it
-    assert.match(log.entries[0], /first card landed/);
+    const log = await board.readEpic({ project: 'demo', slug: 'auth' });
+    assert.equal(log.logbook_total, 1); // no caller can pass a logbook, so an upsert must never wipe it
+    assert.match(log.epic.logbook[0], /first card landed/);
 
     await board.createEpic({ projects: ['web', 'api'], slug: 'plat', title: 'Plat' });
-    await board.logProgress({ epic: 'plat', entry: 'cross entry' });
+    await board.logEpic({ slug: 'plat', entry: 'cross entry' });
     await board.createEpic({ projects: ['web', 'api'], slug: 'plat', title: 'Plat renamed' });
-    assert.equal((await board.readProgress({ epic: 'plat' })).total, 1);
+    assert.equal((await board.readEpic({ slug: 'plat' })).logbook_total, 1);
   } finally { await cleanup(root); }
 });
 
@@ -2263,7 +2263,7 @@ test('read_epic logTail keeps only the last N logbook entries (0/1/2)', async ()
   useProjects(['demo']);
   try {
     await board.createEpic({ project: 'demo', slug: 'auth', title: 'A' });
-    for (const e of ['one', 'two', 'three']) await board.logProgress({ project: 'demo', epic: 'auth', entry: e });
+    for (const e of ['one', 'two', 'three']) await board.logEpic({ project: 'demo', slug: 'auth', entry: e });
     const full = (await board.readEpic({ project: 'demo', slug: 'auth' })).epic.logbook;
     assert.equal(full.length, 3);
     // logTail:0 must yield zero entries (the slice(-0) trap), as on read_task.
@@ -2277,28 +2277,58 @@ test('read_epic logTail keeps only the last N logbook entries (0/1/2)', async ()
   } finally { await cleanup(root); }
 });
 
-test('log_progress({epic}) appends a conductor-attributed line; read_progress({epic}) reads it back most-recent-first', async () => {
+// B5 — logbook_total is the FULL length, computed BEFORE the logTail slice. It
+// is what replaces read_progress' `total` now that the epic arm is gone: with
+// logTail:2 a conductor must still be able to tell 5 entries from 50.
+// The 5-entry fixture is deliberately LONGER than every logTail exercised — a
+// logbook whose length equals its logTail cannot tell logbook_total apart from
+// "entries returned" — and the logTail:0 case additionally kills a mutant that
+// computes the total after the slice.
+test('read_epic logbook_total is the full length, before any logTail cap', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
     await board.createEpic({ project: 'demo', slug: 'auth', title: 'A' });
-    assert.equal((await board.logProgress({ project: 'demo', epic: 'auth', entry: 'first card landed' })).ok, true);
-    // Even with a session id in hand, an epic entry is CONDUCTOR-attributed:
-    // an epic has no owner, so there is no worker to credit.
-    assert.equal((await board.logProgress({ project: 'demo', epic: 'auth', entry: 'resequenced', sessionId: 'worker-xyz' })).ok, true);
+    for (const e of ['a', 'b', 'c', 'd', 'e']) await board.logEpic({ project: 'demo', slug: 'auth', entry: e });
+    for (const [logTail, shown] of [[2, 2], [0, 0]]) {
+      const r = await board.readEpic({ project: 'demo', slug: 'auth', logTail });
+      assert.equal(r.epic.logbook.length, shown, `logTail:${logTail} returns ${shown}`);
+      assert.equal(r.logbook_total, 5, `logTail:${logTail} still reports the full total`);
+    }
+    const uncapped = await board.readEpic({ project: 'demo', slug: 'auth' });
+    assert.equal(uncapped.epic.logbook.length, 5);
+    assert.equal(uncapped.logbook_total, 5);
+    // Top-level, not inside `epic` — `epic` mirrors the stored record, and
+    // logbook_total is not a record field (same rule plan_path follows).
+    assert.equal('logbook_total' in uncapped.epic, false);
+  } finally { await cleanup(root); }
+});
 
-    const log = await board.readProgress({ project: 'demo', epic: 'auth' });
-    assert.equal(log.total, 2);
-    assert.match(log.entries[0], /· conductor · resequenced$/);
-    assert.match(log.entries[1], /· conductor · first card landed$/);
-    assert.equal((await board.readProgress({ project: 'demo', epic: 'auth', limit: 1 })).entries.length, 1);
-    assert.equal((await board.readProgress({ project: 'demo', epic: 'auth', limit: 0 })).entries.length, 0);
-    // read_epic surfaces the same entries, in record (chronological) order.
-    const re = await board.readEpic({ project: 'demo', slug: 'auth' });
-    assert.match(re.epic.logbook[0], /first card landed/);
-    assert.match(re.epic.logbook[1], /resequenced/);
+// B1 — logEpic appends a CONDUCTOR-attributed line, in chronological order.
+// Kills a mutant that threads a sessionId through to logLine: an epic has no
+// owner to credit. The `updated`/`node` bump is NOT asserted here — comparing
+// two live nowIso() stamps at ms resolution is racy (the sequence regularly
+// completes inside one millisecond). It is owned outright by
+// 'logging to an epic bumps its updated/node version stamp (project AND cross)'
+// below, which seeds a fixed peer stamp on disk instead.
+test('logEpic appends a conductor-attributed line, chronologically ordered', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    await board.createEpic({ project: 'demo', slug: 'auth', title: 'A' });
+    assert.equal((await board.logEpic({ project: 'demo', slug: 'auth', entry: 'first card landed' })).ok, true);
+    // Even with a session id in hand there is no worker to credit — logEpic takes
+    // no sessionId at all, so an extra key cannot leak into the attribution.
+    assert.equal((await board.logEpic({ project: 'demo', slug: 'auth', entry: 'resequenced', sessionId: 'worker-xyz' })).ok, true);
+
+    const r = await board.readEpic({ project: 'demo', slug: 'auth' });
+    assert.equal(r.logbook_total, 2);
+    // Chronological order, unlike read_progress' most-recent-first card logbook
+    // (.wiki/architecture/card-epic-tool-split.md).
+    assert.match(r.epic.logbook[0], /· conductor · first card landed$/);
+    assert.match(r.epic.logbook[1], /· conductor · resequenced$/);
     // An empty entry is refused, as on the card paths.
-    assert.equal((await board.logProgress({ project: 'demo', epic: 'auth', entry: '  ' })).code, 'INVALID_STATE');
+    assert.equal((await board.logEpic({ project: 'demo', slug: 'auth', entry: '  ' })).code, 'INVALID_STATE');
   } finally { await cleanup(root); }
 });
 
@@ -2310,52 +2340,58 @@ test('logging to an epic with ZERO tasks succeeds — an epic has no lane, so th
   try {
     await board.createEpic({ project: 'demo', slug: 'auth', title: 'A' });
     assert.deepEqual((await board.listTasks({ project: 'demo', epic: 'auth' })).tasks, []);
-    assert.equal((await board.logProgress({ project: 'demo', epic: 'auth', entry: 'resequenced before any card starts' })).ok, true);
+    assert.equal((await board.logEpic({ project: 'demo', slug: 'auth', entry: 'resequenced before any card starts' })).ok, true);
 
     // ...and again once every card has LANDED (still nothing in-progress).
     const { id } = await board.fileTask({ project: 'demo', title: 't', epic: 'auth' });
     await board.moveTask({ project: 'demo', id, to: 'todo' });
     await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w' });
     await board.moveTask({ project: 'demo', id, to: 'done' });
-    assert.equal((await board.logProgress({ project: 'demo', epic: 'auth', entry: 'retrospective' })).ok, true);
-    assert.equal((await board.readProgress({ project: 'demo', epic: 'auth' })).total, 2);
+    assert.equal((await board.logEpic({ project: 'demo', slug: 'auth', entry: 'retrospective' })).ok, true);
+    assert.equal((await board.readEpic({ project: 'demo', slug: 'auth' })).logbook_total, 2);
+    // ...and an unknown slug is still the one refusal on this path.
+    assert.equal((await board.logEpic({ project: 'demo', slug: 'ghost', entry: 'x' })).code, 'EPIC_UNKNOWN');
   } finally { await cleanup(root); }
 });
 
-test('log_progress / read_progress with BOTH id and epic -> INVALID_STATE', async () => {
+// B4 — readProgress has NO epic arm. An `epic` key is now just an ignored extra
+// argument, so the call falls through to the card path and refuses on a missing
+// id — it must NOT return that epic's entries. Kills a mutant that removes the
+// manifest param while leaving the arm in board.js.
+test('readProgress no longer has an epic arm — an epic slug does not read an epic', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
     await board.createEpic({ project: 'demo', slug: 'auth', title: 'A' });
+    await board.logEpic({ project: 'demo', slug: 'auth', entry: 'epic only' });
+    const r = await board.readProgress({ project: 'demo', epic: 'auth' });
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'TASK_UNKNOWN');
+    assert.equal(r.entries, undefined, 'must not hand back the epic logbook');
+    // The card path itself is untouched.
     const { id } = await board.fileTask({ project: 'demo', title: 't', epic: 'auth' });
-    await board.moveTask({ project: 'demo', id, to: 'todo' });
-    await board.moveTask({ project: 'demo', id, to: 'in-progress', owner: 'w' });
-
-    const l = await board.logProgress({ project: 'demo', id, epic: 'auth', entry: 'hi' });
-    assert.equal(l.code, 'INVALID_STATE');
-    assert.match(l.reason, /at most one/);
-    assert.equal((await board.readProgress({ project: 'demo', id, epic: 'auth' })).code, 'INVALID_STATE');
-    // Neither target was written.
-    assert.equal((await board.readProgress({ project: 'demo', epic: 'auth' })).total, 0);
-    assert.equal((await board.readProgress({ project: 'demo', id })).total, 3); // filed + 2 moves
+    assert.equal((await board.readProgress({ project: 'demo', id })).total, 1); // filed
   } finally { await cleanup(root); }
 });
 
-test('log_progress / read_progress on an unknown epic -> EPIC_UNKNOWN (incl. a cross epic via a NON-member project)', async () => {
+// B2 — logEpic resolves through the SAME resolveEpic as readEpic. Kills an
+// inlined resolver that drops the member fallback or the non-member guard.
+test('logEpic resolves an epic exactly as readEpic does (member ok, non-member EPIC_UNKNOWN)', async () => {
   const root = await freshRoot();
   useProjects(['web', 'api', 'infra']);
   try {
     await board.createEpic({ projects: ['web', 'api'], slug: 'plat', title: 'P' });
-    for (const [name, call] of [['log', (a) => board.logProgress({ ...a, entry: 'x' })], ['read', (a) => board.readProgress(a)]]) {
-      assert.equal((await call({ project: 'web', epic: 'ghost' })).code, 'EPIC_UNKNOWN', `${name}: unknown slug`);
-      assert.equal((await call({ epic: 'ghost' })).code, 'EPIC_UNKNOWN', `${name}: unknown slug, no project`);
-      // infra is not a member, so the cross epic is not its epic — same guard readEpic applies.
-      assert.equal((await call({ project: 'infra', epic: 'plat' })).code, 'EPIC_UNKNOWN', `${name}: non-member project`);
-      assert.equal((await call({ project: 'ghost-project', epic: 'plat' })).code, 'PROJECT_UNKNOWN', `${name}: unknown project`);
+    for (const [name, call] of [['log', (a) => board.logEpic({ ...a, entry: 'x' })], ['read', (a) => board.readEpic(a)]]) {
+      assert.equal((await call({ project: 'web', slug: 'ghost' })).code, 'EPIC_UNKNOWN', `${name}: unknown slug`);
+      assert.equal((await call({ slug: 'ghost' })).code, 'EPIC_UNKNOWN', `${name}: unknown slug, no project`);
+      // infra is not a member, so the cross epic is not its epic.
+      assert.equal((await call({ project: 'infra', slug: 'plat' })).code, 'EPIC_UNKNOWN', `${name}: non-member project`);
+      assert.equal((await call({ project: 'ghost-project', slug: 'plat' })).code, 'PROJECT_UNKNOWN', `${name}: unknown project`);
     }
-    // ...while a member project resolves it.
-    assert.equal((await board.logProgress({ project: 'web', epic: 'plat', entry: 'ok' })).ok, true);
-    assert.equal((await board.readProgress({ project: 'web', epic: 'plat' })).total, 1);
+    // ...while a MEMBER project resolves the cross epic, as does the bare slug.
+    assert.equal((await board.logEpic({ project: 'web', slug: 'plat', entry: 'ok' })).ok, true);
+    assert.equal((await board.readEpic({ project: 'web', slug: 'plat' })).logbook_total, 1);
+    assert.equal((await board.readEpic({ slug: 'plat' })).logbook_total, 1);
   } finally { await cleanup(root); }
 });
 
@@ -2367,18 +2403,18 @@ test('epic logbook resolution precedence matches read_epic (project epic wins; a
     await board.createEpic({ project: 'demo', slug: 's', title: 'Project S' });
     await board.createEpic({ projects: ['web', 'api'], slug: 's', title: 'Cross S' });
 
-    await board.logProgress({ project: 'demo', epic: 's', entry: 'to the project record' });
-    await board.logProgress({ project: 'web', epic: 's', entry: 'to the cross record' });
-    await board.logProgress({ epic: 's', entry: 'to the cross record by slug' });
+    await board.logEpic({ project: 'demo', slug: 's', entry: 'to the project record' });
+    await board.logEpic({ project: 'web', slug: 's', entry: 'to the cross record' });
+    await board.logEpic({ slug: 's', entry: 'to the cross record by slug' });
 
-    const p = await board.readProgress({ project: 'demo', epic: 's' });
-    assert.equal(p.total, 1);
-    assert.match(p.entries[0], /to the project record/);
+    const p = await board.readEpic({ project: 'demo', slug: 's' });
+    assert.equal(p.logbook_total, 1);
+    assert.match(p.epic.logbook[0], /to the project record/);
 
-    const x = await board.readProgress({ epic: 's' });
-    assert.equal(x.total, 2);
-    assert.match(x.entries[0], /by slug/);
-    assert.match(x.entries[1], /to the cross record$/);
+    const x = await board.readEpic({ slug: 's' });
+    assert.equal(x.logbook_total, 2);
+    assert.match(x.epic.logbook[0], /to the cross record$/);
+    assert.match(x.epic.logbook[1], /by slug/);
     // read_epic resolves each the same way.
     assert.equal((await board.readEpic({ project: 'demo', slug: 's' })).epic.title, 'Project S');
     assert.equal((await board.readEpic({ project: 'web', slug: 's' })).epic.title, 'Cross S');
@@ -2398,8 +2434,8 @@ test('logging to an epic bumps its updated/node version stamp (project AND cross
     store.writeEpic('demo', { slug: 'auth', title: 'A', goal: '', created: stale, updated: stale, node: 'peer-node' });
     store.writeCrossEpic({ slug: 'plat', title: 'P', goal: '', projects: ['web', 'api'], created: stale, updated: stale, node: 'peer-node' });
 
-    assert.equal((await board.logProgress({ project: 'demo', epic: 'auth', entry: 'landed' })).ok, true);
-    assert.equal((await board.logProgress({ epic: 'plat', entry: 'landed' })).ok, true);
+    assert.equal((await board.logEpic({ project: 'demo', slug: 'auth', entry: 'landed' })).ok, true);
+    assert.equal((await board.logEpic({ slug: 'plat', entry: 'landed' })).ok, true);
 
     const dump = await board.exportBoard({ scope: 'all' });
     const p = dump.projectEpics.demo.find((e) => e.slug === 'auth');

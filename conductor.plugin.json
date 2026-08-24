@@ -32,7 +32,7 @@
     "tools": [
       {
         "name": "file_task",
-        "description": "File a new task for a project. Worker + conductor. Returns the server-assigned id (plus the stored `plan` link when `plan` was given). Set `priority` here — it is the one moment the level is cheap to judge; omitting it leaves the card unjudged, and an unjudged card sorts below every judged one.",
+        "description": "File a new task for a project. Worker + conductor. Set `priority` here — it is the one moment the level is cheap to judge; omitting it leaves the card unjudged, and an unjudged card sorts below every judged one.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -50,14 +50,13 @@
         }
       },
       {
-        "name": "log_progress",
-        "description": "Log a progress line (a logbook entry) on an in-progress card, or on an epic. Worker + conductor for a card; conductor only for an epic.",
+        "name": "log_card",
+        "description": "Log a progress line (a logbook entry) on an in-progress card. Worker + conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
-            "project": { "type": "string", "minLength": 1, "description": "Optional when id and epic are both omitted; required when id is given; an optional scope hint when epic is given." },
-            "id": { "type": "string", "minLength": 1, "description": "Optional, conductor-only: target a specific in-progress card. Requires project." },
-            "epic": { "type": "string", "minLength": 1, "description": "Conductor-only: log to this epic's logbook instead of a card — what landed, what got resequenced and why (the epic's `plan` carries the strategy; this carries the state). No lane gate: an epic has no state. `project` scopes it to that project's own epic, falling back to a cross-project epic covering it; omit `project` to address a cross-project epic by slug. Mutually exclusive with `id`." },
+            "project": { "type": "string", "minLength": 1, "description": "Optional when `id` is omitted; required when `id` is given." },
+            "id": { "type": "string", "minLength": 1, "description": "Optional, conductor-only: target a specific in-progress card. Requires `project`." },
             "entry": { "type": "string", "minLength": 1, "description": "Log line text." }
           },
           "required": ["entry"]
@@ -65,21 +64,21 @@
       },
       {
         "name": "list_tasks",
-        "description": "List a project's tasks as a lane-grouped PLAIN-TEXT listing plus one small JSON block (per-lane counts). HIDES `done` BY DEFAULT: the default set is triage + backlog + todo + in-progress, and the header states how many done cards were hidden. Pass state:'done' to read those, or includeDone:true for every lane. Any explicit `state` returns exactly that lane, as before. Rows are grouped by lane in board order and sorted by priority within a lane (an unjudged card sorts below LOW); each row carries id, priority, title and created date, plus epic / owner / deps / plan only when set. `project` is not repeated per row. Conductor.",
+        "description": "List a project's tasks. HIDES `done` BY DEFAULT — pass state:'done' to read that lane, or includeDone:true for every lane. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
             "project": { "type": "string", "minLength": 1 },
             "state": { "type": "string", "enum": ["triage", "backlog", "todo", "in-progress", "done"] },
             "epic": { "type": "string" },
-            "includeDone": { "type": "boolean", "default": false, "description": "Include the `done` lane instead of collapsing it to a `N done hidden` note in the header (default false). No effect when `state` is given — that filter already names the lane." }
+            "includeDone": { "type": "boolean", "default": false, "description": "Include the `done` lane too (default false). No effect when `state` is given." }
           },
           "required": ["project"]
         }
       },
       {
         "name": "read_task",
-        "description": "Read a single task including its logbook (optionally only the last logTail entries). Returns plan_path always; includePlan also returns the plan file's body. Conductor.",
+        "description": "Read a single task including its logbook (optionally only the last logTail entries). Returns plan_path always. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -93,15 +92,15 @@
       },
       {
         "name": "read_progress",
-        "description": "Read a task's or an epic's logbook only, most-recent first, optionally capped at limit. Conductor.",
+        "description": "Read a task's logbook only, most-recent first, optionally capped at `limit`. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
             "project": { "type": "string", "minLength": 1 },
             "id": { "type": "string", "minLength": 1 },
-            "epic": { "type": "string", "minLength": 1, "description": "Read this epic's logbook instead of a card's. `project` scopes it to that project's own epic, falling back to a cross-project epic covering it; omit `project` to address a cross-project epic by slug. Mutually exclusive with `id`." },
             "limit": { "type": "integer", "minimum": 0 }
-          }
+          },
+          "required": ["project", "id"]
         }
       },
       {
@@ -121,7 +120,7 @@
       },
       {
         "name": "update_task",
-        "description": "Update task fields. `fields` may contain any of: title, goal, epic, priority, depends_on, plan, owner, acceptance (other keys ignored). `priority` is one of CRITICAL, HIGH, MEDIUM, LOW, or null to clear it back to unset (anything else is INVALID_STATE). `plan` is a LINK to a plan file, in one of three input forms: `board:<rel>` (under the board's plans/ dir) or `repo:<rel>` (under the project's base checkout) — a pointer that must already resolve to a file (else PLAN_UNKNOWN) and is never copied; a bare relative path (means board:); or an ABSOLUTE path, which is COPIED IN — the file is copied to the board's plans/<id>.md and stored as `board:<id>.md` (the source is never moved or modified; an existing copy is overwritten). The stored link is returned in the result. `plan: null` clears it. `owner` may only be set on an in-progress card (else INVALID_STATE). `acceptance` accepts exactly one of three shapes: `{ops:[...]}` — a list of `{op:'add', text}` / `{op:'remove', index}` / `{op:'rename', index, text}` / `{op:'done', index, done}` operations, where `index` is the 0-based position in the card's acceptance list as `read_task` returns it; every op resolves against that single PRE-EDIT snapshot in one pass (two `remove`s in the same call never shift each other), survivors keep their pre-edit relative order, `add`s are appended after all survivors in the order they appear in `ops`; `{replace:[...]}` — sets the list from strings, preserving each item's `done` flag when the new (trimmed) text exactly matches a pre-edit item's text, unmatched items start unchecked; or `null`, which clears the list. Stored criterion text is always trimmed. `file_task`'s `acceptance: string[]` filing-time form is separate and unchanged. Conductor.",
+        "description": "Update task fields. `fields` may contain any of: title, goal, epic, priority, depends_on, plan, owner, acceptance (other keys ignored). `priority` is one of CRITICAL, HIGH, MEDIUM, LOW, or null to clear it back to unset (anything else is INVALID_STATE). `plan` takes the same three input forms as `file_task`'s `plan`; `null` clears the link. `owner` may only be set on an in-progress card (else INVALID_STATE). `acceptance` accepts exactly one of three shapes: `{ops:[...]}` — a list of `{op:'add', text}` / `{op:'remove', index}` / `{op:'rename', index, text}` / `{op:'done', index, done}` operations, where `index` is the 0-based position in the card's acceptance list as `read_task` returns it; every op resolves against that single PRE-EDIT snapshot in one pass (two `remove`s in the same call never shift each other), survivors keep their pre-edit relative order, `add`s are appended after all survivors in the order they appear in `ops`; `{replace:[...]}` — sets the list from strings, preserving each item's `done` flag when the new (trimmed) text exactly matches a pre-edit item's text, unmatched items start unchecked; or `null`, which clears the list. Stored criterion text is always trimmed. `file_task`'s `acceptance: string[]` filing-time form is a different shape. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -134,23 +133,23 @@
       },
       {
         "name": "create_epic",
-        "description": "Create or refresh an epic (idempotent upsert): `project` for a project-scoped epic, or `projects` for a cross-project epic. A re-upsert PRESERVES any optional field you omit — pass `goal: ''` or `plan: null` to clear one explicitly; `title` is always required and always overwrites. Returns the stored `plan` link when `plan` was given. Conductor.",
+        "description": "Create or refresh an epic (idempotent upsert). Give exactly one of `project` or `projects`. A re-upsert PRESERVES any optional field you omit — pass `goal: ''` or `plan: null` to clear one explicitly; `title` is always required and always overwrites. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
-            "project": { "type": "string", "minLength": 1, "description": "Owning project for a project-scoped epic; mutually exclusive with projects." },
-            "projects": { "type": "array", "items": { "type": "string" }, "description": "Member projects (≥2) for a cross-project epic; mutually exclusive with project." },
+            "project": { "type": "string", "minLength": 1, "description": "Owning project for a project-scoped epic." },
+            "projects": { "type": "array", "items": { "type": "string" }, "description": "Member projects (≥2) for a cross-project epic." },
             "slug": { "type": "string", "minLength": 1, "pattern": "^[a-z0-9._-]+$" },
             "title": { "type": "string", "minLength": 1 },
-            "goal": { "type": "string", "description": "What + why. Omit on a re-upsert to keep the stored goal; pass '' to clear it." },
-            "plan": { "type": "string", "description": "Link to the epic's PLAN file — the *strategy* behind the epic (why these choices, why this sequence), never the dependency graph (`depends_on` owns that) and never progress (the rollup owns that). Same three input forms as `file_task`'s `plan`: `board:<rel>` or `repo:<rel>` — a pointer that must already resolve to a file and is never copied; a bare relative path (means `board:`); or an ABSOLUTE path, which is COPIED IN — to the board's `plans/epic-<slug>.md`, stored as `board:epic-<slug>.md` (the source is never moved or modified; an existing copy is overwritten). For a project-scoped epic `board:` resolves under that project's plans/ dir; a cross-project epic has no owning project, so its `board:` resolves under the BOARD-LEVEL plans/ dir and `repo:` is refused (INVALID_STATE). Omit to keep the stored link; `null` clears it. Missing/unreadable source or pointer → PLAN_UNKNOWN and nothing is written." }
+            "goal": { "type": "string", "description": "What + why." },
+            "plan": { "type": "string", "description": "Link to the epic's PLAN file. Same three input forms as `file_task`'s `plan`, with these deltas: an ABSOLUTE path is copied to the board's `plans/epic-<slug>.md` and stored as `board:epic-<slug>.md`; a cross-project epic has no owning project, so its `board:` resolves under the BOARD-LEVEL plans/ dir and `repo:` is refused (INVALID_STATE). Missing/unreadable source or pointer → PLAN_UNKNOWN and nothing is written, leaving an existing epic untouched." }
           },
           "required": ["slug", "title"]
         }
       },
       {
         "name": "list_epics",
-        "description": "List a project's epics — including cross-project epics that span it — as PLAIN TEXT: one block per epic with its slug, title, per-state rollup, and member projects for a cross-project epic. Plus a small JSON block carrying the epic count. Conductor.",
+        "description": "List a project's epics, including cross-project epics that span it. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -161,16 +160,29 @@
       },
       {
         "name": "read_epic",
-        "description": "Read an epic (goal + plan link + logbook + computed rollup) and its tasks; a cross-project epic aggregates across its member projects. Returns plan_path always; includePlan also returns the plan file's body. Conductor.",
+        "description": "Read an epic (goal + plan link + logbook + computed rollup) and its tasks; a cross-project epic aggregates across its member projects. Returns plan_path always. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
-            "project": { "type": "string", "minLength": 1, "description": "Owning project for a project-scoped epic; omit for a cross-project epic." },
+            "project": { "type": "string", "minLength": 1, "description": "Owning project for a project-scoped epic, or any member of a cross-project epic (the project's own epic wins). Omit to address a cross-project epic by slug." },
             "slug": { "type": "string", "minLength": 1 },
             "logTail": { "type": "integer", "minimum": 0, "description": "Keep only the last N logbook entries." },
             "includePlan": { "type": "boolean", "default": false, "description": "Also return the linked plan file's body (plan_body, bounded; plan_truncated / plan_missing flags)." }
           },
           "required": ["slug"]
+        }
+      },
+      {
+        "name": "log_epic",
+        "description": "Append a line to an epic's logbook. No lane gate — an epic has no state. Conductor.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "project": { "type": "string", "minLength": 1, "description": "Resolves the epic exactly as `read_epic`'s `project` does." },
+            "slug": { "type": "string", "minLength": 1 },
+            "entry": { "type": "string", "minLength": 1, "description": "Log line text: what landed, what got resequenced and why." }
+          },
+          "required": ["slug", "entry"]
         }
       },
       {

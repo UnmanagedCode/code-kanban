@@ -30,7 +30,7 @@ to `POST /api/mcp`:
   |---|---|---|
   | `read_task` | `{ok, task:{…frontmatter scalars…}, plan_path[, plan_body, plan_truncated, plan_missing]}` | 1. the card body 2. `plan_body` (only with `includePlan` **and** a non-empty readable file) |
   | `read_progress` | `{ok, total, count}` | the logbook entries as a `- `-prefixed list |
-  | `read_epic` | `{ok, epic:{slug,title,plan,rollup[,projects]}, plan_path[, plan_body, plan_truncated, plan_missing], tasks:[summary]}` | 1. `epic.goal` 2. the logbook as a `- ` list 3. `plan_body` (each block omitted when empty) |
+  | `read_epic` | `{ok, epic:{slug,title,plan,rollup[,projects]}, logbook_total, plan_path[, plan_body, plan_truncated, plan_missing], tasks:[summary]}` | 1. `epic.goal` 2. the logbook as a `- ` list 3. `plan_body` (each block omitted when empty) |
   | `list_tasks` | `{ok, counts:{…lanes read…}, shown, done_hidden}` | the lane-grouped listing (§ below) |
   | `list_epics` | `{ok, count}` | the epic roster (§ below) |
   | every mutator | unchanged `{result}` | — |
@@ -60,8 +60,7 @@ malformed envelope or an unexpected exception.
 ## Tool signatures
 
 - `file_task({project, title, goal?, acceptance?, epic?, depends_on?, category?, priority?, plan?}) → {ok, id[, plan]}` — task lands in `triage` by default; `category: 'todo'|'backlog'` lands it directly in that lane instead (mirrors triage's legal exits). An illegal `category` value → `INVALID_STATE`. `epic` must already exist → else `EPIC_UNKNOWN`. `priority` is one of `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` (advertised in the manifest as an `enum` with **no `default`**); omitted or `null` → unset; anything else → `INVALID_STATE`. `plan` takes the same three input forms as `update_task`'s `fields.plan` (below) and is resolved against the card's freshly-minted id, so an **absolute** path is copied to `plans/<id>.md`; the stored link comes back as `plan` in the result. All of these validate **before** the card is written, so a refusal consumes no id — including a `PLAN_UNKNOWN` plan: no card is created and the next `file_task` gets that same id.
-- `log_progress({project?, id?, epic?, entry}) → {ok}` — three paths, chosen by `id`/`epic`
-  (giving both → `INVALID_STATE`):
+- `log_card({project?, id?, entry}) → {ok}` — two paths, chosen by `id`:
   - **`id` omitted (worker path):** target card resolved server-side from `caller.sessionId`
     (the owned `in-progress` card; ties broken by most-recently-modified). `project` is
     optional: if omitted, every project is scanned for the owned card (same tie-break, across
@@ -70,22 +69,25 @@ malformed envelope or an unexpected exception.
     check. `project` is then **required** (ids are per-project, not globally unique) — missing
     → `INVALID_STATE`. Card must be `in-progress`; nonexistent or not `in-progress` →
     `TASK_UNKNOWN`. Logged with `conductor` attribution.
-  - **`epic` given (conductor-only path):** appends to that EPIC's logbook instead of a card's.
-    **No lane gate** — an epic has no state and no owner, and the two entries most worth having
-    (a resequencing decision before any card starts, a retrospective after the last one lands)
-    both occur with no in-progress card; so `EPIC_UNKNOWN` is the only refusal on this path, and
-    logging to an epic with zero tasks succeeds. `project` is an optional **scope hint**: it
-    resolves that project's own epic first, falling back to a cross-project epic covering it;
-    omit `project` to address a cross-project epic by slug. A cross epic addressed with a
-    **non-member** `project` → `EPIC_UNKNOWN` (same guard `read_epic` applies). Entries are
-    always `conductor`-attributed, even when the caller has a session id — an epic has no owner
-    to credit. The epic's `updated`/`node` stamp is bumped, so the edit is visible to sync.
+- `log_epic({project?, slug, entry}) → {ok}` — conductor-only; appends to that EPIC's logbook.
+  **No lane gate** — an epic has no state and no owner, and the two entries most worth having
+  (a resequencing decision before any card starts, a retrospective after the last one lands)
+  both occur with no in-progress card; so `EPIC_UNKNOWN` is the only refusal on this path (plus
+  `INVALID_STATE` for an empty `entry`), and logging to an epic with zero tasks succeeds.
+  `project` resolves the epic through the same `resolveEpic` as `read_epic`: that project's own
+  epic first, falling back to a cross-project epic covering it; omit `project` to address a
+  cross-project epic by slug, and a cross epic addressed with a **non-member** `project` →
+  `EPIC_UNKNOWN`. Entries are always `conductor`-attributed, even when the caller has a session
+  id — an epic has no owner to credit. The epic's `updated`/`node` stamp is bumped, so the edit
+  is visible to sync. There is no card|epic union tool: `log_card` and `log_epic` are separate
+  because a flat `inputSchema` cannot express the exclusivity (§ "Manifest / schema
+  constraints"); see `.wiki/architecture/card-epic-tool-split.md`.
 - `list_tasks({project, state?, epic?, includeDone?}) → {ok, tasks:[summary]}` — HTTP route shape
   (`board.listTasks`, unchanged). **Over MCP** the result rides the raw-text channel: a
   lane-grouped plain-text listing plus `{ok, counts, shown, done_hidden}`. `done` is **hidden by
   default** — the default set is every lane except `done` (triage/backlog/todo/in-progress); the
   header states how many `done` cards were hidden and how to see them. `state:'done'` still
-  returns exactly that lane (unchanged); `includeDone: true` (default `false`, no effect when
+  returns exactly that lane; `includeDone: true` (default `false`, no effect when
   `state` is given) returns every lane instead. `state` reaches `board.listTasks` **verbatim**, so
   `INVALID_STATE` still comes from the one validator, and `counts` describes exactly the lanes the
   call read: all five (0 for an empty lane) when no `state` was given, exactly one key when it was.
@@ -127,12 +129,12 @@ malformed envelope or an unexpected exception.
   calls on a linked card. Over the GUI's HTTP route it stays a single
   JSON object with `goal`/`acceptance`/`logbook`/`plan_body` as fields (`src/routes.js` delegates
   to `board.js`, which is unchanged; only `src/mcp.js` splits).
-- `read_progress({project?, id?, epic?, limit?}) → {ok, entries:[…], total}` — most-recent first.
-  `epic` reads that epic's logbook instead of a card's, resolved exactly as `log_progress`'
-  `epic` is (and `id` + `epic` together → `INVALID_STATE`); the envelope is identical, so the MCP
-  rendering below is the same for both. `project`/`id` are required **together** on the card path
-  but neither is required on the epic path — a cross-project epic read supplies neither, which is
-  why `read_progress`' `inputSchema` advertises no `required` list.
+- `read_progress({project, id, limit?}) → {ok, entries:[…], total}` — a **card's** logbook,
+  most-recent first. `project`/`id` are both required (`required:["project","id"]` in the
+  manifest, so `read_progress({})` is refused by the host's schema layer before dispatch). An
+  epic's logbook is read by `read_epic`, which returns it **chronologically** and caps it with
+  `logTail` rather than `limit` — the ordering difference is accepted, not a bug; see
+  `.wiki/architecture/card-epic-tool-split.md`.
   **Over MCP:** metadata block `{ok, total, count}` (`count` = entries returned after `limit`;
   `total` = the card's full logbook length) plus the entries as one raw `- `-prefixed markdown
   block. Zero entries → metadata block only.
@@ -217,7 +219,7 @@ malformed envelope or an unexpected exception.
     result — `read_task` is the read path.
 - `create_epic({project?, projects?, slug, title, goal?, plan?}) → {ok[, plan]}` — `slug` matches `^[a-z0-9._-]+$`; idempotent upsert. `title` is required and always overwrites; **every optional field the caller OMITS is preserved** (`goal`, `plan`, and the logbook, which no caller can pass) — pass `goal: ''`/`null` or `plan: null` to clear one explicitly. Presence is tested `!== undefined`, **never** `'goal' in args`: `src/routes.js` destructures the request body, so the key is always present holding `undefined`, and an `in` test would make every GUI epic re-post clobber the goal. `created` is preserved; for a cross-project epic the member `projects` list **is** replaced — membership is mutable. `plan` is a link to the epic's PLAN file (the *strategy*: why these choices, why this sequence — not the dependency graph, which `depends_on` owns, and not progress, which the rollup owns), taking the same three input forms as `update_task`'s `fields.plan`; an **absolute** path is ingested to `plans/epic-<slug>.md` and stored as `board:epic-<slug>.md`. The `epic-` prefix is load-bearing: `SLUG_RE` admits a card-id-shaped slug (`2026-0001`), so an unprefixed name would overwrite that card's own plan file. For a **project-scoped** epic `board:` resolves under that project's `plans/` dir; a **cross-project** epic has no owning project, so its `board:` resolves under the **board-level** `<kanbanRoot>/plans/` dir and `repo:` is refused `INVALID_STATE`. The stored link is returned as `plan` only when `plan` was part of the call. A malformed value is refused `INVALID_STATE` **before any lock**, an unresolvable one `PLAN_UNKNOWN` — either way nothing is written. Give **exactly one** of `project` (project-scoped) or `projects` (a cross-project epic spanning ≥2 members) → else `INVALID_STATE`. A slug may not be both a cross-project epic and a per-project epic in one of its members → `EPIC_CONFLICT` (guarded in both create orders).
 - `list_epics({project}) → {ok, epics:[{slug, title, rollup, projects}]}` — the project's own epics (`projects:null`) plus cross-project epics spanning it (`projects:[…]`, `rollup` aggregated over all members). **Over MCP:** the result rides the raw-text channel — one epic-roster text block (slug, title, per-state rollup always printed for all five lanes, `cross: <members>` for a cross-project epic) plus `{ok, count}`. Unlike `list_tasks`, there is no default-hide: an epic has no state, and its rollup's `done` count is the fact a reader wants, not noise. There is no honest whole-list aggregate for the rollups (a cross-project epic's rollup already spans other projects), so `meta` carries only the epic count — every rollup number lives in the text.
-- `read_epic({project?, slug, logTail?, includePlan?}) → {ok, epic:{slug,title,goal,plan,rollup[,projects],logbook}, plan_path[, plan_body, plan_truncated, plan_missing], tasks:[summary]}` — with `project`, a project-scoped epic resolves first, else a cross-project epic covering it. Omit `project` to read a cross-project epic by slug; its `rollup` and `tasks` aggregate across all member projects and `epic.projects` lists them. `epic.plan` is the raw stored link (mirroring the record, as `task` mirrors frontmatter) and `epic.logbook` is returned **by default**, `logTail` keeping only the last N entries (`logTail: 0` → zero, the same `slice(-0)` trap `read_task` avoids). The plan fields are **top-level** and behave exactly as `read_task`'s — `plan_path` always, `includePlan` adding `plan_body`/`plan_truncated`/`plan_missing` under the same 64 KiB `PLAN_MAX_BYTES` cap, a dead link degrading to `plan_missing: true` rather than refusing. Both reads run through one shared implementation (`planFields` in `src/board.js`). The hidden `updated`/`node` stamp is stripped (the response is a field whitelist). **Over MCP:** metadata block `{ok, epic:{slug,title,plan,rollup[,projects]}, plan_path[,…], tasks:[summary]}` plus up to three raw blocks in order — `epic.goal`, the logbook as a `- ` list, then `plan_body` — each omitted when empty; `tasks` stays JSON — the split rule's one exception, since it is a secondary field of a card-detail read rather than the payload the caller asked for (`list_tasks({epic})` is the text rendering of that same set).
+- `read_epic({project?, slug, logTail?, includePlan?}) → {ok, epic:{slug,title,goal,plan,rollup[,projects],logbook}, logbook_total, plan_path[, plan_body, plan_truncated, plan_missing], tasks:[summary]}` — `project` may be the epic's **owning** project (a project-scoped epic resolves first) **or any member** of a cross-project epic; omit it to address a cross-project epic by slug. A cross epic addressed with a **non-member** `project` → `EPIC_UNKNOWN`. One resolver (`resolveEpic` in `src/board.js`) serves this and `log_epic`, so the two cannot disagree. A cross epic's `rollup` and `tasks` aggregate across all member projects and `epic.projects` lists them. `epic.plan` is the raw stored link (mirroring the record, as `task` mirrors frontmatter) and `epic.logbook` is returned **by default** in **chronological** order, `logTail` keeping only the last N entries (`logTail: 0` → zero, the same `slice(-0)` trap `read_task` avoids). `logbook_total` is **top-level** and is the logbook's **full** length **before** any `logTail` cap, so a tail'd caller can tell 5 entries from 50. The plan fields are **top-level** and behave exactly as `read_task`'s — `plan_path` always, `includePlan` adding `plan_body`/`plan_truncated`/`plan_missing` under the same 64 KiB `PLAN_MAX_BYTES` cap, a dead link degrading to `plan_missing: true` rather than refusing. Both reads run through one shared implementation (`planFields` in `src/board.js`). The hidden `updated`/`node` stamp is stripped (the response is a field whitelist). **Over MCP:** metadata block `{ok, epic:{slug,title,plan,rollup[,projects]}, logbook_total, plan_path[,…], tasks:[summary]}` (`logbook_total` is a scalar, so it stays in the metadata block by the split rule) plus up to three raw blocks in order — `epic.goal`, the logbook as a `- ` list, then `plan_body` — each omitted when empty; `tasks` stays JSON — the split rule's one exception, since it is a secondary field of a card-detail read rather than the payload the caller asked for (`list_tasks({epic})` is the text rendering of that same set).
 - `delete_task({project, id}) → {ok}` — permanently removes the task's file; unknown id → `TASK_UNKNOWN`. Also best-effort removes the card's plan file **when the link is `board:`** — a `repo:` plan is a source-tree file and is never touched; a failed unlink leaves an orphan, never a refusal. Irreversible and not sync-aware: see "Cross-instance sync" in `docs/architecture.md`.
 
 A `summary` is `{id, title, state, project, epic, priority, owner, depends_on, created, plan}`
@@ -248,6 +250,11 @@ runtime-validated for the same reason. Array params (`acceptance`, `depends_on`)
 `{type:"array", items:{type:"string"}}` — this is `file_task`'s flat top-level `acceptance: string[]`
 param, unrelated to `update_task.fields.acceptance`'s nested shape.
 
+The same constraint is why there is no single card|epic logging or logbook-reading tool: a
+`oneOf` over the two addressing shapes is rejected outright, so the exclusivity lives in two
+tools with disjoint `required[]` (`log_card` / `log_epic`, and `read_progress` / `read_epic`)
+rather than in prose. See `.wiki/architecture/card-epic-tool-split.md`.
+
 ## Web GUI HTTP routes
 
 The in-process web GUI (`frontend/`, served at `/` by `express.static`) talks to the same
@@ -271,9 +278,9 @@ through unchanged as the HTTP body.
 | `PATCH /api/board/:project/tasks/:id` | `board.updateTask` | body **is** `fields` ⊆ `{title, goal, epic, priority, depends_on, plan, owner, acceptance}` | `{ok[, plan]}` (same refusals as the tool, incl. `PLAN_UNKNOWN`; an absolute `plan` is ingested here too — the copy lives in `board.js`, not at a surface; a bare `acceptance` array — e.g. `[{text,done}]` — is refused `INVALID_STATE`, not silently ignored: it must be `{ops:[…]}`, `{replace:[…]}`, or `null`) |
 | `POST /api/board/:project/tasks/:id/move` | `board.moveTask` | `{to, owner?, commit?}` | `{ok, from, to}` |
 | `GET /api/board/:project/epics` | `board.listEpics` | — | `{ok, epics:[{slug, title, rollup, projects}]}` (incl. cross-project epics spanning the project) |
-| `GET /api/board/:project/epics/:slug` | `board.readEpic` | — | `{ok, epic, plan_path, tasks:[summary]}` (resolves a cross-project epic the project belongs to). No `?includePlan`: no GUI caller needs the body. |
+| `GET /api/board/:project/epics/:slug` | `board.readEpic` | — | `{ok, epic, logbook_total, plan_path, tasks:[summary]}` (resolves a cross-project epic the project belongs to). No `?includePlan`: no GUI caller needs the body. |
 | `POST /api/board/:project/epics` | `board.createEpic` | `{slug, title, goal?}` | `{ok}` (project-scoped). Like `POST /tasks`, the route destructures a fixed field list and deliberately does **not** pass `plan` — the GUI has no file picker. An omitted `goal` is **preserved** (the destructure passes the key holding `undefined`, which is not a set). |
-| `GET /api/epics/:slug` | `board.readEpic` | — | `{ok, epic, plan_path, tasks:[summary]}` (cross-project epic by slug) |
+| `GET /api/epics/:slug` | `board.readEpic` | — | `{ok, epic, logbook_total, plan_path, tasks:[summary]}` (cross-project epic by slug) |
 | `POST /api/epics` | `board.createEpic` | `{slug, title, goal?, projects:[…]}` | `{ok}` (cross-project epic; `projects` has ≥2 members). Same two notes as the project-scoped route: no `plan`, and an omitted `goal` is preserved. |
 | `GET /api/sync/export` | `board.exportBoard` | `?scope=project\|all`, `?project` (required for `project`) | `{ok, nodeId, scope, projects:{<project>:[fullCard]}, projectEpics:{<project>:[epic]}, crossEpics:[epic]}` |
 | `POST /api/sync/pull` | `board.syncPull` | `{peerUrl, scope, project?}` | `{ok, summary:{added, updated, reassigned[], droppedDeps[], skippedProjects[], skippedCards[], epicsAdded, epicsUpdated, epicConflicts[], skippedEpics[], perProject}}` |

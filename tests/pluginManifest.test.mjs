@@ -103,12 +103,11 @@ test('list_tasks advertises includeDone (boolean, default false) and describes t
   assert.equal(listTasks.inputSchema.required.includes('includeDone'), false);
   assert.match(listTasks.description, /state:'done'/);
   assert.match(listTasks.description, /includeDone/);
-  assert.match(listTasks.description, /PLAIN.TEXT/i);
-});
-
-test('list_epics advertises the plain-text listing in its description', () => {
-  const listEpics = manifest.mcp.tools.find((t) => t.name === 'list_epics');
-  assert.match(listEpics.description, /PLAIN.TEXT/i);
+  // The surprising default itself — a caller who does not know it reads an
+  // empty result as an empty lane. The plain-text rendering is NOT asserted
+  // here: 2026-0027 cut that narration (the reader is holding the text), and
+  // the channel is pinned where it is implemented, in tests/mcp.test.mjs.
+  assert.match(listTasks.description, /HIDES `done` BY DEFAULT/);
 });
 
 test('file_task advertises the priority enum from src/priority.js, with NO default', () => {
@@ -150,7 +149,8 @@ test('create_epic\'s description states preserve-on-omit and how to clear', () =
   const desc = manifest.mcp.tools.find((t) => t.name === 'create_epic').description;
   assert.match(desc, /preserv/i);
   assert.match(desc, /`goal: ''`|`plan: null`/);
-  assert.match(manifest.mcp.tools.find((t) => t.name === 'create_epic').inputSchema.properties.goal.description, /omit/i);
+  // No assertion on goal.description: restating the omit rule there is exactly
+  // the duplication T7 now forbids.
 });
 
 test('read_epic advertises logTail + includePlan, and says plan_path is always returned', () => {
@@ -164,20 +164,137 @@ test('read_epic advertises logTail + includePlan, and says plan_path is always r
   assert.match(readEpic.description, /logbook/);
 });
 
-test('log_progress and read_progress advertise an `epic` param; read_progress no longer requires id', () => {
-  const logProgress = manifest.mcp.tools.find((t) => t.name === 'log_progress');
-  const readProgress = manifest.mcp.tools.find((t) => t.name === 'read_progress');
-  for (const tool of [logProgress, readProgress]) {
-    const prop = tool.inputSchema.properties.epic;
-    assert.ok(prop, `${tool.name} advertises an epic param`);
-    assert.equal(prop.type, 'string');
-    assert.match(prop.description, /Mutually exclusive with `id`/);
+// 2026-0027: the card|epic union was split into one tool per subject, so the
+// exclusivity lives in disjoint `required[]` instead of prose. T1-T9 below each
+// pin one invariant of that split; every description in the manifest is a
+// system-prompt surface, so the prose assertions are as load-bearing as the
+// shape ones.
+const tool = (name) => manifest.mcp.tools.find((t) => t.name === name);
+// Every description string in the manifest: each tool's own, plus every param's.
+const allDescriptions = () => manifest.mcp.tools.flatMap((t) => [
+  t.description,
+  ...Object.values(t.inputSchema.properties ?? {}).map((p) => p.description),
+].filter((d) => typeof d === 'string'));
+
+// T1 — read_progress is card-only, with BOTH addressing keys required. Pins the
+// deletion of the epic arm AND the restoration of required[], which the union
+// had dropped (making read_progress({}) schema-legal).
+test('read_progress is card-only and requires project+id', () => {
+  const readProgress = tool('read_progress');
+  assert.deepEqual(readProgress.inputSchema.required, ['project', 'id']);
+  assert.equal('epic' in readProgress.inputSchema.properties, false);
+});
+
+// T2 — the old union tool is gone and its replacement carries no epic surface.
+test('log_progress is gone; log_card is card-only', () => {
+  assert.equal(tool('log_progress'), undefined, 'log_progress must not be re-added');
+  const logCard = tool('log_card');
+  assert.ok(logCard, 'log_card exists');
+  assert.equal('epic' in logCard.inputSchema.properties, false);
+  // `project` stays optional: the worker path supplies neither project nor id.
+  assert.deepEqual(logCard.inputSchema.required, ['entry']);
+});
+
+// T3 — log_epic's addressing must be byte-identical to read_epic's, because the
+// whole point of the split is that "same subject => same addressing" is
+// structural rather than promised in prose.
+test('log_epic addresses an epic exactly as read_epic does', () => {
+  const logEpic = tool('log_epic');
+  const readEpic = tool('read_epic');
+  for (const key of ['project', 'slug']) {
+    const a = logEpic.inputSchema.properties[key];
+    const b = readEpic.inputSchema.properties[key];
+    assert.deepEqual({ type: a.type, minLength: a.minLength }, { type: b.type, minLength: b.minLength }, key);
   }
-  assert.match(logProgress.inputSchema.properties.epic.description, /[Cc]onductor-only/);
-  assert.match(logProgress.inputSchema.properties.epic.description, /[Nn]o lane gate/);
-  assert.match(logProgress.inputSchema.properties.project.description, /epic/);
-  // A cross-project epic read supplies NEITHER project nor id, so the old
-  // required pair would make the advertised surface refuse a legal call.
-  assert.equal(readProgress.inputSchema.required, undefined);
-  assert.deepEqual(logProgress.inputSchema.required, ['entry']);
+  assert.deepEqual(logEpic.inputSchema.required, ['slug', 'entry']);
+});
+
+// T4 — no mutual-exclusion PROSE anywhere. Banned manifest-wide deliberately:
+// the flat-schema constraint means a `oneOf` can never back such a sentence
+// (.wiki/gotchas/flat-inputschema-constraint.md), so an exclusivity stated in a
+// description is an unenforced promise. If a future field pair really is
+// exclusive, either split the tool (as log_card/log_epic did) or write the
+// positive form — "Give exactly one of `x` or `y`." — which names the action a
+// caller takes instead of the state they must avoid.
+test('no description states a mutual exclusion in prose', () => {
+  for (const desc of allDescriptions()) {
+    assert.equal(/mutually exclusive/i.test(desc), false,
+      `"mutually exclusive" is banned in tool prose (nothing enforces it) — split the tool, or write "Give exactly one of \`x\` or \`y\`.": ${desc}`);
+  }
+});
+
+// T5 — the no-lane-gate refusal guard. A caller who does not know an epic has no
+// state will not attempt the call at all (or will file a card first); nothing
+// else volunteers it at the call site.
+test('log_epic states the no-lane-gate rule and its audience', () => {
+  const desc = tool('log_epic').description;
+  assert.match(desc, /no lane gate/i);
+  assert.match(desc, /Conductor/);
+});
+
+// T6 — the plan-link three-forms grammar appears IN FULL exactly once, in
+// file_task.plan; the two other plan-taking surfaces cross-reference it.
+test('the plan three-forms grammar is stated once, and cross-referenced twice', () => {
+  const full = manifest.mcp.tools.flatMap((t) =>
+    Object.entries(t.inputSchema.properties ?? {}).map(([k, p]) => [`${t.name}.${k}`, p.description ?? '']),
+  ).filter(([, d]) => /ABSOLUTE path/.test(d) && /board:<rel>/.test(d));
+  assert.deepEqual(full.map(([n]) => n), ['file_task.plan']);
+  const xref = /same three input forms as `file_task`'s `plan`/i;
+  assert.match(tool('update_task').description, xref);
+  assert.match(tool('create_epic').inputSchema.properties.plan.description, xref);
+});
+
+// T7 — the upsert preserve-on-omit footgun is stated once, at tool level. It
+// was stated three times inside create_epic before this card.
+test('create_epic states preserve-on-omit exactly once', () => {
+  const createEpic = tool('create_epic');
+  const hits = [createEpic.description, ...Object.values(createEpic.inputSchema.properties).map((p) => p.description ?? '')]
+    .filter((d) => /preserv/i.test(d));
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0], createEpic.description);
+  assert.match(createEpic.description, /`goal: ''`|`plan: null`/);
+});
+
+// T8 — the epic-resolution rule (own epic wins, member falls back to the cross
+// epic) is stated once, on read_epic.project; log_epic points at it rather than
+// restating it. One resolver in board.js backs both.
+test('the epic-resolution rule is stated once and pointed at once', () => {
+  const stating = allDescriptions().filter((d) =>
+    /own epic wins|falling back to a cross-project|any member of a cross-project/.test(d));
+  assert.deepEqual(stating, [tool('read_epic').inputSchema.properties.project.description]);
+  assert.match(tool('log_epic').inputSchema.properties.project.description, /exactly as `read_epic`/);
+});
+
+// T9 — no description restates a field the RESULT already hands back. Each of
+// these was a real sentence this card removed.
+test('no description restates what the result already returns', () => {
+  assert.equal(/includePlan also returns/.test(tool('read_epic').description), false);
+  assert.equal(/includePlan also returns/.test(tool('read_task').description), false);
+  assert.equal(/Returns the stored/.test(tool('create_epic').description), false);
+  assert.equal(/server-assigned id/.test(tool('file_task').description), false);
+});
+
+// T10 — the prose budget. Every description in this file loads into the system
+// prompt of every session using the plugin, so its size is a recurring
+// per-session cost, not a one-off. 940 is the pre-20e4f31 figure BY THIS
+// MEASURE (tool + param `description` words). The 1537 figure card 2026-0027
+// originally carried was a whole-file `wc -w` including JSON punctuation — never
+// a prose budget, and void. Adding a fact is allowed; adding it twice is not.
+test('the manifest prose budget holds (<= 940 description words)', () => {
+  const words = (s) => (s ?? '').trim().split(/\s+/).filter(Boolean).length;
+  const total = manifest.mcp.tools.reduce((n, t) => n + words(t.description)
+    + Object.values(t.inputSchema.properties ?? {}).reduce((a, p) => a + words(p.description), 0), 0);
+  assert.ok(total <= 940, `manifest prose is ${total} words, budget is 940`);
+});
+
+// T11 — a changelog artifact is a phrase whose meaning depends on having seen an
+// EARLIER version of the text ("…, as before"). A tool description has no
+// readers who saw the previous one, so the phrase spends system-prompt words on
+// nothing. State the fact instead of its history.
+test('no description contains a changelog artifact', () => {
+  for (const desc of allDescriptions()) {
+    const hit = desc.match(/\b(as before|unchanged|previously|used to|no longer)\b/i);
+    assert.equal(hit, null,
+      `"${hit?.[0]}" is a changelog artifact — nobody reading this saw the earlier version. State the fact, not its history: ${desc}`);
+  }
 });

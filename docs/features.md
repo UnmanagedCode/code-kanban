@@ -43,23 +43,24 @@ conductor's own tool — not a team/shared surface.
   | half | carries | must NOT carry |
   |---|---|---|
   | the epic **plan** (a file, linked via `create_epic`'s `plan`) | *strategy* — why these choices, why the dependency graph looks the way it does | the graph itself (`depends_on` owns it), progress (the rollup owns it) |
-  | the epic **logbook** (in the epic record, via `log_progress({epic})`) | *state* — what landed, what got resequenced and why | strategy (the plan owns it) |
+  | the epic **logbook** (in the epic record, via `log_epic`) | *state* — what landed, what got resequenced and why | strategy (the plan owns it) |
 
   The plan link takes the same three input forms a card's does; an absolute path is ingested to
   `plans/epic-<slug>.md`. A **cross-project** epic has no owning project, so its `board:` plans
   live in a **board-level** `plans/` dir and `repo:` is refused. Logging to an epic has **no lane
   gate** — an epic has no state, and the entries most worth having (a resequencing decision before
   any card starts, a retrospective after the last one lands) happen with nothing in progress.
-  `read_epic` returns the plan link, the resolved `plan_path` and the logbook by default; it is
-  conductor-only, like every other epic verb.
+  `read_epic` returns the plan link, the resolved `plan_path` and the logbook by default — in
+  **chronological** order, alongside `logbook_total` (the full length before any `logTail` cap, so
+  a tail'd read can tell 5 entries from 50). It is conductor-only, like every other epic verb.
 
 ## Duties (who may do what)
 
 - The **conductor** is the sole reader and sole mutator: all moves, updates, epics, and reads.
-- **Workers are pure emitters** — only `file_task` and `log_progress`, no reads. A worker never
-  handles a task id: `log_progress` resolves the target card **server-side from the caller's
+- **Workers are pure emitters** — only `file_task` and `log_card`, no reads. A worker never
+  handles a task id: `log_card` resolves the target card **server-side from the caller's
   session** (the card the conductor assigned it in `in-progress`).
-- The conductor owns no card, so it can't use the session path. Instead it may pass `log_progress`
+- The conductor owns no card, so it can't use the session path. Instead it may pass `log_card`
   an explicit `id` (+ required `project`) to log against that exact `in-progress` card directly,
   bypassing the owner check. Workers never pass `id`.
 
@@ -68,25 +69,26 @@ conductor's own tool — not a team/shared surface.
 | Tool | Who | Effect |
 |------|-----|--------|
 | `file_task` | worker + conductor | Create a task in `triage`, or directly in `todo`/`backlog` via `category`; takes `priority` (`CRITICAL`/`HIGH`/`MEDIUM`/`LOW`; omit to leave it unset — no default) and an optional `plan` (pointer or an absolute path copied in as `plans/<id>.md`); returns the new id (plus the stored `plan` link when given). |
-| `log_progress` | worker + conductor (card); conductor only (epic) | Append a logbook line: worker's owned in-progress card (no `id`), conductor's target card (`id` + `project`), or an **epic** (`epic`, no lane gate). |
+| `log_card` | worker + conductor | Append a logbook line to a card: the worker's owned in-progress card (no `id`), or the conductor's target card (`id` + `project`). |
 | `list_tasks` | conductor | List tasks, optionally filtered by `state`/`epic`; hides `done` by default (`state:'done'`, or `includeDone:true` for every lane). |
 | `read_task` | conductor | Read one task (+ logbook, optionally last `logTail`); always returns the resolved plan path, and with `includePlan` the plan file's body. |
-| `read_progress` | conductor | Read a task's — or an `epic`'s — logbook only, most-recent first. |
+| `read_progress` | conductor | Read a task's logbook only, most-recent first. |
 | `move_task` | conductor | Move between states; sets `owner` on entering `in-progress`; on landing (`→done`), stamps `commit` (given, or auto-captured from the owning worker's live worktree HEAD). |
 | `update_task` | conductor | Update `title`/`goal`/`epic`/`priority` (same four levels, or `null` to clear back to unset)/`depends_on`, attach or clear the `plan` link (pointer, or an absolute path copied in as `plans/<id>.md`; the stored link comes back in the result), edit the `acceptance` list (`{ops:[…]}` add/remove/rename/done, `{replace:[…]}`, or `null` to clear), and reassign `owner` on an in-progress card (plan worker → implementer, no lane move). |
 | `create_epic` | conductor | Create/refresh an epic — `project` (project-scoped) or `projects` (cross-project) — plus an optional `plan` link (pointer, or an absolute path copied in as `plans/epic-<slug>.md`). An idempotent upsert that **preserves every optional field you omit**; `goal: ''` / `plan: null` clear one explicitly. |
 | `list_epics` | conductor | A project's epics + cross-project epics spanning it, with computed rollups. |
-| `read_epic` | conductor | One epic (goal + plan link + logbook + rollup) and its tasks; cross-project epics aggregate across members. Always returns the resolved plan path, and with `includePlan` the plan file's body. |
+| `read_epic` | conductor | One epic (goal + plan link + logbook + `logbook_total` + rollup) and its tasks; cross-project epics aggregate across members. Always returns the resolved plan path, and with `includePlan` the plan file's body. |
+| `log_epic` | conductor | Append a logbook line to an epic — no lane gate, since an epic has no state. |
 | `delete_task` | conductor | Permanently delete a task by id, plus its `board:` plan file (never a `repo:` one). Irreversible; not sync-aware (see "Cross-instance sync" in `docs/architecture.md`). |
 
 Every tool takes a `project` (validated against the live project list), except:
 - `create_epic`/`read_epic`, which instead accept a cross-project epic's `projects` list / a bare slug.
-- `log_progress`'s worker path (no `id`), where `project` is optional: if omitted, the server
-  scans every project for the caller's owned in-progress card. `log_progress`'s conductor path
+- `log_card`'s worker path (no `id`), where `project` is optional: if omitted, the server
+  scans every project for the caller's owned in-progress card. `log_card`'s conductor path
   (`id` given) requires `project` (see `.wiki/gotchas/owner-from-caller-sessionid.md`).
-- `log_progress`/`read_progress`'s **epic** path (`epic` given), where `project` is an optional
-  scope hint — a cross-project epic is addressed by slug alone. Given, it selects that project's
-  own epic first and falls back to a cross-project epic covering it.
+- `read_epic`/`log_epic`, where `project` is optional and resolves the epic the same way for both
+  (one shared resolver): given, it selects that project's own epic first and falls back to a
+  cross-project epic covering it; omitted, a cross-project epic is addressed by slug alone.
 
 ## Web GUI
 
