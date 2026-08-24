@@ -26,7 +26,7 @@ async function seed(base, root, { epics = [], cards = [] } = {}) {
     return b;
   };
   for (const e of epics) await call(`/api/board/${PROJECT}/epics`, { method: 'POST', body: e }, `epic ${e.slug}`);
-  for (const c of cards) await call(`/api/board/${PROJECT}/tasks`, { method: 'POST', body: c }, `card ${c.title}`);
+  for (const c of cards) await call(`/api/board/${PROJECT}/cards`, { method: 'POST', body: c }, `card ${c.title}`);
 }
 
 async function main() {

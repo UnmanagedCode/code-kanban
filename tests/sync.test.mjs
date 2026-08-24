@@ -6,7 +6,7 @@ import { freshRoot, cleanup } from './_helpers.mjs';
 import { plansDir, epicsDir, crossEpicsDir } from '../src/paths.js';
 import * as board from '../src/board.js';
 import * as store from '../src/store.js';
-import * as taskfile from '../src/taskfile.js';
+import * as cardfile from '../src/cardfile.js';
 import { _setProjectFetcher } from '../src/projects.js';
 import { deriveUid } from '../src/nodeId.js';
 
@@ -86,7 +86,7 @@ const pull = (scope, project) =>
 
 // Find a stored card by title (full-card store read, so uid is visible).
 function byTitle(project, title) {
-  return store.exportTasks(project).find((c) => c.title === title);
+  return store.exportCards(project).find((c) => c.title === title);
 }
 
 // Write a card straight to the store with an explicit id/uid so collisions are
@@ -94,24 +94,24 @@ function byTitle(project, title) {
 function seedLocal(project, o) {
   store.ensureProjectDirs(project);
   const c = card({ ...o, project });
-  store.writeTask(project, c.state, c);
+  store.writeCard(project, c.state, c);
   return c;
 }
 
 const ID_RE = /^\d{4}-\d{4}$/;
 
-test('taskfile round-trips uid/updated/node; absent -> null', () => {
+test('cardfile round-trips uid/updated/node; absent -> null', () => {
   const t = {
     id: '2026-0001', uid: 'u-1', title: 'T', project: 'alpha', priority: 0,
     created: '2026-01-01T00:00:00.000Z', updated: '2026-02-02T00:00:00.000Z',
     node: 'n-1', depends_on: [], goal: '', acceptance: [], logbook: [],
   };
-  const back = taskfile.parse(taskfile.serialize(t), { state: 'triage' });
+  const back = cardfile.parse(cardfile.serialize(t), { state: 'triage' });
   assert.equal(back.uid, 'u-1');
   assert.equal(back.updated, '2026-02-02T00:00:00.000Z');
   assert.equal(back.node, 'n-1');
   // A card serialized without the stamp parses the fields back as null.
-  const legacy = taskfile.parse(taskfile.serialize({ ...t, uid: null, updated: null, node: null }), { state: 'triage' });
+  const legacy = cardfile.parse(cardfile.serialize({ ...t, uid: null, updated: null, node: null }), { state: 'triage' });
   assert.equal(legacy.uid, null);
   assert.equal(legacy.updated, null);
   assert.equal(legacy.node, null);
@@ -123,8 +123,8 @@ test('peer-only card with a free id is copied in, keeping its id', async () => {
     const r = await pull('project', 'alpha');
     assert.equal(r.ok, true);
     assert.equal(r.summary.added, 1);
-    const got = await board.readTask({ project: 'alpha', id: '2026-0001' });
-    assert.equal(got.task.title, 'P1');
+    const got = await board.readCard({ project: 'alpha', id: '2026-0001' });
+    assert.equal(got.card.title, 'P1');
   });
 });
 
@@ -149,7 +149,7 @@ test('id collision with a different uid reassigns the incoming card', async () =
 
 test('same uid: newer peer version replaces the local card wholesale', async () => {
   await withRoot(async () => {
-    await board.fileTask({ project: 'alpha', title: 'Local' });
+    await board.fileCard({ project: 'alpha', title: 'Local' });
     const uid = byTitle('alpha', 'Local').uid;
     serveDump({ alpha: [card({
       id: '2026-0001', uid, title: 'PeerWins', state: 'todo',
@@ -158,15 +158,15 @@ test('same uid: newer peer version replaces the local card wholesale', async () 
     const r = await pull('project', 'alpha');
     assert.equal(r.summary.updated, 1);
     assert.equal(r.summary.added, 0);
-    const got = await board.readTask({ project: 'alpha', id: '2026-0001' });
-    assert.equal(got.task.title, 'PeerWins');
-    assert.equal(got.task.state, 'todo'); // moved to the winner's column
+    const got = await board.readCard({ project: 'alpha', id: '2026-0001' });
+    assert.equal(got.card.title, 'PeerWins');
+    assert.equal(got.card.state, 'todo'); // moved to the winner's column
   });
 });
 
 test('same uid: older peer version loses, local untouched', async () => {
   await withRoot(async () => {
-    await board.fileTask({ project: 'alpha', title: 'Local' });
+    await board.fileCard({ project: 'alpha', title: 'Local' });
     const uid = byTitle('alpha', 'Local').uid;
     serveDump({ alpha: [card({
       id: '2026-0001', uid, title: 'PeerOld', updated: '2000-01-01T00:00:00.000Z',
@@ -180,20 +180,20 @@ test('same uid: older peer version loses, local untouched', async () => {
 
 test('equal updated -> higher node id wins deterministically', async () => {
   await withRoot(async () => {
-    await board.fileTask({ project: 'alpha', title: 'Local' });
+    await board.fileCard({ project: 'alpha', title: 'Local' });
     const lc = byTitle('alpha', 'Local');
     // Higher node wins.
     serveDump({ alpha: [card({ id: '2026-0001', uid: lc.uid, title: 'HigherNode', updated: lc.updated, node: lc.node + '~' })] });
     let r = await pull('project', 'alpha');
     assert.equal(r.summary.updated, 1);
-    assert.equal((await board.readTask({ project: 'alpha', id: '2026-0001' })).task.title, 'HigherNode');
+    assert.equal((await board.readCard({ project: 'alpha', id: '2026-0001' })).card.title, 'HigherNode');
 
     // Lower node loses (title stays HigherNode).
     const lc2 = byTitle('alpha', 'HigherNode');
     serveDump({ alpha: [card({ id: '2026-0001', uid: lc2.uid, title: 'LowerNode', updated: lc2.updated, node: '' })] });
     r = await pull('project', 'alpha');
     assert.equal(r.summary.updated, 0);
-    assert.equal((await board.readTask({ project: 'alpha', id: '2026-0001' })).task.title, 'HigherNode');
+    assert.equal((await board.readCard({ project: 'alpha', id: '2026-0001' })).card.title, 'HigherNode');
   });
 });
 
@@ -201,7 +201,7 @@ test('legacy cards (no uid) match by derived uid, no duplicate', async () => {
   await withRoot(async () => {
     // Write a true pre-feature card: no uid/updated/node in frontmatter.
     store.ensureProjectDirs('alpha');
-    store.writeTask('alpha', 'triage', {
+    store.writeCard('alpha', 'triage', {
       id: '2026-0001', title: 'Legacy', project: 'alpha', priority: 0,
       created: '2026-01-01T00:00:00.000Z', depends_on: [], goal: '',
       acceptance: [], logbook: ['2026-01-01T00:00:00.000Z · conductor · filed'],
@@ -214,7 +214,7 @@ test('legacy cards (no uid) match by derived uid, no duplicate', async () => {
     })] });
     const r = await pull('project', 'alpha');
     assert.equal(r.summary.added, 0); // matched by uid, not treated as new
-    assert.equal(store.exportTasks('alpha').length, 1); // no duplicate
+    assert.equal(store.exportCards('alpha').length, 1); // no duplicate
     assert.equal(byTitle('alpha', 'Legacy').uid, uid); // local backfilled the same uid
   });
 });
@@ -253,17 +253,17 @@ test('single-project scope: unresolvable dependency is dropped and reported', as
   });
 });
 
-test('readTask strips hidden uid/node; a merged card is readable', async () => {
+test('readCard strips hidden uid/node; a merged card is readable', async () => {
   await withRoot(async () => {
     serveDump({ alpha: [card({ id: '2026-0001', uid: 'u-P', title: 'P1' })] });
     await pull('project', 'alpha');
-    const got = await board.readTask({ project: 'alpha', id: '2026-0001' });
-    assert.ok(!('uid' in got.task));
-    assert.ok(!('node' in got.task));
+    const got = await board.readCard({ project: 'alpha', id: '2026-0001' });
+    assert.ok(!('uid' in got.card));
+    assert.ok(!('node' in got.card));
     // Summary path also never carries uid/node.
-    const listed = await board.listTasks({ project: 'alpha' });
-    assert.ok(!('uid' in listed.tasks[0]));
-    assert.ok(!('node' in listed.tasks[0]));
+    const listed = await board.listCards({ project: 'alpha' });
+    assert.ok(!('uid' in listed.cards[0]));
+    assert.ok(!('node' in listed.cards[0]));
   });
 });
 
@@ -326,7 +326,7 @@ test('malformed remote cards (bad/missing id or state) are skipped, not written'
     const r = await pull('project', 'alpha');
     assert.equal(r.summary.added, 1); // only the good card
     assert.equal(r.summary.skippedCards.length, 3);
-    assert.equal(store.exportTasks('alpha').length, 1);
+    assert.equal(store.exportCards('alpha').length, 1);
     assert.equal(byTitle('alpha', 'Good').id, '2026-0001');
   });
 });
@@ -546,7 +546,7 @@ test('bidirectional pull converges both boards (union + LWW + tiebreak)', async 
     const fingerprint = (root) => {
       setRoot(root);
       const byUid = {};
-      for (const c of store.exportTasks('alpha')) {
+      for (const c of store.exportCards('alpha')) {
         byUid[c.uid] = { title: c.title, state: c.state, updated: c.updated, node: c.node };
       }
       return byUid;
@@ -590,12 +590,12 @@ test('a plan link survives export -> merge as ordinary frontmatter (whole-card L
     });
     const r = await pull('project', 'alpha');
     assert.equal(r.summary.updated, 1);
-    const got = await board.readTask({ project: 'alpha', id: '2026-0001' });
-    assert.equal(got.task.plan, 'board:2026-0001.md');
+    const got = await board.readCard({ project: 'alpha', id: '2026-0001' });
+    assert.equal(got.card.plan, 'board:2026-0001.md');
     // The BODY is not shipped by sync, so the link is dead here — a documented
     // gap that degrades to plan_missing, never a crash.
     assert.equal(got.plan_path, path.join(plansDir('alpha'), '2026-0001.md'));
-    const withBody = await board.readTask({ project: 'alpha', id: '2026-0001', includePlan: true });
+    const withBody = await board.readCard({ project: 'alpha', id: '2026-0001', includePlan: true });
     assert.equal(withBody.ok, true);
     assert.equal(withBody.plan_body, null);
     assert.equal(withBody.plan_missing, true);
@@ -617,8 +617,8 @@ test('exportBoard carries a card plan link on the wire', async () => {
 // stamp is present — never a wall-clock comparison, which would be flaky.
 test('an acceptance-edited card exports its edited list and stays an ordinary LWW candidate', async () => {
   await withRoot(async () => {
-    const { id } = await board.fileTask({ project: 'alpha', title: 'edited-acceptance', acceptance: ['a', 'b'] });
-    const r = await board.updateTask({
+    const { id } = await board.fileCard({ project: 'alpha', title: 'edited-acceptance', acceptance: ['a', 'b'] });
+    const r = await board.updateCard({
       project: 'alpha', id,
       fields: { acceptance: { ops: [{ op: 'done', index: 0, done: true }, { op: 'remove', index: 1 }, { op: 'add', text: 'c' }] } },
     });
@@ -651,7 +651,7 @@ test('a peer dump carrying legacy INTEGER priorities merges and maps to levels',
     assert.equal(r.summary.added, 3);
     assert.deepEqual(r.summary.skippedCards, []);
     const levels = Object.fromEntries(
-      (await board.listTasks({ project: 'alpha' })).tasks.map((t) => [t.title, t.priority]),
+      (await board.listCards({ project: 'alpha' })).cards.map((t) => [t.title, t.priority]),
     );
     // `was 0` arrives unjudged and STAYS unjudged — the sync path must not
     // invent a level for a peer's unset card any more than the disk path does.
@@ -672,7 +672,7 @@ test('an incoming legacy 0 card sorts BELOW a local LOW, not above it', async ()
     seedLocal('alpha', { id: '2026-0002', uid: 'u-local', title: 'local low', priority: 'LOW', state: 'todo' });
     serveDump({ alpha: [card({ id: '2026-0001', uid: 'u-peer', title: 'peer was 0', priority: 0, state: 'todo' })] });
     assert.equal((await pull('project', 'alpha')).ok, true);
-    const titles = (await board.listTasks({ project: 'alpha' })).tasks.map((t) => t.title);
+    const titles = (await board.listCards({ project: 'alpha' })).cards.map((t) => t.title);
     assert.deepEqual(titles, ['local low', 'peer was 0']);
   });
 });
@@ -682,7 +682,7 @@ test('an incoming legacy card outranks a local MEDIUM once mapped', async () => 
     seedLocal('alpha', { id: '2026-0001', uid: 'u-local', title: 'local', priority: 'MEDIUM', state: 'todo' });
     serveDump({ alpha: [card({ id: '2026-0002', uid: 'u-peer', title: 'peer was 1', priority: 1, state: 'todo' })] });
     assert.equal((await pull('project', 'alpha')).ok, true);
-    const ids = (await board.listTasks({ project: 'alpha' })).tasks.map((t) => t.title);
+    const ids = (await board.listCards({ project: 'alpha' })).cards.map((t) => t.title);
     assert.deepEqual(ids, ['peer was 1', 'local']);
   });
 });

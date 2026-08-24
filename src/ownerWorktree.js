@@ -1,4 +1,4 @@
-// Resolves a worker session (a task's `owner` while in-progress) to its live
+// Resolves a worker session (a card's `owner` while in-progress) to its live
 // working directory, via the conductor's /api/instances — the same
 // CONDUCTOR_URL HTTP channel projects.js uses for /api/projects. An instance's
 // `cwd` IS the worktree path when the session runs in a worktree (the common
@@ -14,7 +14,7 @@ export function _setInstanceFetcher(fn) {
   fetchInstancesImpl = fn ?? defaultFetchInstances;
 }
 
-// This call runs inside moveTask's per-project lock (withLock) — an
+// This call runs inside moveCard's per-project lock (withLock) — an
 // unresponsive conductor endpoint must not be able to hang and stall every
 // other mutation for the project, so it's bounded with a timeout. A timed-out
 // or aborted fetch rejects, which ownerCwd's try/catch turns into null (the

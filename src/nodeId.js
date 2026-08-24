@@ -12,7 +12,7 @@ import { kanbanRoot } from './paths.js';
 //   (project, id, created). Used only to backfill cards that predate the sync
 //   feature: two machines holding the same shared-lineage legacy card derive the
 //   identical uid, so sync unions them instead of duplicating. New cards get a
-//   random uid (crypto.randomUUID in board.fileTask), never this.
+//   random uid (crypto.randomUUID in board.fileCard), never this.
 
 const NODE_ID_FILE = () => path.join(kanbanRoot(), '.node-id');
 

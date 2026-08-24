@@ -1,21 +1,21 @@
 # Overview
 
 code-kanban is a **code-conductor plugin** that gives the **conductor** a persistent,
-file-backed **private task board**, exposed as `mcp__code-conductor__code-kanban__*` tools.
+file-backed **private kanban board**, exposed as `mcp__code-conductor__code-kanban__*` tools.
 The plugin CODE lives in this repo; the board DATA it manages lives in the conductor's tree
 under `<.conduct>/kanban/`.
 
 ## Glossary
 
 - **conductor** — the orchestrating session. The board's **sole reader and sole mutator**.
-- **worker** — a spawned session. A **pure emitter**: only `file_task` and `log_card`, no
-  reads, and it never handles a task id.
+- **worker** — a spawned session. A **pure emitter**: only `file_card` and `log_card`, no
+  reads, and it never handles a card id.
 - **owner** — the worker's `sessionId`, stamped on a card only while it is `in-progress`.
 - **triage** — the intake inbox column; its only exits are `backlog` or `todo`.
-- **epic** — a grouping (`goal` + computed per-state rollup); tasks carry a slug. Either
+- **epic** — a grouping (`goal` + computed per-state rollup); cards carry a slug. Either
   **project-scoped** (`projects/<p>/epics/`) or **cross-project** (top-level `epics/`, spanning ≥2
   members). See [[file-store-layout]].
-- **rollup** — per-state task counts for an epic, computed on read, never stored; a cross-project
+- **rollup** — per-state card counts for an epic, computed on read, never stored; a cross-project
   epic aggregates across its member projects.
 
 ## Two firm invariants (don't regress)

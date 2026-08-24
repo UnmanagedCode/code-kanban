@@ -1,5 +1,5 @@
 // Read-only git helper: resolves a directory's current HEAD sha for stamping a
-// landed task's commit hash. Never throws — a missing dir, a non-repo, or no
+// landed card's commit hash. Never throws — a missing dir, a non-repo, or no
 // commits all resolve to null so a caller can degrade gracefully.
 import { execFile } from 'node:child_process';
 

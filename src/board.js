@@ -18,7 +18,7 @@ import { resolvePlanLink, classifyPlanInput, planBaseDir, isContained } from './
 import { validateProject, listProjects } from './projects.js';
 import { withLock } from './mutex.js';
 import * as store from './store.js';
-import { logLine } from './taskfile.js';
+import { logLine } from './cardfile.js';
 import { PRIORITIES, isPriority, priorityRank } from './priority.js';
 import { localNodeId, deriveUid } from './nodeId.js';
 import { headSha } from './git.js';
@@ -28,7 +28,7 @@ function fail(code, reason) { return { ok: false, code, reason }; }
 function nowIso() { return new Date().toISOString(); }
 
 // The `uid`/`updated`/`node` version stamp is hidden from every MCP/GUI read.
-// summary() (list_tasks / epics) already whitelists fields; readTask returns a
+// summary() (list_cards / epics) already whitelists fields; readCard returns a
 // full card, so it strips these before returning. /api/sync/export is the ONLY
 // intentional exposure. Call this on any full card leaving a read path.
 function stripHidden(task) {
@@ -47,7 +47,7 @@ function touch(task) {
   return task;
 }
 
-// An explicit commit lands verbatim in frontmatter (taskfile.js's `commit:
+// An explicit commit lands verbatim in frontmatter (cardfile.js's `commit:
 // <value>` line), so a value with an embedded newline or internal whitespace
 // could inject a spurious extra frontmatter line/key on write. Take only the
 // first line, trimmed; reject it (fall back to auto-capture) if that line
@@ -64,7 +64,7 @@ function sanitizeCommit(commit) {
 // src/planLink.js); the body is never stored on the card and never carried
 // through the conductor's context. Every refusal shape lives here.
 
-// Hard cap on a plan body served by read_task's includePlan. Deliberately
+// Hard cap on a plan body served by read_card's includePlan. Deliberately
 // tighter than project_read's 256 KiB — plan prose lands in an agent's context.
 // A constant, not a parameter: nothing needs to tune it.
 const PLAN_MAX_BYTES = 65536;
@@ -122,7 +122,7 @@ function ingestPlanFile(destDir, destName, source) {
   } catch { /* either side unresolvable -> not the same file; fall through */ }
 
   try {
-    // store.ensureProjectDirs creates plans/, but updateTask never calls it —
+    // store.ensureProjectDirs creates plans/, but updateCard never calls it —
     // a project dir predating that function has none.
     fs.mkdirSync(destDir, { recursive: true });
     fs.copyFileSync(source, dest);
@@ -133,7 +133,7 @@ function ingestPlanFile(destDir, destName, source) {
 }
 
 // The single set-time validator for a caller-supplied plan value, shared by
-// update_task, file_task, create_epic and the GUI's PATCH route. -> {link} | a
+// update_card, file_card, create_epic and the GUI's PATCH route. -> {link} | a
 // fail(). A pointer (`board:`/`repo:`/bare relative) is stat-validated and
 // NOTHING is written; a bare absolute path is ingested (copied in). `destName`
 // names the ingest destination, so the copy always lands on the owning record's
@@ -152,10 +152,10 @@ function resolvePlanForSet(project, value, destName) {
 
 const ACCEPTANCE_OPS = ['add', 'remove', 'rename', 'done'];
 
-// The single set-time validator for update_task's fields.acceptance. Pure:
+// The single set-time validator for update_card's fields.acceptance. Pure:
 // (PRE-EDIT list, caller value) -> {list} | a fail(). Nothing here writes —
-// updateTask's one store.writeTask stays the only mutation, so every refusal
-// below leaves the card untouched. file_task's string[] form is separate and
+// updateCard's one store.writeCard stays the only mutation, so every refusal
+// below leaves the card untouched. file_card's string[] form is separate and
 // deliberately not routed through here.
 function resolveAcceptanceForSet(current, value) {
   if (value === null) return { list: [] };
@@ -171,7 +171,7 @@ function resolveAcceptanceForSet(current, value) {
 }
 
 // A criterion is ONE `- [ ] <text>` line in the card file
-// (taskfile.serializeBody), and taskfile.parse trims the line before matching.
+// (cardfile.serializeBody), and cardfile.parse trims the line before matching.
 // So text with a newline splits into a line the parser DROPS, and
 // empty-after-trim fails the regex's `\s+` and vanishes. Both are silent data
 // loss on the next read, so both are refused here and the stored value is the
@@ -279,7 +279,7 @@ function readPlanBody(file) {
   }
 }
 
-// The plan-read half of every read path (read_task and read_epic), so the rule
+// The plan-read half of every read path (read_card and read_epic), so the rule
 // has ONE implementation: `plan_path` is returned always — null when there is no
 // link or the stored link is ungrammatical (e.g. arrived by sync from a newer
 // peer) — and a missing/unreadable plan FILE is never a refusal, just
@@ -322,9 +322,9 @@ async function requireProject(project) {
 }
 
 // The owned in-progress card in one project, or null. Read-only (no lock) — same as
-// every other read in this file (listTasks/readTask/etc).
+// every other read in this file (listCards/readCard/etc).
 function findOwnedInProgressCard(project, sessionId) {
-  return store.listTasks(project, { state: 'in-progress' })
+  return store.listCards(project, { state: 'in-progress' })
     .filter((t) => t.owner === sessionId)
     .sort((a, b) => b._mtimeMs - a._mtimeMs)[0] ?? null;
 }
@@ -358,7 +358,7 @@ function summary(t) {
 // after LOW), then id. priorityRank is index-into-PRIORITIES, so ascending =
 // highest priority first, and unset ranks past the end — an unjudged card never
 // outranks a judged one.
-function sortTasks(tasks) {
+function sortCards(tasks) {
   return tasks.sort((a, b) =>
     STATES.indexOf(a.state) - STATES.indexOf(b.state)
     || priorityRank(a.priority) - priorityRank(b.priority)
@@ -367,11 +367,11 @@ function sortTasks(tasks) {
 
 // ---- worker + conductor ----
 
-// file_task's only non-default landing lanes — mirrors triage's legal exits
+// file_card's only non-default landing lanes — mirrors triage's legal exits
 // (ALLOWED_TRANSITIONS has triage>backlog, triage>todo) rather than a separate list.
 const CATEGORIES = ['todo', 'backlog'];
 
-export async function fileTask({ project, title, goal, acceptance, epic, depends_on, category, priority, plan, sessionId } = {}) {
+export async function fileCard({ project, title, goal, acceptance, epic, depends_on, category, priority, plan, sessionId } = {}) {
   const bad = await requireProject(project);
   if (bad) return bad;
   if (typeof title !== 'string' || !title.trim()) {
@@ -400,9 +400,9 @@ export async function fileTask({ project, title, goal, acceptance, epic, depends
       return fail('EPIC_UNKNOWN', `unknown epic: ${epic} (create it first with create_epic)`);
     }
     const id = store.nextId(project);
-    // Copy-then-write: a refused plan returns BEFORE store.writeTask, so no card
-    // is created and no id is burned (the floor is bumped by writeTask, not
-    // nextId — so the next file_task gets this same id).
+    // Copy-then-write: a refused plan returns BEFORE store.writeCard, so no card
+    // is created and no id is burned (the floor is bumped by writeCard, not
+    // nextId — so the next file_card gets this same id).
     let planLink = null;
     if (plan != null) {
       const resolved = resolvePlanForSet(project, plan, `${id}.md`);
@@ -418,7 +418,7 @@ export async function fileTask({ project, title, goal, acceptance, epic, depends
       acceptance: (Array.isArray(acceptance) ? acceptance : []).map((text) => ({ text, done: false })),
       logbook: [logLine(created, sessionId, 'filed')],
     };
-    store.writeTask(project, category ?? 'triage', task);
+    store.writeCard(project, category ?? 'triage', task);
     // Report the resolved link only when `plan` was part of the call, so no
     // existing response shape changes.
     return plan != null ? { ok: true, id, plan: planLink } : { ok: true, id };
@@ -426,15 +426,15 @@ export async function fileTask({ project, title, goal, acceptance, epic, depends
 }
 
 // Permanent removal — no undo, no logbook (the file is gone). Not sync-aware:
-// see docs/architecture.md's grow-only note and delete_task's tool description.
-export async function deleteTask({ project, id } = {}) {
+// see docs/architecture.md's grow-only note and delete_card's tool description.
+export async function deleteCard({ project, id } = {}) {
   const bad = await requireProject(project);
   if (bad) return bad;
   return withLock(project, () => {
     // Read the card BEFORE deleting so the plan link is still available; the
     // card file is the authoritative op and goes first.
-    const task = store.readTaskById(project, id);
-    if (!store.deleteTask(project, id)) return fail('TASK_UNKNOWN', `unknown task: ${id}`);
+    const task = store.readCardById(project, id);
+    if (!store.deleteCard(project, id)) return fail('CARD_UNKNOWN', `unknown card: ${id}`);
     // Best-effort: a board: plan file belongs to the card, so it goes too. A
     // repo: plan is a source-tree file and is NEVER touched. A failed unlink
     // leaves a harmless orphan and must not fail the delete.
@@ -452,11 +452,11 @@ export async function deleteTask({ project, id } = {}) {
 // - `id` given (conductor path): targets that exact card directly, BYPASSING the
 //   owner check — the conductor owns no card. `project` is required alongside `id`
 //   (ids are per-project, not globally unique). The card must be `in-progress` or
-//   this returns TASK_UNKNOWN. Logged with conductor attribution (logLine's
-//   sessionId ?? 'conductor' convention — see taskfile.js), matching how moveTask
+//   this returns CARD_UNKNOWN. Logged with conductor attribution (logLine's
+//   sessionId ?? 'conductor' convention — see cardfile.js), matching how moveCard
 //   attributes its own logbook lines.
 // - `id` omitted (worker path): resolves the in-progress card owned by
-//   sessionId server-side. Workers never handle a task id. `project`, if given,
+//   sessionId server-side. Workers never handle a card id. `project`, if given,
 //   scopes the lookup directly (fast path); if omitted, every project is scanned for
 //   the owned card. If a session owns MORE THAN ONE in-progress card, resolve to the
 //   most recently modified one, across projects when scanning.
@@ -472,12 +472,12 @@ export async function logCard({ project, id, entry, sessionId } = {}) {
       return fail('INVALID_STATE', 'entry is required and must be a non-empty string');
     }
     return withLock(project, () => {
-      const task = store.readTaskById(project, id);
+      const task = store.readCardById(project, id);
       if (!task || task.state !== 'in-progress') {
-        return fail('TASK_UNKNOWN', `no in-progress card: ${id}`);
+        return fail('CARD_UNKNOWN', `no in-progress card: ${id}`);
       }
       task.logbook.push(logLine(nowIso(), null, entry.trim()));
-      store.writeTask(project, 'in-progress', touch(task));
+      store.writeCard(project, 'in-progress', touch(task));
       return { ok: true };
     });
   }
@@ -490,23 +490,23 @@ export async function logCard({ project, id, entry, sessionId } = {}) {
     return fail('INVALID_STATE', 'entry is required and must be a non-empty string');
   }
   if (!sessionId) {
-    return fail('TASK_UNKNOWN', 'no session id — cannot resolve an owned in-progress card');
+    return fail('CARD_UNKNOWN', 'no session id — cannot resolve an owned in-progress card');
   }
   const targetProject = project !== undefined ? project : await resolveOwningProject(sessionId);
   if (targetProject === null) {
-    return fail('TASK_UNKNOWN', 'no in-progress card owned by this session');
+    return fail('CARD_UNKNOWN', 'no in-progress card owned by this session');
   }
   return withLock(targetProject, () => {
     // Re-verify under the lock: if the card lost ownership or left in-progress
-    // between the unlocked scan above and here, this returns TASK_UNKNOWN rather
+    // between the unlocked scan above and here, this returns CARD_UNKNOWN rather
     // than falling back to re-scan other projects (untested — see
     // .wiki/gotchas/owner-from-caller-sessionid.md).
     const task = findOwnedInProgressCard(targetProject, sessionId);
     if (!task) {
-      return fail('TASK_UNKNOWN', 'no in-progress card owned by this session');
+      return fail('CARD_UNKNOWN', 'no in-progress card owned by this session');
     }
     task.logbook.push(logLine(nowIso(), sessionId, entry.trim()));
-    store.writeTask(targetProject, 'in-progress', touch(task));
+    store.writeCard(targetProject, 'in-progress', touch(task));
     return { ok: true };
   });
 }
@@ -541,41 +541,41 @@ export async function logEpic({ project, slug, entry } = {}) {
 
 // ---- conductor: reads ----
 
-export async function listTasks({ project, state, epic } = {}) {
+export async function listCards({ project, state, epic } = {}) {
   const bad = await requireProject(project);
   if (bad) return bad;
   if (state && !STATES.includes(state)) return fail('INVALID_STATE', `unknown state: ${state}`);
-  let tasks = store.listTasks(project, { state });
+  let tasks = store.listCards(project, { state });
   if (epic) tasks = tasks.filter((t) => t.epic === epic);
-  return { ok: true, tasks: sortTasks(tasks).map(summary) };
+  return { ok: true, cards: sortCards(tasks).map(summary) };
 }
 
-// Envelope: {ok, task, plan_path, plan_body?, plan_truncated?, plan_missing?}.
-// The plan fields sit TOP-LEVEL (never inside `task`, which mirrors frontmatter
+// Envelope: {ok, card, plan_path, plan_body?, plan_truncated?, plan_missing?}.
+// The plan fields sit TOP-LEVEL (never inside `card`, which mirrors frontmatter
 // 1:1). `plan_path` is returned always — null when there is no link or the
 // stored link is ungrammatical (e.g. arrived by sync from a newer peer). A plan
 // file that is missing/unreadable is NEVER a refusal: plan_body:null +
 // plan_missing:true. plan_missing is false when the card simply has no link.
-export async function readTask({ project, id, logTail, includePlan } = {}) {
+export async function readCard({ project, id, logTail, includePlan } = {}) {
   const bad = await requireProject(project);
   if (bad) return bad;
-  const task = store.readTaskById(project, id);
-  if (!task) return fail('TASK_UNKNOWN', `unknown task: ${id}`);
+  const task = store.readCardById(project, id);
+  if (!task) return fail('CARD_UNKNOWN', `unknown card: ${id}`);
   if (Number.isFinite(logTail) && logTail >= 0) {
     // slice(-0) === slice(0) returns everything, so compute the start index
-    // explicitly — logTail:0 must yield 0 entries (matches read_progress limit:0).
+    // explicitly — logTail:0 must yield 0 entries (matches read_card_log limit:0).
     task.logbook = task.logbook.slice(Math.max(0, task.logbook.length - logTail));
   }
   delete task._mtimeMs;
   const plan = task.plan;
-  return { ok: true, task: stripHidden(task), ...planFields(project, plan, includePlan) };
+  return { ok: true, card: stripHidden(task), ...planFields(project, plan, includePlan) };
 }
 
-export async function readProgress({ project, id, limit } = {}) {
+export async function readCardLog({ project, id, limit } = {}) {
   const bad = await requireProject(project);
   if (bad) return bad;
-  const task = store.readTaskById(project, id);
-  if (!task) return fail('TASK_UNKNOWN', `unknown task: ${id}`);
+  const task = store.readCardById(project, id);
+  if (!task) return fail('CARD_UNKNOWN', `unknown card: ${id}`);
   return tail(task.logbook, limit);
 }
 
@@ -590,13 +590,13 @@ function tail(logbook, limit) {
 
 // ---- conductor: mutations ----
 
-export async function moveTask({ project, id, to, owner, commit } = {}) {
+export async function moveCard({ project, id, to, owner, commit } = {}) {
   const bad = await requireProject(project);
   if (bad) return bad;
   if (!STATES.includes(to)) return fail('INVALID_STATE', `unknown target state: ${to}`);
   return withLock(project, async () => {
-    const task = store.readTaskById(project, id);
-    if (!task) return fail('TASK_UNKNOWN', `unknown task: ${id}`);
+    const task = store.readCardById(project, id);
+    if (!task) return fail('CARD_UNKNOWN', `unknown card: ${id}`);
     const from = task.state;
     if (from === to) return fail('INVALID_STATE', `already in ${to}`);
     if (!ALLOWED_TRANSITIONS.has(`${from}>${to}`)) {
@@ -626,20 +626,20 @@ export async function moveTask({ project, id, to, owner, commit } = {}) {
       if (sha) task.commit = sha;
     }
     task.logbook.push(logLine(nowIso(), owner, `moved ${from} -> ${to}`));
-    store.moveTask(project, id, from, to, touch(task));
+    store.moveCard(project, id, from, to, touch(task));
     return { ok: true, from, to };
   });
 }
 
 const UPDATABLE = ['title', 'goal', 'epic', 'priority', 'depends_on', 'plan', 'owner', 'acceptance'];
 
-export async function updateTask({ project, id, fields } = {}) {
+export async function updateCard({ project, id, fields } = {}) {
   const bad = await requireProject(project);
   if (bad) return bad;
   if (!fields || typeof fields !== 'object') return fail('INVALID_STATE', 'fields object is required');
   return withLock(project, () => {
-    const task = store.readTaskById(project, id);
-    if (!task) return fail('TASK_UNKNOWN', `unknown task: ${id}`);
+    const task = store.readCardById(project, id);
+    if (!task) return fail('CARD_UNKNOWN', `unknown card: ${id}`);
     if (fields.epic && !epicVisibleIn(project, fields.epic)) {
       return fail('EPIC_UNKNOWN', `unknown epic: ${fields.epic}`);
     }
@@ -650,7 +650,7 @@ export async function updateTask({ project, id, fields } = {}) {
     }
     // plan/owner are validated up here, alongside the epic check. What actually
     // guarantees no half-applied card is that every refusal returns before the
-    // single store.writeTask at the end — `task` is an in-memory parse, so
+    // single store.writeCard at the end — `task` is an in-memory parse, so
     // nothing is PERSISTED on a refusal path regardless of this ordering.
     let planNext;
     if ('plan' in fields) {
@@ -689,13 +689,13 @@ export async function updateTask({ project, id, fields } = {}) {
     if ('owner' in fields) {
       const prev = task.owner ?? null;
       // Only a real change is logged (a no-op set stamps nothing) — the line is
-      // the handoff audit trail, mirroring moveTask's `moved <from> -> <to>`.
+      // the handoff audit trail, mirroring moveCard's `moved <from> -> <to>`.
       if (prev !== ownerNext) {
         task.owner = ownerNext;
         task.logbook.push(logLine(nowIso(), null, `owner ${prev ?? 'none'} -> ${ownerNext ?? 'none'}`));
       }
     }
-    store.writeTask(project, task.state, touch(task));
+    store.writeCard(project, task.state, touch(task));
     // Report the stored link (an ingest's destination is `board:<id>.md`, which
     // the caller would otherwise have to infer) only when `plan` was in the call.
     return 'plan' in fields ? { ok: true, plan: planNext } : { ok: true };
@@ -706,10 +706,10 @@ export async function updateTask({ project, id, fields } = {}) {
 //
 // An epic is EITHER project-scoped (a <project>/epics/<slug>.md record) OR
 // cross-project (a top-level epics/<slug>.md record naming ≥2 member projects).
-// Tasks join either kind via the same `epic: <slug>` field. A slug is never both
+// Cards join either kind via the same `epic: <slug>` field. A slug is never both
 // at once for a given project: createEpic refuses the collision (EPIC_CONFLICT),
-// so a task's epic slug resolves unambiguously — to the cross-project epic if one
-// covers the task's project, else the project's own per-project epic.
+// so a card's epic slug resolves unambiguously — to the cross-project epic if one
+// covers the card's project, else the project's own per-project epic.
 
 const SLUG_RE = /^[a-z0-9._-]+$/;
 
@@ -719,7 +719,7 @@ const SLUG_RE = /^[a-z0-9._-]+$/;
 // the per-project single-writer invariant is preserved.
 const CROSS_LOCK = ' cross-epics';
 
-// Does slug `slug` name an epic visible to tasks in `project`? True if the
+// Does slug `slug` name an epic visible to cards in `project`? True if the
 // project has its own epic file, OR a cross-project epic covering the project.
 function epicVisibleIn(project, slug) {
   if (store.epicExists(project, slug)) return true;
@@ -797,7 +797,7 @@ export async function createEpic({ project, projects, slug, title, goal, plan } 
   if (isCross === (project !== undefined)) {
     return fail('INVALID_STATE', 'give exactly one of project (project-scoped) or projects (cross-project)');
   }
-  // Grammar-only pre-check before any lock, mirroring fileTask: a malformed plan
+  // Grammar-only pre-check before any lock, mirroring fileCard: a malformed plan
   // value writes nothing. The value is RESOLVED (stat/copy) inside the lock.
   if (plan !== undefined && plan !== null) {
     const c = classifyPlanInput(isCross ? null : project, plan);
@@ -970,9 +970,9 @@ function ensureIdentity(task, project) {
 // Read a project's full card set, persisting any backfilled identity so the dump
 // is self-consistent. MUST run inside withLock(project, ...).
 function backfillProject(project) {
-  const cards = store.exportTasks(project);
+  const cards = store.exportCards(project);
   for (const c of cards) {
-    if (ensureIdentity(c, project)) store.writeTask(project, c.state, c);
+    if (ensureIdentity(c, project)) store.writeCard(project, c.state, c);
   }
   return cards;
 }
@@ -1013,7 +1013,7 @@ function ensureEpicIdentity(epic) {
 // still run unchanged on the normalised record.
 //
 // Epics are DELIBERATELY stricter than cards here: the card path has the same
-// hole on `goal` (taskfile.serializeBody's `(task.goal ?? '').trim()`), left
+// hole on `goal` (cardfile.serializeBody's `(task.goal ?? '').trim()`), left
 // alone on purpose and tracked as card 2026-0026. Not an oversight — fixing the
 // card side is that card's job, and the asymmetry is temporary.
 function normalizeRemoteEpic(epic) {
@@ -1232,7 +1232,7 @@ function mergeProject(project, remoteCards, remoteEpics, summary) {
     return cand;
   };
 
-  // Validate incoming shape before it can reach deriveUid/writeTask: a card
+  // Validate incoming shape before it can reach deriveUid/writeCard: a card
   // without a usable display id or a known column would write a garbage file.
   // Skip (and report) rather than corrupt the store.
   const valid = [];
@@ -1311,24 +1311,24 @@ function mergeProject(project, remoteCards, remoteEpics, summary) {
     rc.acceptance = Array.isArray(rc.acceptance) ? rc.acceptance : [];
     rc.logbook = Array.isArray(rc.logbook) ? rc.logbook : [];
     if (fromState !== undefined && fromState !== rc.state) {
-      store.moveTask(project, localId, fromState, rc.state, rc);
+      store.moveCard(project, localId, fromState, rc.state, rc);
     } else {
-      store.writeTask(project, rc.state, rc);
+      store.writeCard(project, rc.state, rc);
     }
   };
   for (const { rc, localId } of inserts) { write(rc, localId); summary.added += 1; }
   for (const { rc, localId, fromState } of replaces) { write(rc, localId, fromState); summary.updated += 1; }
-  // Every write above goes through store.writeTask/store.moveTask, which
+  // Every write above goes through store.writeCard/store.moveCard, which
   // already bumps the persisted id floor to each written id — no separate
   // floor update needed here.
 
   return { added: inserts.length, updated: replaces.length };
 }
 
-// Per-state counts for a project-scoped epic (one project's tasks).
+// Per-state counts for a project-scoped epic (one project's cards).
 function rollup(project, slug) {
   const counts = Object.fromEntries(STATES.map((s) => [s, 0]));
-  for (const t of store.listTasks(project)) {
+  for (const t of store.listCards(project)) {
     if (t.epic === slug) counts[t.state] += 1;
   }
   return counts;
@@ -1338,7 +1338,7 @@ function rollup(project, slug) {
 function crossRollup(slug, members) {
   const counts = Object.fromEntries(STATES.map((s) => [s, 0]));
   for (const p of members) {
-    for (const t of store.listTasks(p)) {
+    for (const t of store.listCards(p)) {
       if (t.epic === slug) counts[t.state] += 1;
     }
   }
@@ -1363,7 +1363,7 @@ export async function listEpics({ project } = {}) {
 }
 
 // Envelope: {ok, epic, logbook_total, plan_path[, plan_body, plan_truncated,
-// plan_missing], tasks}. Like read_task, the plan fields sit TOP-LEVEL and `epic`
+// plan_missing], cards}. Like read_card, the plan fields sit TOP-LEVEL and `epic`
 // mirrors the record (minus the hidden updated/node stamp — the response is a
 // field whitelist), so `logbook_total` — the FULL logbook length, before any
 // logTail cap, which is what tells a tail'd caller 5 entries from 50 — sits
@@ -1378,14 +1378,14 @@ export async function readEpic({ project, slug, logTail, includePlan } = {}) {
   const e = t.epic;
   const isCross = t.kind === 'cross';
   const members = isCross ? e.projects : [t.project];
-  const tasks = sortTasks(
-    members.flatMap((p) => store.listTasks(p).filter((x) => x.epic === slug)),
+  const cards = sortCards(
+    members.flatMap((p) => store.listCards(p).filter((x) => x.epic === slug)),
   ).map(summary);
   let logbook = e.logbook ?? [];
   const logbookTotal = logbook.length;
   if (Number.isFinite(logTail) && logTail >= 0) {
     // slice(-0) === slice(0) returns everything, so compute the start index
-    // explicitly — logTail:0 must yield 0 entries (same trap as readTask).
+    // explicitly — logTail:0 must yield 0 entries (same trap as readCard).
     logbook = logbook.slice(Math.max(0, logbook.length - logTail));
   }
   const epic = {
@@ -1394,5 +1394,5 @@ export async function readEpic({ project, slug, logTail, includePlan } = {}) {
     ...(isCross ? { projects: e.projects } : {}),
     logbook,
   };
-  return { ok: true, epic, logbook_total: logbookTotal, ...planFields(epicPlanScope(t), e.plan, includePlan), tasks };
+  return { ok: true, epic, logbook_total: logbookTotal, ...planFields(epicPlanScope(t), e.plan, includePlan), cards };
 }

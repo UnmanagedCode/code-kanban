@@ -1,16 +1,16 @@
 # code-kanban
 
 A [code-conductor](https://github.com/UnmanagedCode) plugin that gives the **conductor** a
-persistent, file-backed **private task board**, exposed as MCP tools
+persistent, file-backed **private kanban board**, exposed as MCP tools
 (`mcp__code-conductor__code-kanban__*`). The board is the conductor's own tool — not a shared
 team surface. Same extension pattern as the sibling plugins `code-hub` and `code-share`.
 
 ## What it does
 
 - **Columns:** `triage → backlog → todo → in-progress → done` (`triage` is an intake inbox;
-  no `review` column — review is a conductor process). One markdown file per task.
-- **Duties:** the conductor is the sole reader/mutator; workers are pure emitters (`file_task`,
-  `log_card`) that never handle a task id — `log_card` finds the card owned by the calling
+  no `review` column — review is a conductor process). One markdown file per card.
+- **Duties:** the conductor is the sole reader/mutator; workers are pure emitters (`file_card`,
+  `log_card`) that never handle a card id — `log_card` finds the card owned by the calling
   session server-side; `project` is optional on `log_card` and, if omitted, every project is
   scanned for the owned card. The conductor, which owns no card, may instead pass `log_card`
   an explicit `id` (+ required `project`) to target a specific in-progress card directly.
@@ -37,7 +37,7 @@ conductor.plugin.json     plugin manifest (id: code-kanban)
 src/
   board.js                ★ service layer / single source of truth / GUI seam
   store.js                file store (atomic fs, no git), id sequence, epics
-  taskfile.js             task markdown <-> object
+  cardfile.js             card markdown <-> object
   paths.js projects.js mutex.js mcp.js routes.js
 docs/{features,protocol,architecture}.md
 tests/                    node:test suites (run.mjs)
@@ -52,12 +52,12 @@ Board **data** lives in the conductor's tree, not here:
 
 - Resolves `PROJECTS_ROOT` from the injected env (falls back to the repo's parent dir).
 - Standalone port `7100` (the conductor injects `$PORT` in a supervised run).
-- Task ids: `${year}-${NNNN}`, project-wide monotonic (no per-year reset).
+- Card ids: `${year}-${NNNN}`, project-wide monotonic (no per-year reset).
 - Card priority: `CRITICAL | HIGH | MEDIUM | LOW`, or **unset** when omitted — there is no default,
-  since unset means "nobody has judged this yet". Set it at filing time via `file_task`. Listings
+  since unset means "nobody has judged this yet". Set it at filing time via `file_card`. Listings
   sort column → priority (CRITICAL first, unset last) → id.
 - Result convention: `{ok:true,…}` / `{ok:false, code, reason}` inside the host's `{result}`
-  envelope; refusals are returned, never thrown. Codes: `PROJECT_UNKNOWN`, `TASK_UNKNOWN`,
+  envelope; refusals are returned, never thrown. Codes: `PROJECT_UNKNOWN`, `CARD_UNKNOWN`,
   `EPIC_UNKNOWN`, `INVALID_STATE`. See [docs/protocol.md](docs/protocol.md).
 
 ## Run / test

@@ -1,4 +1,4 @@
-// Plain-text renderers for list_tasks / list_epics (the MCP raw-text channel —
+// Plain-text renderers for list_cards / list_epics (the MCP raw-text channel —
 // see src/mcp.js). Pure functions, no imports beyond STATES: no fs, no board.js,
 // so a test can pin exact output strings without touching disk (mirrors
 // code-conductor/src/mcp/readRenderers.ts's header comment).
@@ -70,29 +70,29 @@ function renderRow(r, w) {
   return `    ${line}`.trimEnd();
 }
 
-// `tasks` is already sorted by board.sortTasks (column -> priority -> id); this
+// `cards` is already sorted by board.sortCards (column -> priority -> id); this
 // renderer never sorts — it only groups by iterating STATES and filtering, so
 // lane order comes from paths.js and within-lane order is preserved exactly.
-export function renderTaskList(tasks, opts = {}) {
+export function renderCardList(cards, opts = {}) {
   const { project, doneHidden, state = null, epic = null, everyLane = false } = opts;
-  const clauses = [`${tasks.length} shown`];
+  const clauses = [`${cards.length} shown`];
   if (state !== null) clauses.push(`state ${state}`);
   if (epic !== null) clauses.push(`epic ${epic}`);
   if (doneHidden > 0) {
     clauses.push(`${doneHidden} done hidden (state:'done' to read them; includeDone:true for every lane)`);
   }
   if (everyLane === true) clauses.push('every lane');
-  const header = `TASKS ${project} — ${clauses.join(' · ')}`;
+  const header = `CARDS ${project} — ${clauses.join(' · ')}`;
 
   // An all-done board must read as "0 shown · N done hidden", never as an
   // empty board — the header alone carries that distinction.
-  if (tasks.length === 0) return header;
+  if (cards.length === 0) return header;
 
-  const rows = tasks.map(formatRow);
+  const rows = cards.map(formatRow);
   const w = columnWidths(rows);
   const lines = [header, ''];
   for (const s of STATES) {
-    const laneRows = rows.filter((_, i) => tasks[i].state === s);
+    const laneRows = rows.filter((_, i) => cards[i].state === s);
     if (laneRows.length === 0) continue; // empty lane emits nothing; meta.counts already reports it
     lines.push(`▸ ${s} (${laneRows.length})`);
     for (const r of laneRows) lines.push(renderRow(r, w));

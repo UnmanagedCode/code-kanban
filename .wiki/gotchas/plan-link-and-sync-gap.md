@@ -6,12 +6,12 @@ are easy to get wrong.
 
 ## The link rides sync; the body doesn't
 
-`plan` is in `SCALAR_KEYS` (`src/taskfile.js:13`), so it exports and merges as ordinary
+`plan` is in `SCALAR_KEYS` (`src/cardfile.js:15`), so it exports and merges as ordinary
 frontmatter under whole-card LWW — no sync code knows about it, exactly like `owner`/`commit`.
 Plan **bodies** are not in the dump, so a card pulled from a peer routinely carries a link to a
-file this machine does not have. Every surface degrades rather than failing: `read_task` →
-`plan_path` set but `plan_missing: true`; `delete_task`'s unlink is a no-op; the GUI renders
-"(file not found)". The sharp edge: `update_task` **re-setting that same link** refuses
+file this machine does not have. Every surface degrades rather than failing: `read_card` →
+`plan_path` set but `plan_missing: true`; `delete_card`'s unlink is a no-op; the GUI renders
+"(file not found)". The sharp edge: `update_card` **re-setting that same link** refuses
 `PLAN_UNKNOWN`, because set-time validation stats the file. That is correct, and surprising.
 
 **Epic plan bodies inherit exactly this gap**, board-level dir included: an epic's `plan` is a
@@ -53,7 +53,7 @@ that must be attachable immediately.
 A plan wake hands the conductor a `planPath` under `~/.claude/plans/`
 (`code-conductor/src/planFile.ts`), outside `PROJECTS_ROOT`. **No scheme resolves there**, so it can
 never be linked in place. It no longer has to be copied by hand: passing that **bare absolute path**
-as `plan` (to `update_task`, `file_task` or `create_epic`) makes the tool copy it into the board and
+as `plan` (to `update_card`, `file_card` or `create_epic`) makes the tool copy it into the board and
 store the resulting `board:` link (`classifyPlanInput` in `src/planLink.js` → `ingestPlanFile` in
 `src/board.js`). `ingestPlanFile(destDir, destName, source)` does not know which kind of record it
 serves — the caller names the destination, `<id>.md` for a card and `epic-<slug>.md` for an epic.
@@ -99,9 +99,9 @@ Two sharp edges of the copy:
   named `…AT the destination…` / `…SYMLINK to the destination…` in `tests/board.test.mjs` pin the
   observable outcome (no-op success, link stored, content intact) and are **not** coverage of the
   guard — do not read them as such.
-- **Arbitrary-source read, accepted.** `file_task` is worker-callable, so ingest lets any caller have
+- **Arbitrary-source read, accepted.** `file_card` is worker-callable, so ingest lets any caller have
   the server copy any readable absolute path into the board and read it back via
-  `read_task({includePlan:true})`. Previously the server only read under `plansDir` (realpath-guarded)
+  `read_card({includePlan:true})`. Previously the server only read under `plansDir` (realpath-guarded)
   or `projectRepoDir`. Accepted deliberately — workers already have full local fs access and the
   plugin runs as the same user. **No ACL**; do not add one without a new decision.
 

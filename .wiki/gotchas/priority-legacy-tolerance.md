@@ -9,8 +9,8 @@ and there is **no migration script** — the tolerant parse is the migration.
 
 | | Function | Rule |
 |---|---|---|
-| Live caller input (`file_task`, `update_task`, the GUI `PATCH`) | `isPriority` | **Strict**, case-sensitive, exactly the four literals. Anything else → `INVALID_STATE`, validated before any write. `null` is handled separately by the callers as the explicit clear-to-unset token. |
-| A value read off disk (`taskfile.parse`, and `taskfile.serialize` on the way back out) | `normalizePriority` | **Tolerant**. Never throws, never drops a card. Anything unrecognised → unset. |
+| Live caller input (`file_card`, `update_card`, the GUI `PATCH`) | `isPriority` | **Strict**, case-sensitive, exactly the four literals. Anything else → `INVALID_STATE`, validated before any write. `null` is handled separately by the callers as the explicit clear-to-unset token. |
+| A value read off disk (`cardfile.parse`, and `cardfile.serialize` on the way back out) | `normalizePriority` | **Tolerant**. Never throws, never drops a card. Anything unrecognised → unset. |
 
 The split is the point: tolerance is a property of *reading data we didn't write*. A card may
 predate this build or arrive by sync from an older peer, so we have no choice but to load it. A
@@ -27,14 +27,14 @@ indistinguishable from a deliberate one — invented it invisibly. There is no d
 this field for the same reason.
 
 Because `parse` coerces on the way in, a loaded legacy card is already holding its true state in
-memory — so the first write of any kind (any `update_task`/`move_task`, every sync merge write)
+memory — so the first write of any kind (any `update_card`/`move_card`, every sync merge write)
 persists the new vocabulary. `serialize` applies the same coercion, but as a guard on a card object
 that never came through `parse`, not as what drives the rewrite. An unset card is serialized with
 **no `priority:` line at all** (like `epic`/`owner`).
 
 ## Mixed-version peers: the value round-trips, the ORDER does not
 
-`priority` is a `SCALAR_KEYS` frontmatter field (`src/taskfile.js:15`) under **whole-card**
+`priority` is a `SCALAR_KEYS` frontmatter field (`src/cardfile.js:15`) under **whole-card**
 last-edit-wins sync, so the value round-trips through whatever build touches the card last.
 
 **Unset survives a round trip.** We write no `priority:` key; a pre-enum peer parses the missing key

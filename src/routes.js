@@ -25,7 +25,7 @@ const GUI_ACTOR = 'gui';
 // Wrap an async board-route handler: the wrapped fn RETURNS the response body
 // (a {ok} envelope), and the wrapper sends it. board.js never throws for a
 // domain outcome (a refusal is a plain {ok:false} return), but an UNEXPECTED
-// throw (a corrupt task file failing JSON.parse in the store, a blown project
+// throw (a corrupt card file failing JSON.parse in the store, a blown project
 // fetch) must still produce a written response. Express 4 does NOT forward a
 // rejected async handler to the error middleware — without this catch the
 // response would hang — so we turn any throw into 500 {error} here.
@@ -75,23 +75,23 @@ export function buildRoutes() {
 
   // List a project's cards (optionally filtered). One call returns all; the GUI
   // groups by state client-side.
-  r.get('/board/:project/tasks', wrap((req) => {
+  r.get('/board/:project/cards', wrap((req) => {
     const { state, epic } = req.query;
-    return board.listTasks({ project: req.params.project, state, epic });
+    return board.listCards({ project: req.params.project, state, epic });
   }));
 
-  // Full task incl. goal, acceptance, logbook (read-only in the GUI).
+  // Full card incl. goal, acceptance, logbook (read-only in the GUI).
   // ?includePlan=1 additionally returns the linked plan file's body.
-  r.get('/board/:project/tasks/:id', wrap((req) => board.readTask({
+  r.get('/board/:project/cards/:id', wrap((req) => board.readCard({
     project: req.params.project,
     id: req.params.id,
     includePlan: req.query.includePlan === '1' || req.query.includePlan === 'true',
   })));
 
-  // File a new task into triage. acceptance is string[] -> checkboxes.
-  r.post('/board/:project/tasks', wrap((req) => {
+  // File a new card into triage. acceptance is string[] -> checkboxes.
+  r.post('/board/:project/cards', wrap((req) => {
     const { title, goal, acceptance, epic, depends_on, priority } = req.body ?? {};
-    return board.fileTask({
+    return board.fileCard({
       project: req.params.project, title, goal, acceptance, epic, depends_on, priority,
       sessionId: GUI_ACTOR,
     });
@@ -100,14 +100,14 @@ export function buildRoutes() {
   // Patch updatable fields (see board.js's UPDATABLE). The body IS the fields
   // object; `acceptance` takes `{ops:[...]}` / `{replace:[...]}` / `null`,
   // validated in board.js.
-  r.patch('/board/:project/tasks/:id', wrap((req) =>
-    board.updateTask({ project: req.params.project, id: req.params.id, fields: req.body ?? {} })));
+  r.patch('/board/:project/cards/:id', wrap((req) =>
+    board.updateCard({ project: req.params.project, id: req.params.id, fields: req.body ?? {} })));
 
   // Move a card between columns. board.js enforces ALLOWED_TRANSITIONS and
   // returns INVALID_STATE on an illegal move; the GUI surfaces that reason.
-  r.post('/board/:project/tasks/:id/move', wrap((req) => {
+  r.post('/board/:project/cards/:id/move', wrap((req) => {
     const { to, owner, commit } = req.body ?? {};
-    return board.moveTask({
+    return board.moveCard({
       project: req.params.project, id: req.params.id, to, commit,
       owner: owner || GUI_ACTOR,
     });
@@ -122,7 +122,7 @@ export function buildRoutes() {
 
   // Create or refresh an epic (upsert: `title` overwrites, every omitted optional
   // field is preserved). Deliberately does NOT pass `plan` — same precedent as
-  // POST /tasks: the GUI has no file picker. NB the destructure below always
+  // POST /cards: the GUI has no file picker. NB the destructure below always
   // passes `goal` (holding `undefined` when absent), which is exactly why
   // board.js tests presence with `!== undefined` and not `'goal' in args`.
   r.post('/board/:project/epics', wrap((req) => {
@@ -131,7 +131,7 @@ export function buildRoutes() {
   }));
 
   // Cross-project epics: no owning :project. Create takes a `projects` member
-  // list; read resolves by slug and aggregates rollup/tasks across members. A
+  // list; read resolves by slug and aggregates rollup/cards across members. A
   // cross-project epic also appears in each member's /board/:project/epics list.
   r.post('/epics', wrap((req) => {
     const { slug, title, goal, projects } = req.body ?? {};

@@ -1,6 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { serialize, serializeBody, parse } from '../src/taskfile.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { serialize, serializeBody, parse } from '../src/cardfile.js';
+
+const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
 
 function sampleTask() {
   return {
@@ -169,7 +174,7 @@ test('parse(serialize(t)) round-trips every level AND unset', () => {
 
 // ---- acceptance: the line-per-criterion round trip (2026-0020) -----------
 //
-// update_task's acceptance validator relies on this shape: one criterion is
+// update_card's acceptance validator relies on this shape: one criterion is
 // one `- [ ] <text>` line, and parse trims before matching. See
 // .wiki/gotchas/acceptance-line-round-trip.md.
 
@@ -192,4 +197,46 @@ test('a newline in criterion text does NOT round-trip — the continuation line 
   // Only the FIRST physical line survives as the criterion's text; the
   // continuation line 'b' is not merged back in and is simply gone.
   assert.deepEqual(back.acceptance, [{ text: 'a', done: false }]);
+});
+
+// T-new-4 (card 2026-0028) — the regression test for the rename's
+// no-store-migration claim. tests/fixtures/pre-rename-card.md was produced by
+// the PRE-rename serializer (master's src/taskfile.js) and is checked in
+// verbatim, so it is a real artefact of the old build, not a string this file
+// authored. The rename renamed the module, not the format: every frontmatter
+// key, the depends_on list form, and the ## Goal / ## Acceptance / ## Logbook
+// section names must still parse here, and re-serializing must reproduce the
+// file BYTE for byte. A byte diff means a board written by an older build no
+// longer round-trips through this one — the migration this card claimed it did
+// not need.
+test('a card file written by the PRE-rename build parses and re-serializes byte-identically', () => {
+  const original = fs.readFileSync(path.join(FIXTURES, 'pre-rename-card.md'), 'utf8');
+  const card = parse(original);
+
+  // Parsed, not merely echoed: every frontmatter key and both body list
+  // sections came back off the old file.
+  assert.equal(card.id, '2026-0042');
+  assert.equal(card.uid, 'b7c1e2f0-1111-4222-8333-444455556666');
+  assert.equal(card.title, 'Pre-rename golden card');
+  assert.equal(card.project, 'demo');
+  assert.equal(card.epic, 'auth');
+  assert.equal(card.priority, 'HIGH');
+  assert.equal(card.created, '2026-08-06T00:00:00.000Z');
+  assert.equal(card.updated, '2026-08-06T01:00:00.000Z');
+  assert.equal(card.node, 'node-a');
+  assert.equal(card.owner, 'w-1');
+  assert.equal(card.commit, 'abc123');
+  assert.equal(card.plan, 'board:2026-0042.md');
+  assert.deepEqual(card.depends_on, ['2026-0001', '2026-0002']);
+  assert.equal(card.goal, 'Multi-line\n\ngoal prose.');
+  assert.deepEqual(card.acceptance, [
+    { text: 'first criterion', done: true },
+    { text: 'second criterion', done: false },
+  ]);
+  assert.deepEqual(card.logbook, [
+    '2026-08-06T00:00:00.000Z · abcd1234 · filed',
+    '2026-08-06T01:00:00.000Z · conductor · moved triage -> todo',
+  ]);
+
+  assert.equal(serialize(card), original);
 });

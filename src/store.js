@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { STATES, projectDir, stateDir, epicsDir, plansDir, crossEpicsDir } from './paths.js';
-import * as taskfile from './taskfile.js';
+import * as cardfile from './cardfile.js';
 
 // File store for the board. Plain atomic filesystem operations only — the plugin
 // is deliberately NOT a git writer inside .conduct (that would contend with the
@@ -25,14 +25,14 @@ function atomicWrite(file, content) {
   fs.renameSync(tmp, file);
 }
 
-function taskPath(project, state, id) {
+function cardPath(project, state, id) {
   return path.join(stateDir(project, state), `${id}.md`);
 }
 
-// Locate a task file by id across all state dirs. Returns {file, state} or null.
-export function findTaskFile(project, id) {
+// Locate a card file by id across all state dirs. Returns {file, state} or null.
+export function findCardFile(project, id) {
   for (const state of STATES) {
-    const file = taskPath(project, state, id);
+    const file = cardPath(project, state, id);
     if (fs.existsSync(file)) return { file, state };
   }
   return null;
@@ -47,12 +47,12 @@ export function findTaskFile(project, id) {
 // depends_on that pointed at the deleted card, and breaking the monotonic,
 // never-reuse guarantee this sequence is supposed to hold (a deletion is
 // SUPPOSED to leave a gap; it must never let that gap be re-filled). A
-// persisted per-project floor file fixes this: writeTask bumps the floor to
+// persisted per-project floor file fixes this: writeCard bumps the floor to
 // at least every id it ever actually commits to disk, and nextId() takes the
 // max of that floor and the live scan — so once a card is written, deleting
 // it later can never let its number come back.
 //
-// The bump lives in writeTask, NOT in nextId: nextId only proposes a candidate
+// The bump lives in writeCard, NOT in nextId: nextId only proposes a candidate
 // id and may be called speculatively without a following write (see
 // tests/store.test.mjs's gap-free-sequence test, which peeks nextId() before
 // ever writing) — persisting on the peek would burn ids that were never used.
@@ -67,7 +67,7 @@ function idFloorPath(project) {
   return path.join(projectDir(project), '.id-seq');
 }
 
-// Highest task-id number ever committed to disk in this project, including
+// Highest card-id number ever committed to disk in this project, including
 // ids whose card has since been deleted. Read-only peek.
 export function idFloor(project) {
   try {
@@ -103,30 +103,30 @@ export function nextId(project) {
   return `${year}-${String(max + 1).padStart(4, '0')}`;
 }
 
-export function writeTask(project, state, task) {
-  atomicWrite(taskPath(project, state, task.id), taskfile.serialize({ ...task, project }));
+export function writeCard(project, state, task) {
+  atomicWrite(cardPath(project, state, task.id), cardfile.serialize({ ...task, project }));
   const m = /-(\d+)$/.exec(task.id ?? '');
   if (m) bumpIdFloor(project, Number.parseInt(m[1], 10));
 }
 
-export function readTaskById(project, id) {
-  const loc = findTaskFile(project, id);
+export function readCardById(project, id) {
+  const loc = findCardFile(project, id);
   if (!loc) return null;
-  return taskfile.parse(fs.readFileSync(loc.file, 'utf8'), { state: loc.state });
+  return cardfile.parse(fs.readFileSync(loc.file, 'utf8'), { state: loc.state });
 }
 
 // Move a card between state dirs by writing the (updated) card in the new dir
 // and unlinking the old file — the new card appears before the old is removed.
-export function moveTask(project, id, fromState, toState, updatedTask) {
-  writeTask(project, toState, updatedTask);
-  const oldFile = taskPath(project, fromState, id);
+export function moveCard(project, id, fromState, toState, updatedTask) {
+  writeCard(project, toState, updatedTask);
+  const oldFile = cardPath(project, fromState, id);
   if (fromState !== toState && fs.existsSync(oldFile)) fs.rmSync(oldFile);
 }
 
 // Permanently remove a card's file. Returns true if a card was found and
-// deleted, false if none existed (the caller turns that into TASK_UNKNOWN).
-export function deleteTask(project, id) {
-  const loc = findTaskFile(project, id);
+// deleted, false if none existed (the caller turns that into CARD_UNKNOWN).
+export function deleteCard(project, id) {
+  const loc = findCardFile(project, id);
   if (!loc) return false;
   fs.rmSync(loc.file);
   return true;
@@ -135,7 +135,7 @@ export function deleteTask(project, id) {
 // Full cards in a project, parsed (all frontmatter incl. uid/updated/node),
 // state injected, WITHOUT the _mtimeMs stat. This is the raw board dump the sync
 // export serves and the sync merge consumes — the one place uid/node are exposed.
-export function exportTasks(project) {
+export function exportCards(project) {
   const out = [];
   for (const s of STATES) {
     let names;
@@ -144,14 +144,14 @@ export function exportTasks(project) {
     for (const name of names) {
       if (!name.endsWith('.md')) continue;
       const raw = fs.readFileSync(path.join(stateDir(project, s), name), 'utf8');
-      out.push(taskfile.parse(raw, { state: s }));
+      out.push(cardfile.parse(raw, { state: s }));
     }
   }
   return out;
 }
 
 // All cards in a project (optionally one state), parsed, with state injected.
-export function listTasks(project, { state } = {}) {
+export function listCards(project, { state } = {}) {
   const states = state ? [state] : STATES;
   const out = [];
   for (const s of states) {
@@ -161,7 +161,7 @@ export function listTasks(project, { state } = {}) {
     for (const name of names) {
       if (!name.endsWith('.md')) continue;
       const raw = fs.readFileSync(path.join(stateDir(project, s), name), 'utf8');
-      const t = taskfile.parse(raw, { state: s });
+      const t = cardfile.parse(raw, { state: s });
       t._mtimeMs = fs.statSync(path.join(stateDir(project, s), name)).mtimeMs;
       out.push(t);
     }
@@ -194,7 +194,7 @@ export function epicExists(project, slug) {
 // `ownerLines` is the differing line: `project: <p>` or `projects: [a, b]`.
 // `plan` is a LINK to the epic's plan file (src/planLink.js), never the plan
 // text, and — like a card's — the key is absent when unset. `## Logbook` is
-// always emitted, in the same `- <line>` shape taskfile.serializeBody uses, so
+// always emitted, in the same `- <line>` shape cardfile.serializeBody uses, so
 // one reading habit serves cards and epics.
 function serializeEpicFile(epic, ownerLines) {
   return [
@@ -252,7 +252,7 @@ function parseEpicFile(text, seed) {
     if (/^##\s+/.test(lines[i])) { section = null; continue; }
     if (section === 'goal') goal.push(lines[i]);
     else if (section === 'logbook') {
-      const m = /^-\s+(.*)$/.exec(lines[i].trim()); // same rule as taskfile.parse
+      const m = /^-\s+(.*)$/.exec(lines[i].trim()); // same rule as cardfile.parse
       if (m) epic.logbook.push(m[1]);
     }
   }
@@ -283,7 +283,7 @@ export function listEpicSlugs(project) {
 // ---- cross-project epics ----
 // A top-level <slug>.md store. Same hand-rolled frontmatter as per-project
 // epics, but keyed by slug alone and carrying a `projects` list (serialized like
-// a task's depends_on: `[a, b]`) instead of a single `project`.
+// a card's depends_on: `[a, b]`) instead of a single `project`.
 
 function crossEpicPath(slug) {
   return path.join(crossEpicsDir(), `${slug}.md`);

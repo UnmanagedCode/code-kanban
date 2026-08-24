@@ -1,13 +1,13 @@
-// Task markdown <-> object. Hand-rolled (no YAML dep) — the frontmatter is a
+// Card markdown <-> object. Hand-rolled (no YAML dep) — the frontmatter is a
 // small, fixed key set of scalars plus one string-array (depends_on). Body
 // sections are Goal (free text), Acceptance (checkbox list) and Logbook
 // (append-only lines). The `state` field is NOT stored in the file — it is the
-// task's on-disk column dir, injected by the store on read.
+// card's on-disk column dir, injected by the store on read.
 //
 // Cross-instance sync adds three scalars: `uid` (hidden stable identity — the
 // sync match key), `updated` (UTC ISO-8601 version stamp, bumped by every
 // mutator) and `node` (the machine that produced this version — the LWW
-// tiebreak). `uid`/`node` are stripped from MCP/GUI reads (board.readTask); only
+// tiebreak). `uid`/`node` are stripped from MCP/GUI reads (board.readCard); only
 // /api/sync/export exposes them. See .wiki/architecture/cross-instance-sync.md.
 
 import { normalizePriority } from './priority.js';
