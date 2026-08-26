@@ -2457,6 +2457,9 @@ test('file_card and update_card word the title/goal refusal identically', async 
 //
 // Fixtures below each kill a distinct mutant of the gate:
 //   0 / false / NaN / '' / '   ' — `if (epic &&` restored, or the `.trim()` dropped
+//   undefined                   — kills the restored-truthiness mutant like the rest, AND
+//                                 additionally the `fields.epic != null` form; the sole pin
+//                                 for the presence guard (see T1's own note)
 //   42 / {} / ['ep']            — the typeof check dropped (['ep'] STRINGIFIES to a real slug)
 //   null                        — the clear sentinel, which must stay open
 const EPIC_REASON = 'epic must be a non-empty string, or null to clear it';

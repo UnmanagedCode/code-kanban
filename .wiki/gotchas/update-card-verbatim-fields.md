@@ -1,8 +1,8 @@
 # `update_card`'s verbatim fields: which land unchecked, and what each wrong type does
 
-`update_card` splits `fields` in two. `UPDATABLE` (`src/board.js:760`) lists every accepted key;
-`PRE_RESOLVED` (`src/board.js:764`) lists the ones with their own resolver above the loop. Everything
-in the difference is assigned **verbatim** by the generic loop at `src/board.js:839` — that verbatim
+`update_card` splits `fields` in two. `UPDATABLE` (`src/board.js:758`) lists every accepted key;
+`PRE_RESOLVED` (`src/board.js:762`) lists the ones with their own resolver above the loop. Everything
+in the difference is assigned **verbatim** by the generic loop at `src/board.js:837` — that verbatim
 set is `title`, `goal`, `epic`, `priority`. A field in that set gets exactly the validation someone
 remembered to write into the prologue; the loop itself checks nothing.
 
@@ -27,11 +27,11 @@ which `fileCard` calls too, so the refusal wording has one home and the two muta
   A **truthy non-string** was worse than a refusal: `epicVisibleIn` interpolates its slug into a
   path template (`src/store.js:175`), so `['ep']` *matched* the real epic `ep` and the array was
   stored on the card, and `Symbol()` threw a `TypeError` out of the lock. Both closed by `checkEpic`
-  (`src/board.js:290`), which `fileCard` calls too — same one-home rule.
+  (`src/board.js:288`), which `fileCard` calls too — same one-home rule.
 
 ## The ordering rule before you add another field validator
 
-`resolvePlanForSet` (`src/board.js:808`) is the **only** prologue step with a side effect: an
+`resolvePlanForSet` (`src/board.js:806`) is the **only** prologue step with a side effect: an
 absolute `fields.plan` is *copied* into `plans/<id>.md`. Everything else up there is pure, and `task`
 is an in-memory parse, so a refusal persists nothing regardless of where it sits. That makes the
 ingest the only observable discriminator between "validates early" and "validates late" — a new
@@ -39,8 +39,8 @@ validator belongs **above** that call, and a test can pin the ordering by assert
 ingested (see `tests/board.test.mjs`'s "refusal precedes every other resolution step").
 
 The rule this family now establishes, and the one to copy for the next field: **in this prologue,
-presence is `'<key>' in fields` — never truthiness.** `src/board.js:797` (`priority`) is the
-reference idiom; the epic gate at `:787` was the last hold-out, and `2026-0032` closed it with
+presence is `'<key>' in fields` — never truthiness.** `src/board.js:795` (`priority`) is the
+reference idiom; the epic gate at `:785` was the last hold-out, and `2026-0032` closed it with
 `checkEpic` — `null` is the clear sentinel (as for `plan`/`priority`/`acceptance`/`owner`), and
 everything else must be a non-empty string. A side effect of the type check: a truthy non-string
 `epic` moved from `EPIC_UNKNOWN` to `INVALID_STATE`. Slug *syntax* is still not re-checked at the
