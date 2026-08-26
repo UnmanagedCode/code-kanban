@@ -27,6 +27,9 @@ it and letting the round-trip silently eat it on the next read. The value it sto
 happens before persistence, not as a read-time cleanup — so what's on disk matches what a caller
 just set.
 
+The same hazard one layer up — a *frontmatter* key is one line too, so caller text with a newline
+there injects sibling keys rather than truncating: [[frontmatter-injection-via-one-line-keys]].
+
 ## A wrong-shaped list is refused, never coerced
 
 `acceptance` and `depends_on` are `string[]` at `file_card`, and `depends_on` is `string[]` at

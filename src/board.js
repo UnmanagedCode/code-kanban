@@ -244,10 +244,22 @@ function resolveDependsOnForSet(value) {
 // non-string `title` is quieter and no better: cardfile.serialize's
 // `title: ${task.title ?? ''}` (src/cardfile.js:41) stringifies it onto a
 // one-line frontmatter key, and null/'' land a card with NO title at all.
+// A title with a newline does NOT truncate on the next read — cardfile.parse reads
+// frontmatter line-by-line as `key: value`, so the text after the newline becomes
+// SIBLING frontmatter keys and the caller sets fields the title field never granted
+// (see .wiki/gotchas/frontmatter-injection-via-one-line-keys.md). parse is last-wins
+// on a duplicate key, so `id`/`uid` — serialized ABOVE `title` — are overwritten
+// outright, and any key serialized below it only when truthy (`epic`, `priority`,
+// `owner`, `commit`, `plan`) sticks whenever the card's own value is unset. Refused,
+// not stripped, and on the RAW value like cleanAcceptanceText: space-joining prose
+// would persist a title the caller never wrote while still answering {ok:true}.
 // -> null when acceptable, else a fail().
 function checkTitle(value) {
   if (typeof value !== 'string' || !value.trim()) {
     return fail('INVALID_STATE', 'title is required and must be a non-empty string');
+  }
+  if (/[\n\r]/.test(value)) {
+    return fail('INVALID_STATE', 'title must not contain a newline');
   }
   return null;
 }

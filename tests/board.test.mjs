@@ -2217,6 +2217,137 @@ test('update_card refuses a non-string or empty title', async () => {
   } finally { await cleanup(root); }
 });
 
+// ---- a newline in a title is frontmatter injection (2026-0033) ----------
+//
+// `title:` is ONE frontmatter line (cardfile.serialize) and cardfile.parse reads
+// frontmatter line-by-line, so a newline does not truncate the title — the text
+// after it becomes SIBLING keys. Both mutators refuse it through the shared
+// checkTitle. Every fixture below kills a DISTINCT mutant, so the list stays whole:
+//   'a\npriority: …' — the guard deleted outright (the card's own payload)
+//   'a\nb'           — baseline
+//   'a\rb'           — /[\n\r]/ narrowed to /\n/ or .includes('\n')
+//   'a\r\nb'         — CRLF
+//   'a\n' and '\na'  — the guard applied to value.trim() instead of the raw value
+const NEWLINE_TITLES = ['a\npriority: CRITICAL\nowner: hijack', 'a\nb', 'a\rb', 'a\r\nb', 'a\n', '\na'];
+
+// T1 — Pins: file_card refuses, with the exact reason, and writes NO card and hands back NO id
+test('file_card refuses a title containing a newline or carriage return', async () => {
+  for (const bad of NEWLINE_TITLES) {
+    await expectFileRefusal({ title: bad }, 'title must not contain a newline');
+  }
+});
+
+// T2 — Pins: update_card refuses the same values and the stored title is UNCHANGED
+test('update_card refuses a title containing a newline and leaves the card UNCHANGED', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileCard({ project: 'demo', title: 'orig' });
+    for (const bad of NEWLINE_TITLES) {
+      const r = await board.updateCard({ project: 'demo', id, fields: { title: bad } });
+      assert.equal(r.ok, false, JSON.stringify(bad));
+      assert.equal(r.code, 'INVALID_STATE', JSON.stringify(bad));
+      assert.equal(r.reason, 'title must not contain a newline', JSON.stringify(bad));
+      const after = (await board.readCard({ project: 'demo', id })).card;
+      assert.equal(after.title, 'orig', `title changed for ${JSON.stringify(bad)}`);
+    }
+  } finally { await cleanup(root); }
+});
+
+// T3 — Pins the END-TO-END consequence, on the raw bytes and through the reader: the injected
+// lines never become frontmatter keys. `id`/`uid` are serialized ABOVE `title` and parse is
+// last-wins, so unfixed they are overwritten OUTRIGHT — and `uid` is the cross-instance sync
+// match key exposed by /api/sync/export. `priority`/`owner` are serialized below `title` but
+// only when truthy, so unfixed they stick on a card that has neither set.
+test('a newline title cannot inject frontmatter keys at either surface', async () => {
+  const EVIL = 'a\npriority: CRITICAL\nowner: hijack\nuid: HIJACKED-UID\nid: 9999-9999';
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const filed = await board.fileCard({ project: 'demo', title: EVIL });
+    assert.equal(filed.ok, false);
+    assert.equal(filed.reason, 'title must not contain a newline');
+    assert.equal((await board.listCards({ project: 'demo' })).cards.length, 0);
+
+    const { id } = await board.fileCard({ project: 'demo', title: 'orig' });
+    const uid = store.readCardById('demo', id).uid; // readCard strips uid; the raw parse keeps it
+    const cardFile = path.join(stateDir('demo', 'triage'), `${id}.md`);
+
+    const updated = await board.updateCard({ project: 'demo', id, fields: { title: EVIL } });
+    assert.equal(updated.ok, false);
+    assert.equal(updated.code, 'INVALID_STATE');
+    assert.equal(updated.reason, 'title must not contain a newline');
+
+    const raw = fs.readFileSync(cardFile, 'utf8');
+    assert.equal(raw.match(/^title: /gm).length, 1);
+    assert.doesNotMatch(raw, /^priority: /m);
+    assert.doesNotMatch(raw, /^owner: /m);
+    assert.match(raw, new RegExp(`^id: ${id}$`, 'm'));
+    assert.deepEqual(raw.match(/^uid: .*$/gm), [`uid: ${uid}`]);
+
+    const after = (await board.readCard({ project: 'demo', id })).card;
+    assert.equal(after.title, 'orig');
+    assert.equal(after.priority, null);
+    assert.equal(after.owner, null);
+  } finally { await cleanup(root); }
+});
+
+// T8 — Pins the ORDERING on the file_card side, the analog of T4 below. fileCard's
+// side-effecting step is resolvePlanForSet's fs.copyFileSync ingest INSIDE withLock
+// (src/board.js) — NOT store.nextId, which is non-destructive (the id floor is bumped by
+// writeCard). Moving checkTitle below that ingest still refuses with the same reason but
+// leaves an ORPHAN plan file behind for an ok:false call, and only this assertion sees it.
+// Shaped on the plans DIRECTORY rather than T4's ingestDest(project, id) because a refused
+// file_card mints no card, so there is no id to name the destination with — do not
+// "simplify" this into the update_card form.
+test("file_card's newline-title refusal precedes the plan ingest", async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  const src = outsideSources();
+  try {
+    await board.createEpic({ project: 'demo', slug: 'ep', title: 'Epic' });
+    const listPlans = () => (fs.existsSync(plansDir('demo')) ? fs.readdirSync(plansDir('demo')) : []);
+    const before = listPlans();
+    const planSrc = src.write('outside.md', '# ingest me');
+
+    const r = await board.fileCard({
+      project: 'demo', title: 'a\npriority: CRITICAL', epic: 'ep', priority: 'CRITICAL', plan: planSrc,
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'INVALID_STATE');
+    assert.equal(r.reason, 'title must not contain a newline');
+    assert.equal(r.id, undefined);
+    assert.deepEqual(listPlans(), before); // nothing ingested for a refused call
+    assert.equal((await board.listCards({ project: 'demo' })).cards.length, 0);
+  } finally { src.cleanup(); await cleanup(root); }
+});
+
+// T4 — Pins the ORDERING: the newline refusal lands above resolvePlanForSet, the ONLY prologue
+// step with a side effect. A disk-only assertion cannot tell "validates early" from "validates
+// late" (`task` is an in-memory parse), so the un-ingested plan file is the discriminator.
+test("update_card's newline-title refusal precedes the plan ingest", async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  const src = outsideSources();
+  try {
+    await board.createEpic({ project: 'demo', slug: 'ep', title: 'Epic' });
+    const { id } = await board.fileCard({ project: 'demo', title: 'orig' });
+    const cardFile = path.join(stateDir('demo', 'triage'), `${id}.md`);
+    const before = fs.readFileSync(cardFile);
+    const planSrc = src.write('outside.md', '# ingest me');
+
+    const r = await board.updateCard({
+      project: 'demo', id,
+      fields: { title: 'a\npriority: CRITICAL', epic: 'ep', priority: 'CRITICAL', plan: planSrc },
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'INVALID_STATE');
+    assert.equal(r.reason, 'title must not contain a newline');
+    assert.deepEqual(fs.readFileSync(cardFile), before); // byte-identical: nothing applied
+    assert.equal(fs.existsSync(ingestDest('demo', id)), false); // and nothing ingested
+  } finally { src.cleanup(); await cleanup(root); }
+});
+
 // Pins: the refusal lands before the generic loop AND before resolvePlanForSet's ingest — the
 // ONLY prologue step with a side effect. A disk-only assertion cannot tell "validates early"
 // from "validates late" (`task` is an in-memory parse), so the un-ingested plan file is the
@@ -2279,7 +2410,9 @@ test('update_card reports CARD_UNKNOWN, not INVALID_STATE, for a bad-shape field
   useProjects(['demo']);
   try {
     await board.fileCard({ project: 'demo', title: 'a real card' });
-    for (const fields of [{ goal: 42 }, { title: 42 }]) {
+    // The newline title is here for the hoist mutant only — it PASSES either way (the id is
+    // unknown on both trees), so it is not proof of the guard itself. T1/T2/T3 are.
+    for (const fields of [{ goal: 42 }, { title: 42 }, { title: 'a\npriority: CRITICAL' }]) {
       const r = await board.updateCard({ project: 'demo', id: '2026-9999', fields });
       assert.equal(r.ok, false, JSON.stringify(fields));
       assert.equal(r.code, 'CARD_UNKNOWN', JSON.stringify(fields));
@@ -2288,7 +2421,10 @@ test('update_card reports CARD_UNKNOWN, not INVALID_STATE, for a bad-shape field
   } finally { await cleanup(root); }
 });
 
-// Pins: the two mutators share ONE validator, so their refusal strings cannot drift
+// Pins: the two mutators' refusal WORDING cannot drift — file_card and update_card answer a
+// bad title/goal with byte-identical reason strings. (That they share ONE validator is true by
+// construction — both call checkTitle — but it is established by reading board.js, not here: two
+// private per-surface checks with identical wording would pass this test too.)
 test('file_card and update_card word the title/goal refusal identically', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
@@ -2298,6 +2434,13 @@ test('file_card and update_card word the title/goal refusal identically', async 
     const updatedTitle = await board.updateCard({ project: 'demo', id, fields: { title: 42 } });
     assert.equal(filedTitle.reason, updatedTitle.reason);
     assert.equal(updatedTitle.reason, 'title is required and must be a non-empty string');
+
+    const filedNewline = await board.fileCard({ project: 'demo', title: 'a\npriority: CRITICAL' });
+    const updatedNewline = await board.updateCard({
+      project: 'demo', id, fields: { title: 'a\npriority: CRITICAL' },
+    });
+    assert.equal(filedNewline.reason, updatedNewline.reason);
+    assert.equal(updatedNewline.reason, 'title must not contain a newline');
 
     const filedGoal = await board.fileCard({ project: 'demo', title: 't', goal: 42 });
     const updatedGoal = await board.updateCard({ project: 'demo', id, fields: { goal: 42 } });

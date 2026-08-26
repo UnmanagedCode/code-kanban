@@ -190,6 +190,19 @@ test('serializeBody/parse round-trip a renamed + unticked criterion, incl. liter
   assert.deepEqual(back.acceptance, acceptance);
 });
 
+// The frontmatter twin of the criterion test below: `title:` is ONE line, so a
+// newline in a title does not truncate — the continuation becomes a sibling
+// frontmatter key. This characterizes the format-level hazard that board.js's
+// checkTitle guard exists for; cardfile.js is deliberately NOT changed, so this
+// test passes on the unfixed tree too. It is documentation, not proof of the fix.
+test('a newline in a title does NOT round-trip — it injects frontmatter keys', () => {
+  const back = parse(serialize({
+    id: '2026-0042', title: 'a\npriority: CRITICAL', project: 'demo', created: 'c', depends_on: [],
+  }), { state: 'todo' });
+  assert.equal(back.title, 'a');
+  assert.equal(back.priority, 'CRITICAL'); // a key the caller was never granted
+});
+
 test('a newline in criterion text does NOT round-trip — the continuation line is dropped', () => {
   const acceptance = [{ text: 'a\nb', done: false }];
   const body = serializeBody({ goal: '', acceptance, logbook: [] });
