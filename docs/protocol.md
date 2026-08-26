@@ -159,10 +159,7 @@ malformed envelope or an unexpected exception.
     anything else → `INVALID_STATE`. Both run through the **same** validators `file_card` uses
     (`checkTitle`/`checkGoal` in `src/board.js`), so the refusal strings are byte-identical at the
     two surfaces: `title is required and must be a non-empty string`, `goal must be a string, or
-    null`. Without this gate a non-string `goal` reached `cardfile.serializeBody`'s
-    `(task.goal ?? '').trim()` and threw a `TypeError` out of the file lock (a 500 at the HTTP seam,
-    not a refusal), and a non-string `title` was silently stringified onto the one-line `title:`
-    frontmatter key.
+    null`.
   - **`priority`** — one of `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, matched **exactly** (case-sensitive),
     **or `null` to clear the card back to unset** (like `plan`). Everything else — `''`, a lowercase
     spelling, a legacy integer, `undefined`, any unknown word → `INVALID_STATE`. Only an explicit

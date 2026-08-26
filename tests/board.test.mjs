@@ -2271,6 +2271,23 @@ test('update_card still accepts a string or null goal and an ordinary rename', a
   } finally { await cleanup(root); }
 });
 
+// Pins: CARD_UNKNOWN outranks a title/goal shape refusal — the validators sit INSIDE the lock,
+// after store.readCardById, matching how the epic/priority checks already behave. A "fail fast"
+// hoist above the CARD_UNKNOWN block would flip these to INVALID_STATE.
+test('update_card reports CARD_UNKNOWN, not INVALID_STATE, for a bad-shape field on an unknown id', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    await board.fileCard({ project: 'demo', title: 'a real card' });
+    for (const fields of [{ goal: 42 }, { title: 42 }]) {
+      const r = await board.updateCard({ project: 'demo', id: '2026-9999', fields });
+      assert.equal(r.ok, false, JSON.stringify(fields));
+      assert.equal(r.code, 'CARD_UNKNOWN', JSON.stringify(fields));
+      assert.equal(r.reason, 'unknown card: 2026-9999', JSON.stringify(fields));
+    }
+  } finally { await cleanup(root); }
+});
+
 // Pins: the two mutators share ONE validator, so their refusal strings cannot drift
 test('file_card and update_card word the title/goal refusal identically', async () => {
   const root = await freshRoot();
