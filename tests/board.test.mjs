@@ -2183,6 +2183,128 @@ test('file_card refuses a non-string goal', async () => {
     assert.equal((await board.readCard({ project: 'demo', id: r.id })).card.goal, '');
   } finally { await cleanup(root); }
 });
+// Pins: a PRESENT non-string `goal` is a returned refusal, never a TypeError escaping the file lock
+test('update_card refuses a non-string goal instead of throwing out of the serializer', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileCard({ project: 'demo', title: 'orig', goal: 'because' });
+    for (const bad of [42, {}, [], true]) {
+      const r = await board.updateCard({ project: 'demo', id, fields: { goal: bad } });
+      assert.equal(r.ok, false, JSON.stringify(bad));
+      assert.equal(r.code, 'INVALID_STATE', JSON.stringify(bad));
+      assert.equal(r.reason, 'goal must be a string, or null', JSON.stringify(bad));
+      assert.equal((await board.readCard({ project: 'demo', id })).card.goal, 'because');
+    }
+  } finally { await cleanup(root); }
+});
+
+// Pins: `fields.title` is type- AND emptiness-checked, so it is neither stringified onto the
+// one-line `title:` frontmatter key nor able to leave the card titleless
+test('update_card refuses a non-string or empty title', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileCard({ project: 'demo', title: 'orig' });
+    for (const bad of [42, null, '', '   ', {}, ['x']]) {
+      const r = await board.updateCard({ project: 'demo', id, fields: { title: bad } });
+      assert.equal(r.ok, false, JSON.stringify(bad));
+      assert.equal(r.code, 'INVALID_STATE', JSON.stringify(bad));
+      assert.equal(r.reason, 'title is required and must be a non-empty string', JSON.stringify(bad));
+      const after = (await board.readCard({ project: 'demo', id })).card;
+      assert.equal(after.title, 'orig', `title changed for ${JSON.stringify(bad)}`);
+    }
+  } finally { await cleanup(root); }
+});
+
+// Pins: the refusal lands before the generic loop AND before resolvePlanForSet's ingest — the
+// ONLY prologue step with a side effect. A disk-only assertion cannot tell "validates early"
+// from "validates late" (`task` is an in-memory parse), so the un-ingested plan file is the
+// discriminator. `title` precedes `goal` in UPDATABLE, so this is the loop-order case too.
+test("update_card's title/goal refusal precedes every other resolution step", async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  const src = outsideSources();
+  try {
+    await board.createEpic({ project: 'demo', slug: 'ep', title: 'Epic' });
+    const { id } = await board.fileCard({ project: 'demo', title: 'orig', goal: 'because' });
+    const cardFile = path.join(stateDir('demo', 'triage'), `${id}.md`);
+    const before = fs.readFileSync(cardFile);
+    const planSrc = src.write('outside.md', '# ingest me');
+
+    const r = await board.updateCard({
+      project: 'demo', id,
+      fields: { title: 'renamed', epic: 'ep', priority: 'CRITICAL', plan: planSrc, goal: 42 },
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'INVALID_STATE');
+    assert.equal(r.reason, 'goal must be a string, or null');
+    assert.deepEqual(fs.readFileSync(cardFile), before); // byte-identical: nothing applied
+    assert.equal(fs.existsSync(ingestDest('demo', id)), false); // and nothing ingested
+  } finally { src.cleanup(); await cleanup(root); }
+});
+
+// Pins: the refusal is scoped to a PRESENT wrong-typed value — the clear path and the ordinary
+// rename are not breaks. (Regression guard: passes on the unfixed tree by design.)
+test('update_card still accepts a string or null goal and an ordinary rename', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileCard({ project: 'demo', title: 'orig', goal: 'because' });
+    const read = async () => (await board.readCard({ project: 'demo', id })).card;
+
+    assert.equal((await board.updateCard({ project: 'demo', id, fields: { goal: 'new' } })).ok, true);
+    assert.equal((await read()).goal, 'new');
+    assert.equal((await board.updateCard({ project: 'demo', id, fields: { goal: null } })).ok, true);
+    assert.equal((await read()).goal, '');
+    assert.equal((await board.updateCard({ project: 'demo', id, fields: { goal: 'again' } })).ok, true);
+    assert.equal((await board.updateCard({ project: 'demo', id, fields: { goal: '' } })).ok, true);
+    assert.equal((await read()).goal, '');
+    assert.equal((await board.updateCard({ project: 'demo', id, fields: { title: 'renamed' } })).ok, true);
+    assert.equal((await read()).title, 'renamed');
+    // Omitting both leaves each untouched.
+    assert.equal((await board.updateCard({ project: 'demo', id, fields: { goal: 'kept' } })).ok, true);
+    assert.equal((await board.updateCard({ project: 'demo', id, fields: { priority: 'LOW' } })).ok, true);
+    const after = await read();
+    assert.equal(after.title, 'renamed');
+    assert.equal(after.goal, 'kept');
+  } finally { await cleanup(root); }
+});
+
+// Pins: CARD_UNKNOWN outranks a title/goal shape refusal — the validators sit INSIDE the lock,
+// after store.readCardById, matching how the epic/priority checks already behave. A "fail fast"
+// hoist above the CARD_UNKNOWN block would flip these to INVALID_STATE.
+test('update_card reports CARD_UNKNOWN, not INVALID_STATE, for a bad-shape field on an unknown id', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    await board.fileCard({ project: 'demo', title: 'a real card' });
+    for (const fields of [{ goal: 42 }, { title: 42 }]) {
+      const r = await board.updateCard({ project: 'demo', id: '2026-9999', fields });
+      assert.equal(r.ok, false, JSON.stringify(fields));
+      assert.equal(r.code, 'CARD_UNKNOWN', JSON.stringify(fields));
+      assert.equal(r.reason, 'unknown card: 2026-9999', JSON.stringify(fields));
+    }
+  } finally { await cleanup(root); }
+});
+
+// Pins: the two mutators share ONE validator, so their refusal strings cannot drift
+test('file_card and update_card word the title/goal refusal identically', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileCard({ project: 'demo', title: 'orig' });
+    const filedTitle = await board.fileCard({ project: 'demo', title: 42 });
+    const updatedTitle = await board.updateCard({ project: 'demo', id, fields: { title: 42 } });
+    assert.equal(filedTitle.reason, updatedTitle.reason);
+    assert.equal(updatedTitle.reason, 'title is required and must be a non-empty string');
+
+    const filedGoal = await board.fileCard({ project: 'demo', title: 't', goal: 42 });
+    const updatedGoal = await board.updateCard({ project: 'demo', id, fields: { goal: 42 } });
+    assert.equal(filedGoal.reason, updatedGoal.reason);
+    assert.equal(updatedGoal.reason, 'goal must be a string, or null');
+  } finally { await cleanup(root); }
+});
 
 test('update_card acceptance: an edit writes NO logbook line', async () => {
   const root = await freshRoot();

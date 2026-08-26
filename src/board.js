@@ -233,6 +233,34 @@ function resolveDependsOnForSet(value) {
   return { list: box.list };
 }
 
+// The two `fields` keys update_card's generic loop assigns VERBATIM (see
+// UPDATABLE/PRE_RESOLVED below) and the ONE place their shape refusals are
+// worded. fileCard calls the same pair, so the two mutators cannot drift —
+// the reason resolveDependsOnForSet is shared. `check*` rather than `resolve*`:
+// there is no normalised value to hand back, only a verdict.
+// A non-string `goal` reaches cardfile.serializeBody's `(task.goal ?? '').trim()`
+// (src/cardfile.js:67) and THROWS from inside the file lock, breaking
+// src/routes.js's "board.js never throws for a domain outcome" invariant. A
+// non-string `title` is quieter and no better: cardfile.serialize's
+// `title: ${task.title ?? ''}` (src/cardfile.js:41) stringifies it onto a
+// one-line frontmatter key, and null/'' land a card with NO title at all.
+// -> null when acceptable, else a fail().
+function checkTitle(value) {
+  if (typeof value !== 'string' || !value.trim()) {
+    return fail('INVALID_STATE', 'title is required and must be a non-empty string');
+  }
+  return null;
+}
+
+// `null` means "clear it": serializeBody's `?? ''` renders an absent goal as an
+// empty Goal section, which is exactly what parse reads back.
+function checkGoal(value) {
+  if (value != null && typeof value !== 'string') {
+    return fail('INVALID_STATE', 'goal must be a string, or null');
+  }
+  return null;
+}
+
 // Pass 1 (validate against the PRE-EDIT snapshot, normalise into `checked` —
 // never mutates the caller's op objects, since `fields` is caller-owned) then
 // Pass 2 (build the result via a tombstone Set, never an in-place splice) —
@@ -423,9 +451,8 @@ const CATEGORIES = ['todo', 'backlog'];
 export async function fileCard({ project, title, goal, acceptance, epic, depends_on, category, priority, plan, sessionId } = {}) {
   const bad = await requireProject(project);
   if (bad) return bad;
-  if (typeof title !== 'string' || !title.trim()) {
-    return fail('INVALID_STATE', 'title is required and must be a non-empty string');
-  }
+  const badTitle = checkTitle(title);
+  if (badTitle) return badTitle;
   if (category !== undefined && !CATEGORIES.includes(category)) {
     return fail('INVALID_STATE', `category must be one of ${CATEGORIES.join(', ')}`);
   }
@@ -450,9 +477,8 @@ export async function fileCard({ project, title, goal, acceptance, epic, depends
   if (acc.ok === false) return acc;
   const deps = resolveDependsOnForSet(depends_on);
   if (deps.ok === false) return deps;
-  if (goal != null && typeof goal !== 'string') {
-    return fail('INVALID_STATE', 'goal must be a string, or null');
-  }
+  const badGoal = checkGoal(goal);
+  if (badGoal) return badGoal;
   return withLock(project, () => {
     store.ensureProjectDirs(project);
     if (epic && !epicVisibleIn(project, epic)) {
@@ -703,6 +729,20 @@ export async function updateCard({ project, id, fields } = {}) {
   return withLock(project, () => {
     const task = store.readCardById(project, id);
     if (!task) return fail('CARD_UNKNOWN', `unknown card: ${id}`);
+    // First in the prologue, ahead of the epic/priority checks and — load-bearing
+    // — ahead of resolvePlanForSet, the ONLY step up here with a side effect (an
+    // absolute `plan` is COPIED into plans/). So a call mixing a bad title/goal
+    // with an absolute plan path ingests no file. These two are also the only
+    // keys the generic loop below assigns verbatim, so refusing here is what
+    // makes "validates before any mutation" true for them.
+    if ('title' in fields) {
+      const bad = checkTitle(fields.title);
+      if (bad) return bad;
+    }
+    if ('goal' in fields) {
+      const bad = checkGoal(fields.goal);
+      if (bad) return bad;
+    }
     if (fields.epic && !epicVisibleIn(project, fields.epic)) {
       return fail('EPIC_UNKNOWN', `unknown epic: ${fields.epic}`);
     }
