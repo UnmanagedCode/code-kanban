@@ -157,6 +157,20 @@ test('PATCH updates whitelisted fields; acceptance edits via {replace}, but a ba
   });
 });
 
+// Pins: the refusal reaches the GUI seam rather than being swallowed by `wrap()`
+test('POST /api/board/:project/cards with a non-array acceptance is refused, not silently emptied', async () => {
+  await withServer(async ({ json }) => {
+    const posted = await json('/api/board/demo/cards', { method: 'POST', body: { title: 'c', acceptance: 'a\nb' } });
+    assert.equal(posted.status, 200);
+    assert.equal(posted.body.ok, false);
+    assert.equal(posted.body.code, 'INVALID_STATE');
+    assert.equal(posted.body.reason, 'acceptance must be an array of strings, or null');
+    assert.equal(posted.body.id, undefined);
+    const listed = await json('/api/board/demo/cards');
+    assert.deepEqual(listed.body.cards, []);
+  });
+});
+
 test('the GUI textarea round-trip keeps ticks: {op:done} then {replace} with the exact textarea payload', async () => {
   await withServer(async ({ json }) => {
     const id = (await json('/api/board/demo/cards', { method: 'POST', body: { title: 'u', acceptance: ['a', 'b'] } })).body.id;

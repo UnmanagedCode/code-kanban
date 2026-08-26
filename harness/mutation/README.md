@@ -64,7 +64,10 @@ The epic-level plan link + logbook (2026-0025) extends that list. `planFields`,
 behind a helper that looks covered. The call-site counts differ and matter: `planFields` has 2
 (`readCard`, `readEpic`), `resolvePlanForSet` has **3** (`fileCard`, `updateCard`, and the epic
 upsert — killing the `fileCard` destination mutant says nothing about `updateCard`), and
-`ingestPlanFile` has **1**. The same discipline applies to the **project-scoped vs cross-project**
+`ingestPlanFile` has **1**. `resolveDependsOnForSet` serves **both** mutators (`fileCard`,
+`updateCard`) and `resolveListForSet` serves both list validators — mutate **at each call site**,
+not only inside the shared helper. Killing `file_card`'s mutant says nothing about `update_card`'s.
+The same discipline applies to the **project-scoped vs cross-project**
 split, which is this feature's other recurring asymmetry: `createEpic`, the epic codecs, the sync
 backfill and the merge each have two halves, and a pin on one half proves nothing about the other.
 Named mutants that must die:

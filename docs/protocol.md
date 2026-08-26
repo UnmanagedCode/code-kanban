@@ -59,7 +59,7 @@ malformed envelope or an unexpected exception.
 
 ## Tool signatures
 
-- `file_card({project, title, goal?, acceptance?, epic?, depends_on?, category?, priority?, plan?}) → {ok, id[, plan]}` — card lands in `triage` by default; `category: 'todo'|'backlog'` lands it directly in that lane instead (mirrors triage's legal exits). An illegal `category` value → `INVALID_STATE`. `epic` must already exist → else `EPIC_UNKNOWN`. `priority` is one of `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` (advertised in the manifest as an `enum` with **no `default`**); omitted or `null` → unset; anything else → `INVALID_STATE`. `plan` takes the same three input forms as `update_card`'s `fields.plan` (below) and is resolved against the card's freshly-minted id, so an **absolute** path is copied to `plans/<id>.md`; the stored link comes back as `plan` in the result. All of these validate **before** the card is written, so a refusal consumes no id — including a `PLAN_UNKNOWN` plan: no card is created and the next `file_card` gets that same id.
+- `file_card({project, title, goal?, acceptance?, epic?, depends_on?, category?, priority?, plan?}) → {ok, id[, plan]}` — card lands in `triage` by default; `category: 'todo'|'backlog'` lands it directly in that lane instead (mirrors triage's legal exits). An illegal `category` value → `INVALID_STATE`. `epic` must already exist → else `EPIC_UNKNOWN`. `priority` is one of `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` (advertised in the manifest as an `enum` with **no `default`**); omitted or `null` → unset; anything else → `INVALID_STATE`. `acceptance` and `depends_on` are each `string[]` — omitted or `null` for none; **anything else, including a non-array or a non-string item, is `INVALID_STATE`** naming the field (and the item's index), never silently coerced to an empty list. Each `acceptance` item runs through the **same** text validator as `update_card`'s `add`/`rename`/`replace` (no newline, non-empty after trim, stored trimmed — see the `acceptance` bullet below), reported as `acceptance[i]: …`. `goal` must be a string or `null`. `plan` takes the same three input forms as `update_card`'s `fields.plan` (below) and is resolved against the card's freshly-minted id, so an **absolute** path is copied to `plans/<id>.md`; the stored link comes back as `plan` in the result. All of these validate **before** the card is written, so a refusal consumes no id — including a `PLAN_UNKNOWN` plan: no card is created and the next `file_card` gets that same id.
 - `log_card({project?, id?, entry}) → {ok}` — two paths, chosen by `id`:
   - **`id` omitted (worker path):** target card resolved server-side from `caller.sessionId`
     (the owned `in-progress` card; ties broken by most-recently-modified). `project` is
@@ -187,8 +187,9 @@ malformed envelope or an unexpected exception.
     `{ops:[…]}`, `{replace:[…]}`, or `null` (clears the list). Both `ops` and `replace` present, or
     neither, → `INVALID_STATE`; any other shape (incl. a bare array — the natural `string[]` guess,
     since that is `file_card`'s form) → `INVALID_STATE` naming all three accepted shapes.
-    `file_card`'s `acceptance: string[]` **filing-time** input form is a **different, unchanged**
-    shape — the two are deliberately not unified.
+    `file_card`'s `acceptance: string[]` **filing-time** input form is a different **container**
+    shape (a flat list, no ops) and is refused here. The **per-criterion text rules are the same at
+    both surfaces**: no newline, non-empty after trim, stored trimmed.
 
     **`{ops:[…]}`** — each op is one of `{op:'add', text}`, `{op:'remove', index}`,
     `{op:'rename', index, text}`, `{op:'done', index, done}`; every op is **total** (no optional
@@ -236,9 +237,9 @@ accept an `epic` slug that resolves to a per-project epic in the card's project 
 cross-project epic covering it → else `EPIC_UNKNOWN`. The full card object (from `read_card`)
 additionally carries an optional `commit` field, set once the card lands; `commit` is not in
 `update_card`'s `UPDATABLE` set — it's stamped only by `move_card`. `plan`, by contrast, **is** in
-`UPDATABLE` — it is the one card field a caller sets directly. `acceptance` is now the **second**
-caller-set field with its own set-time validator (`resolveAcceptanceForSet` in `src/board.js`,
-alongside `resolvePlanForSet`).
+`UPDATABLE` — it is the one card field a caller sets directly. The caller-set fields with their own
+set-time validator are listed as `PRE_RESOLVED` in `src/board.js` (`resolvePlanForSet`,
+`resolveAcceptanceForSet`, `resolveDependsOnForSet`); the rest of `UPDATABLE` lands verbatim.
 
 ## Manifest / schema constraints
 
@@ -248,7 +249,10 @@ advertised as an opaque `{type:"object"}` and validated at runtime — `fields.a
 op object (`{ops:[…]}` / `{replace:[…]}`) is simply one level deeper inside that same opaque value,
 runtime-validated for the same reason. Array params (`acceptance`, `depends_on`) use
 `{type:"array", items:{type:"string"}}` — this is `file_card`'s flat top-level `acceptance: string[]`
-param, unrelated to `update_card.fields.acceptance`'s nested shape.
+param, unrelated to `update_card.fields.acceptance`'s nested shape. The advertised
+`{type:"array", items:{type:"string"}}` is **advisory**: the host does not enforce it, and calls have
+reached `board.fileCard` with a non-array `acceptance`. The runtime checks in `src/board.js` are what
+refuse them.
 
 The same constraint is why there is no single card|epic logging or logbook-reading tool: a
 `oneOf` over the two addressing shapes is rejected outright, so the exclusivity lives in two
@@ -274,7 +278,7 @@ through unchanged as the HTTP body.
 | `GET /api/board/meta` | `STATES` + `ALLOWED_TRANSITIONS` + `PRIORITIES` | — | `{states:[…], transitions:["from>to",…], priorities:["CRITICAL","HIGH","MEDIUM","LOW"]}` (`priorities` in rank order, highest first — the GUI's priority selects render from it rather than hardcoding a copy) |
 | `GET /api/board/:project/cards` | `board.listCards` | `?state`, `?epic` | `{ok, cards:[summary]}` |
 | `GET /api/board/:project/cards/:id` | `board.readCard` | `?includePlan=1\|true` | `{ok, card, plan_path[, plan_body, plan_truncated, plan_missing]}` (full: goal, acceptance, logbook). Any other `includePlan` value is falsy. The GUI always sends `includePlan=1` and reads `plan_body` as a field (the raw-text channel is MCP-only). |
-| `POST /api/board/:project/cards` | `board.fileCard` | `{title, goal?, acceptance?, epic?, depends_on?, priority?}` | `{ok, id}` (lands in `triage`; `priority` omitted or `null` → unset). The route destructures a fixed field list and deliberately does **not** pass `plan` — the GUI has no file picker and documents the plan link as non-editable. |
+| `POST /api/board/:project/cards` | `board.fileCard` | `{title, goal?, acceptance?, epic?, depends_on?, priority?}` | `{ok, id}` (lands in `triage`; `priority` omitted or `null` → unset). The route destructures a fixed field list and deliberately does **not** pass `plan` — the GUI has no file picker and documents the plan link as non-editable. A non-array or non-string-item `acceptance`/`depends_on` is refused `INVALID_STATE`, not emptied (same refusals as the tool). |
 | `PATCH /api/board/:project/cards/:id` | `board.updateCard` | body **is** `fields` ⊆ `{title, goal, epic, priority, depends_on, plan, owner, acceptance}` | `{ok[, plan]}` (same refusals as the tool, incl. `PLAN_UNKNOWN`; an absolute `plan` is ingested here too — the copy lives in `board.js`, not at a surface; a bare `acceptance` array — e.g. `[{text,done}]` — is refused `INVALID_STATE`, not silently ignored: it must be `{ops:[…]}`, `{replace:[…]}`, or `null`) |
 | `POST /api/board/:project/cards/:id/move` | `board.moveCard` | `{to, owner?, commit?}` | `{ok, from, to}` |
 | `GET /api/board/:project/epics` | `board.listEpics` | — | `{ok, epics:[{slug, title, rollup, projects}]}` (incl. cross-project epics spanning the project) |
