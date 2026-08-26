@@ -155,8 +155,9 @@ const ACCEPTANCE_OPS = ['add', 'remove', 'rename', 'done'];
 // The single set-time validator for update_card's fields.acceptance. Pure:
 // (PRE-EDIT list, caller value) -> {list} | a fail(). Nothing here writes —
 // updateCard's one store.writeCard stays the only mutation, so every refusal
-// below leaves the card untouched. file_card's string[] form is separate and
-// deliberately not routed through here.
+// below leaves the card untouched. file_card's flat string[] CONTAINER is a
+// different shape handled by resolveAcceptanceForFile; the per-item TEXT rules
+// are shared, via cleanAcceptanceText.
 function resolveAcceptanceForSet(current, value) {
   if (value === null) return { list: [] };
   if (typeof value !== 'object' || Array.isArray(value)) {
@@ -182,6 +183,54 @@ function cleanAcceptanceText(text, prefix) {
   const trimmed = text.trim();
   if (!trimmed) return { error: fail('INVALID_STATE', `${prefix}: text must be non-empty`) };
   return { text: trimmed };
+}
+
+// The container half of every caller-supplied list field, shared so the shape
+// refusal has ONE wording. A PRESENT but non-array value is a refusal, never a
+// silent `[]`: coercing it discards the whole field while still returning
+// {ok:true, id}, so the caller has no signal and the card lands with an empty
+// Acceptance section (see .wiki/gotchas/acceptance-line-round-trip.md).
+// `undefined` and `null` both mean "not given" -> empty list, matching how
+// fileCard already reads `priority` and `plan`, and how update_card's
+// `acceptance: null` clears.
+// -> {list} | a fail(). ITEM validation is the caller's: a criterion is
+// line-shaped text, a dependency is a bare id.
+function resolveListForSet(name, value) {
+  if (value == null) return { list: [] };
+  if (!Array.isArray(value)) {
+    return fail('INVALID_STATE', `${name} must be an array of strings, or null`);
+  }
+  return { list: value };
+}
+
+// file_card's `acceptance: string[]` -> [{text, done:false}] | a fail(). Each item
+// goes through cleanAcceptanceText — the SAME text validator update_card's ops and
+// replace use — so the two mutators cannot disagree about what a criterion may
+// contain, and the stored text is the TRIMMED value at filing time too.
+function resolveAcceptanceForFile(value) {
+  const box = resolveListForSet('acceptance', value);
+  if (box.ok === false) return box;
+  const list = [];
+  for (let i = 0; i < box.list.length; i++) {
+    const cleaned = cleanAcceptanceText(box.list[i], `acceptance[${i}]`);
+    if (cleaned.error) return cleaned.error;
+    list.push({ text: cleaned.text, done: false });
+  }
+  return { list };
+}
+
+// depends_on -> string[] | a fail(). Shared by fileCard and updateCard so the two
+// cannot drift. A non-string id would reach serializeDependsOn's `[a, b]` join and
+// come back as a stringified husk on the next parse.
+function resolveDependsOnForSet(value) {
+  const box = resolveListForSet('depends_on', value);
+  if (box.ok === false) return box;
+  for (let i = 0; i < box.list.length; i++) {
+    if (typeof box.list[i] !== 'string') {
+      return fail('INVALID_STATE', `depends_on[${i}]: must be a string`);
+    }
+  }
+  return { list: box.list };
 }
 
 // Pass 1 (validate against the PRE-EDIT snapshot, normalise into `checked` —
@@ -394,6 +443,16 @@ export async function fileCard({ project, title, goal, acceptance, epic, depends
     const c = classifyPlanInput(project, plan);
     if (c.error) return fail(c.error.code, c.error.reason);
   }
+  // Same altitude as the plan grammar check: pure shape checks with no fs
+  // access, refusing before an id is minted. The resolved values are consumed
+  // inside the lock.
+  const acc = resolveAcceptanceForFile(acceptance);
+  if (acc.ok === false) return acc;
+  const deps = resolveDependsOnForSet(depends_on);
+  if (deps.ok === false) return deps;
+  if (goal != null && typeof goal !== 'string') {
+    return fail('INVALID_STATE', 'goal must be a string, or null');
+  }
   return withLock(project, () => {
     store.ensureProjectDirs(project);
     if (epic && !epicVisibleIn(project, epic)) {
@@ -413,9 +472,9 @@ export async function fileCard({ project, title, goal, acceptance, epic, depends
     const task = {
       id, uid: crypto.randomUUID(), title: title.trim(), project, epic: epic ?? null,
       priority: priority ?? null, created, updated: created, node: localNodeId(),
-      owner: null, plan: planLink, depends_on: Array.isArray(depends_on) ? depends_on : [],
-      goal: typeof goal === 'string' ? goal : '',
-      acceptance: (Array.isArray(acceptance) ? acceptance : []).map((text) => ({ text, done: false })),
+      owner: null, plan: planLink, depends_on: deps.list,
+      goal: goal ?? '',
+      acceptance: acc.list,
       logbook: [logLine(created, sessionId, 'filed')],
     };
     store.writeCard(project, category ?? 'triage', task);
@@ -633,6 +692,10 @@ export async function moveCard({ project, id, to, owner, commit } = {}) {
 
 const UPDATABLE = ['title', 'goal', 'epic', 'priority', 'depends_on', 'plan', 'owner', 'acceptance'];
 
+// Fields with their own set-time validator above the loop — the loop's
+// `task[key] = fields[key]` is only for the ones that land verbatim.
+const PRE_RESOLVED = ['plan', 'owner', 'acceptance', 'depends_on'];
+
 export async function updateCard({ project, id, fields } = {}) {
   const bad = await requireProject(project);
   if (bad) return bad;
@@ -679,13 +742,19 @@ export async function updateCard({ project, id, fields } = {}) {
       if (resolved.ok === false) return resolved;
       acceptanceNext = resolved.list;
     }
+    let dependsOnNext;
+    if ('depends_on' in fields) {
+      const resolved = resolveDependsOnForSet(fields.depends_on);
+      if (resolved.ok === false) return resolved;
+      dependsOnNext = resolved.list;
+    }
     for (const key of UPDATABLE) {
-      if (!(key in fields) || key === 'plan' || key === 'owner' || key === 'acceptance') continue;
-      if (key === 'depends_on') task.depends_on = Array.isArray(fields.depends_on) ? fields.depends_on : [];
-      else task[key] = fields[key]; // priority is validated above, so it lands verbatim (incl. null)
+      if (!(key in fields) || PRE_RESOLVED.includes(key)) continue;
+      task[key] = fields[key]; // priority is validated above, so it lands verbatim (incl. null)
     }
     if ('plan' in fields) task.plan = planNext;
     if ('acceptance' in fields) task.acceptance = acceptanceNext;
+    if ('depends_on' in fields) task.depends_on = dependsOnNext;
     if ('owner' in fields) {
       const prev = task.owner ?? null;
       // Only a real change is logged (a no-op set stamps nothing) — the line is

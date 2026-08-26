@@ -2024,6 +2024,166 @@ test('update_card acceptance: same-index ops are last-write-wins; remove is term
   } finally { await cleanup(root); }
 });
 
+// ---- file_card / update_card list-shape refusals -----------------------
+//
+// A present, wrong-typed `acceptance`/`depends_on` used to be replaced by `[]`
+// while file_card still returned {ok:true, id}. Every test below asserts the
+// EXACT reason string, because the reason is the whole point: a caller with no
+// signal is the failure being fixed.
+
+// One test per refusal-table row. Asserts (a) ok:false, (b) code, (c) the EXACT
+// reason, and (d) NO CARD WAS WRITTEN. Clause (d) is the one that kills "validate
+// but write anyway" and "validate after store.writeCard".
+async function expectFileRefusal(args, expectedReason) {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const r = await board.fileCard({ project: 'demo', title: 't', ...args });
+    assert.equal(r.ok, false, `${JSON.stringify(args)} should refuse`);
+    assert.equal(r.code, 'INVALID_STATE', JSON.stringify(args));
+    assert.equal(r.reason, expectedReason, JSON.stringify(args));
+    assert.equal(r.id, undefined, 'a refusal must not hand back a card id');
+    const listed = await board.listCards({ project: 'demo' });
+    assert.equal(listed.cards.length, 0, `a card was written for ${JSON.stringify(args)}`);
+  } finally { await cleanup(root); }
+}
+
+// Pins: a **present** non-array `acceptance` is `INVALID_STATE` and **no card is written**
+test('file_card refuses a non-array acceptance instead of coercing it to []', async () => {
+  const reason = 'acceptance must be an array of strings, or null';
+  for (const bad of ['a\nb', { replace: ['a'] }, 5, true]) {
+    await expectFileRefusal({ acceptance: bad }, reason);
+  }
+});
+
+// Pins: a **present** non-array `depends_on` is `INVALID_STATE` and **no card is written**
+test('file_card refuses a non-array depends_on the same way', async () => {
+  const reason = 'depends_on must be an array of strings, or null';
+  for (const bad of ['2026-0001', {}, 7]) {
+    await expectFileRefusal({ depends_on: bad }, reason);
+  }
+});
+
+// Pins: every index is validated, and a present non-string item is refused, not stored as the string `[object Object]`
+test('file_card refuses a PRESENT non-string acceptance item, at any index', async () => {
+  // Both index positions are load-bearing: the index-1 fixtures kill a
+  // first-item-only check, the index-0 fixture kills a loop starting at i = 1,
+  // and the exact `[i]` prefix kills an off-by-one in the prefix string.
+  await expectFileRefusal({ acceptance: [{ text: 'oops' }, 'ok'] }, 'acceptance[0]: text must be a string');
+  await expectFileRefusal({ acceptance: ['ok', 42] }, 'acceptance[1]: text must be a string');
+  await expectFileRefusal({ acceptance: ['ok', null] }, 'acceptance[1]: text must be a string');
+});
+
+// Pins: every index is validated, and a present non-string item is refused, not stored as the string `[object Object]`
+test('file_card refuses a PRESENT non-string depends_on item, at any index', async () => {
+  await expectFileRefusal({ depends_on: [{ id: 'x' }, '2026-0001'] }, 'depends_on[0]: must be a string');
+  await expectFileRefusal({ depends_on: ['2026-0001', 42] }, 'depends_on[1]: must be a string');
+});
+
+// Pins: filing-time items route through `cleanAcceptanceText`, not a private type check
+test('file_card and update_card now apply the SAME criterion-text rules', async () => {
+  // A bare `typeof !== 'string'` guard passes the non-string tests above but
+  // fails here — this is the test that proves REUSE of the shared validator.
+  await expectFileRefusal({ acceptance: ['a\nb'] }, 'acceptance[0]: text must not contain a newline');
+  await expectFileRefusal({ acceptance: ['   '] }, 'acceptance[0]: text must be non-empty');
+});
+
+// Pins: trimming happens before persistence at filing time too
+test('file_card stores the TRIMMED criterion text', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const r = await board.fileCard({ project: 'demo', title: 't', acceptance: ['  a  '] });
+    assert.equal(r.ok, true);
+    // The assertion has to be on the BYTES: cardfile.parse trims every line, so
+    // an untrimmed store round-trips back through readCard looking identical.
+    // Only the file shows whether trimming happened before persistence.
+    const raw = fs.readFileSync(path.join(stateDir('demo', 'triage'), `${r.id}.md`), 'utf8');
+    assert.match(raw, /^- \[ \] a$/m);
+    assert.deepEqual((await board.readCard({ project: 'demo', id: r.id })).card.acceptance,
+      [{ text: 'a', done: false }]);
+  } finally { await cleanup(root); }
+});
+
+// Pins: the refusal is scoped to a **present wrong-shaped** value; absent/null is not a break
+test('file_card still accepts an OMITTED and an explicit-null acceptance/depends_on', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const omitted = await board.fileCard({ project: 'demo', title: 'a' });
+    assert.equal(omitted.ok, true);
+    const c1 = (await board.readCard({ project: 'demo', id: omitted.id })).card;
+    assert.deepEqual(c1.acceptance, []);
+    assert.deepEqual(c1.depends_on, []);
+
+    const nulled = await board.fileCard({ project: 'demo', title: 'b', acceptance: null, depends_on: null });
+    assert.equal(nulled.ok, true);
+    const c2 = (await board.readCard({ project: 'demo', id: nulled.id })).card;
+    assert.deepEqual(c2.acceptance, []);
+    assert.deepEqual(c2.depends_on, []);
+  } finally { await cleanup(root); }
+});
+
+// Pins: `update_card` stops silently wiping a dependency list; and it refuses **before** any mutation
+test('update_card refuses a non-array depends_on and leaves the card UNCHANGED', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileCard({ project: 'demo', title: 'orig', depends_on: ['2026-0001'] });
+    const r = await board.updateCard({
+      project: 'demo', id, fields: { title: 'renamed', depends_on: '2026-0002' },
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'INVALID_STATE');
+    assert.equal(r.reason, 'depends_on must be an array of strings, or null');
+    const after = (await board.readCard({ project: 'demo', id })).card;
+    assert.equal(after.title, 'orig');
+    assert.deepEqual(after.depends_on, ['2026-0001']);
+  } finally { await cleanup(root); }
+});
+
+// Pins: item validation reaches the second call site, not just `file_card`'s
+test('update_card refuses a non-string depends_on item', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileCard({ project: 'demo', title: 'orig', depends_on: ['2026-0001'] });
+    const r = await board.updateCard({
+      project: 'demo', id, fields: { title: 'renamed', depends_on: ['2026-0001', 9] },
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'INVALID_STATE');
+    assert.equal(r.reason, 'depends_on[1]: must be a string');
+    const after = (await board.readCard({ project: 'demo', id })).card;
+    assert.equal(after.title, 'orig');
+    assert.deepEqual(after.depends_on, ['2026-0001']);
+  } finally { await cleanup(root); }
+});
+
+// Pins: the pre-existing clear behaviour survives the refusal
+test('update_card depends_on: null still clears the list', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileCard({ project: 'demo', title: 't', depends_on: ['2026-0001'] });
+    const r = await board.updateCard({ project: 'demo', id, fields: { depends_on: null } });
+    assert.equal(r.ok, true);
+    assert.deepEqual((await board.readCard({ project: 'demo', id })).card.depends_on, []);
+  } finally { await cleanup(root); }
+});
+
+// Pins: the third coercion in the same object literal
+test('file_card refuses a non-string goal', async () => {
+  await expectFileRefusal({ goal: 42 }, 'goal must be a string, or null');
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const r = await board.fileCard({ project: 'demo', title: 't', goal: null });
+    assert.equal(r.ok, true);
+    assert.equal((await board.readCard({ project: 'demo', id: r.id })).card.goal, '');
+  } finally { await cleanup(root); }
+});
+
 test('update_card acceptance: an edit writes NO logbook line', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
