@@ -273,6 +273,26 @@ function checkGoal(value) {
   return null;
 }
 
+// The card's epic slug, shape-checked at both mutators. `null` CLEARS a card's epic
+// at update_card — the same sentinel plan/priority/acceptance/owner use — and means
+// "file it unlinked" at file_card. Everything else must be a non-empty string; see
+// [[update-card-verbatim-fields]] for what each wrong shape did on disk pre-fix.
+// The typeof check is NOT redundant with the existence check below it: epicVisibleIn
+// stringifies its slug into a path template (src/store.js:175), so `['ep']` would
+// otherwise MATCH the real epic `ep` and be stored on the card as an array.
+// EXISTENCE is deliberately not checked here (it needs fs, and file_card defers it
+// into the lock): a well-formed slug naming no record is still EPIC_UNKNOWN. Slug
+// SYNTAX is not re-checked either — SLUG_RE is createEpic's gate, and a traversing
+// slug reaching path.join is tracked as board card `2026-0036`.
+// -> null when acceptable, else a fail().
+function checkEpic(value) {
+  if (value === null) return null;
+  if (typeof value !== 'string' || !value.trim()) {
+    return fail('INVALID_STATE', 'epic must be a non-empty string, or null to clear it');
+  }
+  return null;
+}
+
 // Pass 1 (validate against the PRE-EDIT snapshot, normalise into `checked` —
 // never mutates the caller's op objects, since `fields` is caller-owned) then
 // Pass 2 (build the result via a tombstone Set, never an in-place splice) —
@@ -491,9 +511,16 @@ export async function fileCard({ project, title, goal, acceptance, epic, depends
   if (deps.ok === false) return deps;
   const badGoal = checkGoal(goal);
   if (badGoal) return badGoal;
+  // Shape only here — file_card has no epic link to drop, so `null` is not a clear but
+  // simply "file it unlinked", identical to omitting the key (see `epic: epic ?? null`
+  // below). Existence stays inside the lock, the only fs-touching epic check.
+  if (epic !== undefined) {
+    const badEpic = checkEpic(epic);
+    if (badEpic) return badEpic;
+  }
   return withLock(project, () => {
     store.ensureProjectDirs(project);
-    if (epic && !epicVisibleIn(project, epic)) {
+    if (epic != null && !epicVisibleIn(project, epic)) {
       return fail('EPIC_UNKNOWN', `unknown epic: ${epic} (create it first with create_epic)`);
     }
     const id = store.nextId(project);
@@ -755,8 +782,13 @@ export async function updateCard({ project, id, fields } = {}) {
       const bad = checkGoal(fields.goal);
       if (bad) return bad;
     }
-    if (fields.epic && !epicVisibleIn(project, fields.epic)) {
-      return fail('EPIC_UNKNOWN', `unknown epic: ${fields.epic}`);
+    if ('epic' in fields) {
+      const bad = checkEpic(fields.epic);
+      if (bad) return bad;
+      // null is the clear; a slug must name a record visible to this project.
+      if (fields.epic !== null && !epicVisibleIn(project, fields.epic)) {
+        return fail('EPIC_UNKNOWN', `unknown epic: ${fields.epic}`);
+      }
     }
     // null clears the level back to unset (and round-trips: serialize then drops
     // the frontmatter key entirely). Anything else non-canonical is a caller bug.

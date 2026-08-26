@@ -2412,7 +2412,7 @@ test('update_card reports CARD_UNKNOWN, not INVALID_STATE, for a bad-shape field
     await board.fileCard({ project: 'demo', title: 'a real card' });
     // The newline title is here for the hoist mutant only — it PASSES either way (the id is
     // unknown on both trees), so it is not proof of the guard itself. T1/T2/T3 are.
-    for (const fields of [{ goal: 42 }, { title: 42 }, { title: 'a\npriority: CRITICAL' }]) {
+    for (const fields of [{ goal: 42 }, { title: 42 }, { title: 'a\npriority: CRITICAL' }, { epic: 0 }]) {
       const r = await board.updateCard({ project: 'demo', id: '2026-9999', fields });
       assert.equal(r.ok, false, JSON.stringify(fields));
       assert.equal(r.code, 'CARD_UNKNOWN', JSON.stringify(fields));
@@ -2447,6 +2447,177 @@ test('file_card and update_card word the title/goal refusal identically', async 
     assert.equal(filedGoal.reason, updatedGoal.reason);
     assert.equal(updatedGoal.reason, 'goal must be a string, or null');
   } finally { await cleanup(root); }
+});
+
+// ---- a falsy-but-present epic is a refusal, not a silent clear (2026-0032) ----
+//
+// The gate was `if (fields.epic && …)` — TRUTHINESS, not presence — so a falsy-but-present
+// value skipped validation, landed verbatim through UPDATABLE, and was dropped by serialize's
+// `if (task.epic)`, reading back as null: {ok:true} while the card was silently orphaned.
+//
+// Fixtures below each kill a distinct mutant of the gate:
+//   0 / false / NaN / '' / '   ' — `if (epic &&` restored, or the `.trim()` dropped
+//   42 / {} / ['ep']            — the typeof check dropped (['ep'] STRINGIFIES to a real slug)
+//   null                        — the clear sentinel, which must stay open
+const EPIC_REASON = 'epic must be a non-empty string, or null to clear it';
+const BAD_EPICS = [0, false, NaN, '', '   ', 42, {}, ['ep']];
+// Every falsy value that can be PRESENT under the `epic` key at update_card. `undefined` is
+// deliberately absent from BAD_EPICS above: file_card treats it as "omitted" on purpose (T5),
+// so only update_card's presence guard refuses it.
+const FALSY_EPICS = [0, false, NaN, '', '   ', undefined];
+
+// T1 — Pins: a PRESENT falsy epic is INVALID_STATE and the card's existing epic SURVIVES.
+// The re-read is the load-bearing half: pre-fix each of these answered {ok:true} and left
+// `epic: null` on disk. This is the card's own repro.
+//
+// `undefined` is the fixture that pins the PRESENCE GUARD ITSELF — it is the ONE input that
+// distinguishes `'epic' in fields` from a truthiness check or from `fields.epic != null`, and
+// `'epic' in {epic: undefined}` is `true`, so the object literal below genuinely exercises it.
+// Do NOT delete it as unreachable: it cannot arrive over the HTTP/JSON or MCP seam (JSON has no
+// `undefined`, and an absent key is correctly treated as omitted by both mutators), so this is an
+// IN-PROCESS / JS-caller invariant — `fields: {epic: someUnsetVar}` — and no routes test can cover
+// it. Without this case three separate mutations of the guard survive the whole suite.
+test('update_card refuses a falsy-but-present epic instead of silently clearing it', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    await board.createEpic({ project: 'demo', slug: 'ep', title: 'Epic' });
+    const { id } = await board.fileCard({ project: 'demo', title: 't', epic: 'ep' });
+    for (const bad of FALSY_EPICS) {
+      const label = bad === '' ? "''" : String(bad);
+      const r = await board.updateCard({ project: 'demo', id, fields: { epic: bad } });
+      assert.equal(r.ok, false, label);
+      assert.equal(r.code, 'INVALID_STATE', label);
+      assert.equal(r.reason, EPIC_REASON, label);
+      assert.equal((await board.readCard({ project: 'demo', id })).card.epic, 'ep', label);
+    }
+  } finally { await cleanup(root); }
+});
+
+// T2 — Pins: a truthy NON-STRING epic is a SHAPE refusal (INVALID_STATE), not EPIC_UNKNOWN, and
+// is never stored. `['ep']` is the sharp one: epicVisibleIn interpolates its slug into a path
+// template, so pre-fix the array MATCHED the real epic `ep` and was written onto the card.
+test('update_card refuses a truthy non-string epic (INVALID_STATE, not EPIC_UNKNOWN)', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    await board.createEpic({ project: 'demo', slug: 'ep', title: 'Epic' });
+    const { id } = await board.fileCard({ project: 'demo', title: 't', epic: 'ep' });
+    for (const bad of [42, {}, ['ep']]) {
+      const label = JSON.stringify(bad);
+      const r = await board.updateCard({ project: 'demo', id, fields: { epic: bad } });
+      assert.equal(r.ok, false, label);
+      assert.equal(r.code, 'INVALID_STATE', label);
+      assert.equal(r.reason, EPIC_REASON, label);
+      assert.equal((await board.readCard({ project: 'demo', id })).card.epic, 'ep', label);
+    }
+  } finally { await cleanup(root); }
+});
+
+// T3 — Pins: the refusal is scoped to a PRESENT wrong-shaped value. `null` is the ONE clear (and
+// round-trips: serialize drops the key, parse reads back null), an ordinary slug still sets it,
+// omitting the key is a no-op, and an unknown STRING slug is still EPIC_UNKNOWN with the card's
+// epic untouched. (Regression guard: passes on the unfixed tree by design.)
+test("update_card: null is the ONE way to clear a card's epic; a slug still sets it", async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    await board.createEpic({ project: 'demo', slug: 'ep', title: 'Epic' });
+    const { id } = await board.fileCard({ project: 'demo', title: 't', epic: 'ep' });
+    const read = async () => (await board.readCard({ project: 'demo', id })).card;
+
+    assert.equal((await board.updateCard({ project: 'demo', id, fields: { epic: null } })).ok, true);
+    assert.equal((await read()).epic, null);
+    assert.equal((await board.updateCard({ project: 'demo', id, fields: { epic: 'ep' } })).ok, true);
+    assert.equal((await read()).epic, 'ep');
+    // Omitting the key leaves the link alone.
+    assert.equal((await board.updateCard({ project: 'demo', id, fields: { title: 'renamed' } })).ok, true);
+    assert.equal((await read()).epic, 'ep');
+    // A well-formed slug naming no record stays EPIC_UNKNOWN — not reclassified as a shape refusal.
+    const unknown = await board.updateCard({ project: 'demo', id, fields: { epic: 'Missing' } });
+    assert.equal(unknown.ok, false);
+    assert.equal(unknown.code, 'EPIC_UNKNOWN');
+    assert.equal(unknown.reason, 'unknown epic: Missing');
+    assert.equal((await read()).epic, 'ep');
+  } finally { await cleanup(root); }
+});
+
+// T4 — Pins: the SHARED validator reaches the filing surface, and a refusal writes NO card.
+// expectFileRefusal's clause (d) is what kills "validate but write anyway": pre-fix the falsy
+// fixtures and `['ep']` all returned {ok:true} WITH an id and a card on disk.
+test('file_card refuses a falsy-but-present or non-string epic, and files no card', async () => {
+  for (const bad of BAD_EPICS) {
+    await expectFileRefusal({ epic: bad }, EPIC_REASON);
+  }
+});
+
+// T5 — Pins: the `epic !== undefined` presence guard at file_card. Dropping it would make
+// checkEpic(undefined) refuse EVERY ordinary file_card call, so this is what makes T4's
+// strictness safe. (Regression guard against the fix, not the bug: passes either way.)
+test('file_card accepts an omitted epic, an explicit null, and a live slug', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    await board.createEpic({ project: 'demo', slug: 'ep', title: 'Epic' });
+    const read = async (id) => (await board.readCard({ project: 'demo', id })).card;
+
+    const omitted = await board.fileCard({ project: 'demo', title: 'a' });
+    assert.equal(omitted.ok, true);
+    assert.equal((await read(omitted.id)).epic, null);
+
+    const explicitNull = await board.fileCard({ project: 'demo', title: 'b', epic: null });
+    assert.equal(explicitNull.ok, true);
+    assert.equal((await read(explicitNull.id)).epic, null); // null == "file it unlinked", same as omitting
+
+    const linked = await board.fileCard({ project: 'demo', title: 'c', epic: 'ep' });
+    assert.equal(linked.ok, true);
+    assert.equal((await read(linked.id)).epic, 'ep');
+  } finally { await cleanup(root); }
+});
+
+// T6 — Pins: the two mutators' epic refusal WORDING cannot drift. The literal-string assertion is
+// LOAD-BEARING: pre-fix both surfaces answer {ok:true} with `reason: undefined`, so the
+// `filed.reason === updated.reason` equality alone would pass on the unfixed tree and prove
+// nothing. The second assert is what makes this test fail pre-fix.
+test('file_card and update_card word the epic refusal identically', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileCard({ project: 'demo', title: 'orig' });
+    for (const bad of BAD_EPICS) {
+      const label = JSON.stringify(bad) ?? String(bad);
+      const filed = await board.fileCard({ project: 'demo', title: 't', epic: bad });
+      const updated = await board.updateCard({ project: 'demo', id, fields: { epic: bad } });
+      assert.equal(filed.reason, updated.reason, label);
+      assert.equal(updated.reason, EPIC_REASON, label);
+    }
+  } finally { await cleanup(root); }
+});
+
+// T7 — Pins the ORDERING: the epic shape refusal lands above resolvePlanForSet, the ONLY prologue
+// step with a side effect. A disk-only assertion cannot tell "validates early" from "validates
+// late" (`task` is an in-memory parse), so the un-ingested plan file is the discriminator.
+test("update_card's epic refusal precedes the plan ingest", async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  const src = outsideSources();
+  try {
+    await board.createEpic({ project: 'demo', slug: 'ep', title: 'Epic' });
+    const { id } = await board.fileCard({ project: 'demo', title: 'orig', epic: 'ep' });
+    const cardFile = path.join(stateDir('demo', 'triage'), `${id}.md`);
+    const before = fs.readFileSync(cardFile);
+    const planSrc = src.write('outside.md', '# ingest me');
+
+    const r = await board.updateCard({
+      project: 'demo', id,
+      fields: { epic: 0, priority: 'CRITICAL', plan: planSrc },
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'INVALID_STATE');
+    assert.equal(r.reason, EPIC_REASON);
+    assert.deepEqual(fs.readFileSync(cardFile), before); // byte-identical: nothing applied
+    assert.equal(fs.existsSync(ingestDest('demo', id)), false); // and nothing ingested
+  } finally { src.cleanup(); await cleanup(root); }
 });
 
 test('update_card acceptance: an edit writes NO logbook line', async () => {

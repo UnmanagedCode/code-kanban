@@ -190,6 +190,22 @@ test('PATCH /api/board/:project/cards/:id with a non-string goal is refused, not
   });
 });
 
+// Pins: the epic shape refusal reaches the GUI seam too. `{"epic": 0}` is reachable over plain
+// JSON, and pre-fix it answered 200 {ok:true} while the card's epic was silently dropped to null.
+test('PATCH /api/board/:project/cards/:id with a falsy-but-present epic is refused, not a silent clear', async () => {
+  await withServer(async ({ json }) => {
+    await json('/api/board/demo/epics', { method: 'POST', body: { slug: 'ep', title: 'Epic' } });
+    const id = (await json('/api/board/demo/cards', { method: 'POST', body: { title: 'u', epic: 'ep' } })).body.id;
+    const bad = await json(`/api/board/demo/cards/${id}`, { method: 'PATCH', body: { epic: 0 } });
+    assert.equal(bad.status, 200);
+    assert.equal(bad.body.ok, false);
+    assert.equal(bad.body.code, 'INVALID_STATE');
+    assert.equal(bad.body.reason, 'epic must be a non-empty string, or null to clear it');
+    const unchanged = await json(`/api/board/demo/cards/${id}`);
+    assert.equal(unchanged.body.card.epic, 'ep'); // the link survived the refusal
+  });
+});
+
 test('the GUI textarea round-trip keeps ticks: {op:done} then {replace} with the exact textarea payload', async () => {
   await withServer(async ({ json }) => {
     const id = (await json('/api/board/demo/cards', { method: 'POST', body: { title: 'u', acceptance: ['a', 'b'] } })).body.id;

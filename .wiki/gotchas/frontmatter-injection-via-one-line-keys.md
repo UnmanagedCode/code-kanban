@@ -66,7 +66,7 @@ file. Order as serialized.
 | `uid` | no (`crypto.randomUUID()`) | n/a | same as `id`. |
 | `title` | yes, both mutators | `checkTitle`: type, non-empty-after-trim, **and no `/[\n\r]/`** | no — closed by `2026-0033` |
 | `project` | yes, validated | `requireProject` + `projects.NAME_RE` | no |
-| `epic` | yes, both | `epicVisibleIn` (slug must name a record; `createEpic` gates slugs on `SLUG_RE` `^[a-z0-9._-]+$`) | no |
+| `epic` | yes, both | `checkEpic` (shape: non-empty string, or `null`) **then** `epicVisibleIn` (slug must name a record; `createEpic` gates slugs on `SLUG_RE` `^[a-z0-9._-]+$`) | no — but this row's safety rested on a gate that only ran for TRUTHY values until `2026-0032`; see [[update-card-verbatim-fields]] |
 | `priority` | yes, both | `isPriority` enum, exact match | no |
 | `created` / `updated` / `node` | no (`nowIso()`, `localNodeId()`) | n/a | no |
 | `owner` | yes at `update_card`, `move_card` | `/\s/` refused (covers `\n`/`\r`) | no |
