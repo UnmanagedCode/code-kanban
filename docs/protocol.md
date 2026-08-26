@@ -59,7 +59,7 @@ malformed envelope or an unexpected exception.
 
 ## Tool signatures
 
-- `file_card({project, title, goal?, acceptance?, epic?, depends_on?, category?, priority?, plan?}) → {ok, id[, plan]}` — card lands in `triage` by default; `category: 'todo'|'backlog'` lands it directly in that lane instead (mirrors triage's legal exits). An illegal `category` value → `INVALID_STATE`. `epic` must already exist → else `EPIC_UNKNOWN`. `priority` is one of `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` (advertised in the manifest as an `enum` with **no `default`**); omitted or `null` → unset; anything else → `INVALID_STATE`. `acceptance` and `depends_on` are each `string[]` — omitted or `null` for none; **anything else, including a non-array or a non-string item, is `INVALID_STATE`** naming the field (and the item's index), never silently coerced to an empty list. Each `acceptance` item runs through the **same** text validator as `update_card`'s `add`/`rename`/`replace` (no newline, non-empty after trim, stored trimmed — see the `acceptance` bullet below), reported as `acceptance[i]: …`. `title` must be a non-empty string containing **no newline or carriage return** (checked on the raw value; `title must not contain a newline`) and `goal` a string or `null` — the **same two validators** `update_card` uses, so the refusal strings are identical at both surfaces (see `update_card`'s `title`/`goal` bullet). `plan` takes the same three input forms as `update_card`'s `fields.plan` (below) and is resolved against the card's freshly-minted id, so an **absolute** path is copied to `plans/<id>.md`; the stored link comes back as `plan` in the result. All of these validate **before** the card is written, so a refusal consumes no id — including a `PLAN_UNKNOWN` plan: no card is created and the next `file_card` gets that same id.
+- `file_card({project, title, goal?, acceptance?, epic?, depends_on?, category?, priority?, plan?}) → {ok, id[, plan]}` — card lands in `triage` by default; `category: 'todo'|'backlog'` lands it directly in that lane instead (mirrors triage's legal exits). An illegal `category` value → `INVALID_STATE`. `epic` is omitted or `null` (filed unlinked), else a non-empty string that must already exist → `EPIC_UNKNOWN`; any other shape → `INVALID_STATE` through the same `checkEpic` `update_card` uses (see its `epic` bullet). `priority` is one of `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` (advertised in the manifest as an `enum` with **no `default`**); omitted or `null` → unset; anything else → `INVALID_STATE`. `acceptance` and `depends_on` are each `string[]` — omitted or `null` for none; **anything else, including a non-array or a non-string item, is `INVALID_STATE`** naming the field (and the item's index), never silently coerced to an empty list. Each `acceptance` item runs through the **same** text validator as `update_card`'s `add`/`rename`/`replace` (no newline, non-empty after trim, stored trimmed — see the `acceptance` bullet below), reported as `acceptance[i]: …`. `title` must be a non-empty string containing **no newline or carriage return** (checked on the raw value; `title must not contain a newline`) and `goal` a string or `null` — the **same two validators** `update_card` uses, so the refusal strings are identical at both surfaces (see `update_card`'s `title`/`goal` bullet). `plan` takes the same three input forms as `update_card`'s `fields.plan` (below) and is resolved against the card's freshly-minted id, so an **absolute** path is copied to `plans/<id>.md`; the stored link comes back as `plan` in the result. All of these validate **before** the card is written, so a refusal consumes no id — including a `PLAN_UNKNOWN` plan: no card is created and the next `file_card` gets that same id.
 - `log_card({project?, id?, entry}) → {ok}` — two paths, chosen by `id`:
   - **`id` omitted (worker path):** target card resolved server-side from `caller.sessionId`
     (the owned `in-progress` card; ties broken by most-recently-modified). `project` is
@@ -149,7 +149,7 @@ malformed envelope or an unexpected exception.
   resolve either way is not an error — the move still succeeds and `commit` is simply left unset.
   A re-land (`done→in-progress→done`) re-runs this resolution: a fresh sha overwrites the prior
   one, but an unresolvable re-land leaves the previously-stamped `commit` untouched.
-- `update_card({project, id, fields}) → {ok[, plan]}` (`plan` — the stored link, or `null` — is returned when `fields.plan` was part of the call) — `fields` ⊆ `{title, goal, epic, priority, depends_on, plan, owner, acceptance}`; other keys ignored. `fields.epic` must exist → else `EPIC_UNKNOWN`. Every field validates **before** any mutation, so a refusal leaves the card untouched.
+- `update_card({project, id, fields}) → {ok[, plan]}` (`plan` — the stored link, or `null` — is returned when `fields.plan` was part of the call) — `fields` ⊆ `{title, goal, epic, priority, depends_on, plan, owner, acceptance}`; other keys ignored. Every field validates **before** any mutation, so a refusal leaves the card untouched.
   - **`title`** / **`goal`** — the only two `fields` keys the generic loop assigns **verbatim**, and
     the two shape checks that run **first**, ahead of the `epic`/`priority` checks and ahead of
     `plan` resolution — so a call mixing a bad `title`/`goal` with an **absolute** `plan` path
@@ -163,6 +163,17 @@ malformed envelope or an unexpected exception.
     (`checkTitle`/`checkGoal` in `src/board.js`), so the refusal strings are byte-identical at the
     two surfaces: `title is required and must be a non-empty string`, `title must not contain a
     newline`, `goal must be a string, or null`.
+  - **`epic`** — a **non-empty string** naming an epic already visible to this project (its own
+    epic, or a cross-project epic covering it) → else `EPIC_UNKNOWN`; **or `null` to clear the
+    card's epic** (like `plan`/`priority`). Everything else → `INVALID_STATE`,
+    `epic must be a non-empty string, or null to clear it`: a non-string (`42`, `{}`, `['ep']`),
+    `''` or whitespace-only, and every **falsy-but-present** value (`0`, `false`, `NaN`,
+    `undefined`). Only an explicit `null` clears, so a dropped or wrong-typed value cannot silently
+    orphan a card from its epic. The shape check runs **first**, through the **same** validator
+    `file_card` uses (`checkEpic` in `src/board.js`), so the refusal string is byte-identical at the
+    two surfaces; existence stays the separate `EPIC_UNKNOWN` check. Slug *syntax* is not
+    re-validated here — `SLUG_RE` is `create_epic`'s gate, and a well-formed name that matches no
+    record is `EPIC_UNKNOWN`.
   - **`priority`** — one of `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, matched **exactly** (case-sensitive),
     **or `null` to clear the card back to unset** (like `plan`). Everything else — `''`, a lowercase
     spelling, a legacy integer, `undefined`, any unknown word → `INVALID_STATE`. Only an explicit
