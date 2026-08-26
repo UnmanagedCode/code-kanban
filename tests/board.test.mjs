@@ -2292,6 +2292,36 @@ test('a newline title cannot inject frontmatter keys at either surface', async (
   } finally { await cleanup(root); }
 });
 
+// T8 — Pins the ORDERING on the file_card side, the analog of T4 below. fileCard's
+// side-effecting step is resolvePlanForSet's fs.copyFileSync ingest INSIDE withLock
+// (src/board.js) — NOT store.nextId, which is non-destructive (the id floor is bumped by
+// writeCard). Moving checkTitle below that ingest still refuses with the same reason but
+// leaves an ORPHAN plan file behind for an ok:false call, and only this assertion sees it.
+// Shaped on the plans DIRECTORY rather than T4's ingestDest(project, id) because a refused
+// file_card mints no card, so there is no id to name the destination with — do not
+// "simplify" this into the update_card form.
+test("file_card's newline-title refusal precedes the plan ingest", async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  const src = outsideSources();
+  try {
+    await board.createEpic({ project: 'demo', slug: 'ep', title: 'Epic' });
+    const listPlans = () => (fs.existsSync(plansDir('demo')) ? fs.readdirSync(plansDir('demo')) : []);
+    const before = listPlans();
+    const planSrc = src.write('outside.md', '# ingest me');
+
+    const r = await board.fileCard({
+      project: 'demo', title: 'a\npriority: CRITICAL', epic: 'ep', priority: 'CRITICAL', plan: planSrc,
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'INVALID_STATE');
+    assert.equal(r.reason, 'title must not contain a newline');
+    assert.equal(r.id, undefined);
+    assert.deepEqual(listPlans(), before); // nothing ingested for a refused call
+    assert.equal((await board.listCards({ project: 'demo' })).cards.length, 0);
+  } finally { src.cleanup(); await cleanup(root); }
+});
+
 // T4 — Pins the ORDERING: the newline refusal lands above resolvePlanForSet, the ONLY prologue
 // step with a side effect. A disk-only assertion cannot tell "validates early" from "validates
 // late" (`task` is an in-memory parse), so the un-ingested plan file is the discriminator.
@@ -2391,7 +2421,10 @@ test('update_card reports CARD_UNKNOWN, not INVALID_STATE, for a bad-shape field
   } finally { await cleanup(root); }
 });
 
-// Pins: the two mutators share ONE validator, so their refusal strings cannot drift
+// Pins: the two mutators' refusal WORDING cannot drift — file_card and update_card answer a
+// bad title/goal with byte-identical reason strings. (That they share ONE validator is true by
+// construction — both call checkTitle — but it is established by reading board.js, not here: two
+// private per-surface checks with identical wording would pass this test too.)
 test('file_card and update_card word the title/goal refusal identically', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
