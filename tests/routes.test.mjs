@@ -171,6 +171,25 @@ test('POST /api/board/:project/cards with a non-array acceptance is refused, not
   });
 });
 
+// Pins: the refusal reaches the GUI seam as an {ok:false} envelope, upholding src/routes.js's
+// "board.js never throws for a domain outcome" invariant — a TypeError out of the file lock
+// would surface as a 500 from wrap()
+test('PATCH /api/board/:project/cards/:id with a non-string goal is refused, not a 500', async () => {
+  await withServer(async ({ json }) => {
+    const id = (await json('/api/board/demo/cards', { method: 'POST', body: { title: 'u', goal: 'because' } })).body.id;
+    const bad = await json(`/api/board/demo/cards/${id}`, {
+      method: 'PATCH', body: { title: 'renamed', goal: 42 },
+    });
+    assert.equal(bad.status, 200);
+    assert.equal(bad.body.ok, false);
+    assert.equal(bad.body.code, 'INVALID_STATE');
+    assert.equal(bad.body.reason, 'goal must be a string, or null');
+    const unchanged = await json(`/api/board/demo/cards/${id}`);
+    assert.equal(unchanged.body.card.title, 'u'); // the accompanying rename did NOT land either
+    assert.equal(unchanged.body.card.goal, 'because');
+  });
+});
+
 test('the GUI textarea round-trip keeps ticks: {op:done} then {replace} with the exact textarea payload', async () => {
   await withServer(async ({ json }) => {
     const id = (await json('/api/board/demo/cards', { method: 'POST', body: { title: 'u', acceptance: ['a', 'b'] } })).body.id;
