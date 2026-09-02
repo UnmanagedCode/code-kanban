@@ -252,8 +252,12 @@ A `summary` is `{id, title, state, project, epic, priority, owner, depends_on, c
 (`plan` is the link, or `null`; `priority` is one of the four levels, or `null` when the card is
 unset — i.e. nobody has judged it). Card
 lists (`list_cards`, `read_epic`) are ordered **column (`STATES` order) → priority
-(`CRITICAL`→`HIGH`→`MEDIUM`→`LOW`→unset) → id ascending**; unset ranks after every judged level, so
-an unjudged card never outranks a judged one. `list_cards`' MCP text rendering of a `summary` prints
+(`CRITICAL`→`HIGH`→`MEDIUM`→`LOW`→unset) → card number descending (newest first)**; unset ranks
+after every judged level, so an unjudged card never outranks a judged one. The id tiebreak is
+**numeric** on the `YYYY-NNNN` shape — year, then number — not lexicographic, because the number is
+not a fixed width (`2026-10000` is a valid id and sorts ahead of `2026-9999`). An id **not** matching
+that shape (only reachable from a peer that minted it) sorts after every id that does, and such ids
+are ordered among themselves by reverse string compare. `list_cards`' MCP text rendering of a `summary` prints
 `id`, `priority`, `title` and the date-only `created`; `epic`/`owner`/`depends_on`/`plan` print only
 when set (never as a bare `epic —`); `project` and `state` are never repeated per row — the
 listing's header and per-lane group heading already carry them. A `rollup`

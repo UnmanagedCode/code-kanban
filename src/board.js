@@ -463,26 +463,59 @@ function summary(t) {
   };
 }
 
-// Newest-first id compare — sortCards' tiebreak. NUMERIC on the `YYYY-NNNN`
-// shape rather than a reversed string compare: `padStart(4, '0')`
-// (src/store.js:91-104) pads but never truncates, so card 10000 mints
-// `2026-10000`, which a string compare would place BEFORE `2026-9999`.
-// The year is compared first and on its own so an id whose year and number
+// Newest-first id compare — sortCards' tiebreak. Every id is first reduced to a
+// CANONICAL key (`idSortKey`) and the keys are then compared field by field.
+// That structure is the point: selecting a different comparison key PER PAIR
+// makes a comparator intransitive, because two keys can disagree about the same
+// pair, and Array.prototype.sort's output then depends on the input order — here
+// readdirSync order (src/store.js:154-172), which shifts as cards come and go.
+// The same lane would render differently run to run, and differently across the
+// GUI, list_cards and read_epic.
+//
+// Field 1 is the SHAPE BUCKET: an id matching `YYYY-NNNN` (bucket 0) sorts
+// ahead of every id that does not (bucket 1) — a real card outranks a malformed
+// one, and the two groups never interleave. The bucket is what keeps the order
+// TOTAL. Without it, a malformed id sorting stringwise BETWEEN a conforming
+// pair whose numeric and lexicographic orders disagree closes a cycle:
+// '2026-10000' < '2026-9999' numerically, '2026-9999' < '2026-5a' as strings,
+// and '2026-5a' < '2026-10000' as strings too.
+//
+// Within bucket 0, fields 2-3 are year then number, both DESC and both NUMERIC.
+// `padStart(4, '0')` (src/store.js:91-104) pads but never truncates, so card
+// 10000 mints `2026-10000`, which a string compare would place BEFORE
+// `2026-9999`. The year is a field of its own so an id whose year and number
 // DISAGREE still answers by creation year — impossible from our own allocator
 // (the sequence never resets on rollover, src/store.js:86-90) but reachable
 // from a sync peer running its own counter, since any non-empty id string is
-// accepted on the wire (src/board.js:1416). It is also what makes readEpic's
+// accepted on the wire (src/board.js:1443). It is also what makes readEpic's
 // cross-project listing, which flat-maps independent per-project counters,
 // come out newest-first rather than by whichever counter ran further.
-// An id that doesn't match the shape falls back to a reversed string compare,
-// so the order stays total and deterministic rather than collapsing to a tie.
+//
+// Within bucket 1, field 4 is a reversed string compare, so the order is total
+// and deterministic there too rather than collapsing to a tie. The unused
+// fields are neutral in each bucket (bucket 0 carries raw:'', bucket 1 carries
+// year/num 0), so one comparison chain serves both.
 const ID_SHAPE = /^(\d+)-(\d+)$/;
-function compareIdDesc(a, b) {
-  const ma = ID_SHAPE.exec(a);
-  const mb = ID_SHAPE.exec(b);
-  if (!ma || !mb) return b.localeCompare(a);
-  return Number(mb[1]) - Number(ma[1]) || Number(mb[2]) - Number(ma[2]);
+function idSortKey(id) {
+  const m = ID_SHAPE.exec(id);
+  return m
+    ? { bucket: 0, year: Number(m[1]), num: Number(m[2]), raw: '' }
+    : { bucket: 1, year: 0, num: 0, raw: id };
 }
+function compareIdDesc(a, b) {
+  const ka = idSortKey(a);
+  const kb = idSortKey(b);
+  return ka.bucket - kb.bucket
+    || kb.year - ka.year
+    || kb.num - ka.num
+    || kb.raw.localeCompare(ka.raw);
+}
+
+// Seam for tests: transitivity is a property of the COMPARATOR over an input
+// ORDER, and no public read lets a caller choose that order (listCards' is
+// readdirSync's, readEpic's is the epic's member list). Exported so the
+// permutation test can sort the same set every which way and require one answer.
+export const _compareIdDesc = compareIdDesc;
 
 // Ordering: by column, then priority (CRITICAL first, LOW last, unset after
 // LOW), then card number DESCENDING — newest first within a level. priorityRank

@@ -111,9 +111,11 @@ so it shares the same `board.js` service layer and per-project mutex as the MCP 
   The board is **viewport-height** and **each lane scrolls on its own**: a long `done` lane no
   longer stretches the page past every other lane header. Lane headers (name + count) stay visible
   while their cards scroll, each lane keeps its own offset, and an offset survives a
-  refresh/move/edit re-render. On a **short or narrow** window (below 980px the grid reflows to two
-  lanes per row) the board falls back to its content height and the page scrolls again, so every
-  card stays reachable.
+  refresh/move/edit re-render. Two window shapes fall back to page scrolling, differently: on a
+  **narrow** window (below 980px, where the grid reflows to two lanes per row) the board reverts to
+  its content height and the lanes stop scrolling internally; on a **short** but wide window the
+  board stops shrinking at its minimum height, so the lanes keep clipping and scrolling internally
+  and the page scrolls to reach the lower part of the board. Either way every card stays reachable.
 - **Card detail** — opens to a read-only view: Goal, Priority (always stated, reading `unset` when
   the card is unjudged rather than showing blank),
   Acceptance checklist, the

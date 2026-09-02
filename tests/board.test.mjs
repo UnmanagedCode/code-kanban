@@ -1738,6 +1738,88 @@ test('an id with no numeric suffix still sorts deterministically', async () => {
   } finally { await cleanup(root); }
 });
 
+test('a malformed id sorts AFTER every well-formed one, never between them', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    store.ensureProjectDirs('demo');
+    // The MIXED path. compareIdDesc's leading key is a shape BUCKET: a card
+    // whose id matches `YYYY-NNNN` outranks one whose id does not, and the two
+    // groups never interleave. That is not cosmetic — it is what keeps the
+    // order total. Selecting the numeric key for a conforming pair and the
+    // string key for a mixed pair (which is what this comparator used to do)
+    // is INTRANSITIVE, because the two keys disagree whenever the conforming
+    // pair's digit widths differ. Newest-first, with the old per-pair keys:
+    //     '2026-10000' before '2026-9999'  — numeric key, 10000 > 9999
+    //     '2026-9999'  before '2026-5a'    — string key, '9' > '5'
+    //     '2026-5a'    before '2026-10000' — string key, '5' > '1'
+    // — a cycle, after which Array.prototype.sort's answer depends on the
+    // input order, i.e. on readdirSync (src/store.js:154-172). All one
+    // priority level, so the id key is the only thing deciding.
+    for (const id of ['2026-0007', '2026-9999', '2026-10000', '2026-5a', 'zz-legacy']) {
+      seedRawCard('demo', 'todo', { id, priorityLine: 'HIGH' });
+    }
+
+    const ids = (await board.listCards({ project: 'demo' })).cards.map((t) => t.id);
+    assert.deepEqual(ids, ['2026-10000', '2026-9999', '2026-0007', 'zz-legacy', '2026-5a']);
+    // Stated as its own claim so a failure names the broken invariant rather
+    // than just printing two arrays: the bucket boundary is a clean split.
+    const shaped = (id) => /^\d+-\d+$/.test(id);
+    assert.equal(ids.filter(shaped).length, 3);
+    assert.deepEqual(ids.map(shaped), [true, true, true, false, false],
+      'well-formed ids must form one leading run — a malformed id must never land between two of them');
+  } finally { await cleanup(root); }
+});
+
+// Exhaustive property test on the comparator itself. Transitivity is a property
+// of the comparator over an INPUT ORDER, and no public read lets a caller pick
+// that order (listCards takes readdirSync's, readEpic takes the epic's member
+// list), so this drives board._compareIdDesc directly — the seam exists for
+// exactly this. The set is the shipped intransitivity, reduced: two conforming
+// ids whose numeric and lexicographic orders DISAGREE, a malformed id that
+// sorted stringwise between them, an ordinary id, and a second malformed id.
+test('compareIdDesc is a strict weak ordering: same answer for every input order', async () => {
+  const IDS = ['2026-10000', '2026-9999', '2026-0007', '2026-5a', 'zz-legacy'];
+  const EXPECTED = ['2026-10000', '2026-9999', '2026-0007', 'zz-legacy', '2026-5a'];
+  const cmp = (a, b) => Math.sign(board._compareIdDesc(a, b));
+
+  // 1. Antisymmetry, and no two DISTINCT ids tie: a tie would hand the order
+  //    back to the input, which is the non-answer this test exists to exclude.
+  for (const a of IDS) {
+    assert.equal(cmp(a, a), 0, `${a} must equal itself`);
+    for (const b of IDS) {
+      if (a === b) continue;
+      assert.notEqual(cmp(a, b), 0, `${a} and ${b} must not tie`);
+      assert.equal(cmp(a, b), -cmp(b, a), `asymmetry broken for ${a} / ${b}`);
+    }
+  }
+
+  // 2. Transitivity over every ordered triple — the property the old
+  //    per-pair key selection violated. The reviewer's witness triple
+  //    ('2026-10000', '2026-9999', '2026-5a') is one of these 60.
+  for (const a of IDS) {
+    for (const b of IDS) {
+      for (const c of IDS) {
+        if (cmp(a, b) < 0 && cmp(b, c) < 0) {
+          assert.ok(cmp(a, c) < 0, `intransitive: ${a} < ${b} < ${c} but not ${a} < ${c}`);
+        }
+      }
+    }
+  }
+
+  // 3. And the observable consequence: all 120 input permutations must sort to
+  //    the SAME sequence. Under the old comparator this set produced three
+  //    different answers depending on the order it arrived in.
+  const permute = (xs) => (xs.length <= 1 ? [xs] : xs.flatMap(
+    (x, i) => permute([...xs.slice(0, i), ...xs.slice(i + 1)]).map((rest) => [x, ...rest]),
+  ));
+  const perms = permute(IDS);
+  assert.equal(perms.length, 120);
+  for (const p of perms) {
+    assert.deepEqual([...p].sort(board._compareIdDesc), EXPECTED, `input order ${p.join(',')}`);
+  }
+});
+
 test('unset cards sort newest-first among themselves but still below a deliberate LOW', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
@@ -1761,7 +1843,7 @@ test('read_epic lists an epic\'s cards newest-first too', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
-    // sortCards' SECOND call site (src/board.js:1557). It is otherwise unpinned
+    // sortCards' SECOND call site (src/board.js:1584). It is otherwise unpinned
     // for the id key, and the two surfaces disagreeing would be invisible from
     // list_cards' tests alone.
     assert.equal((await board.createEpic({ project: 'demo', slug: 'auth', title: 'Auth' })).ok, true);
