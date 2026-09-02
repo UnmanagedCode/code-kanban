@@ -1763,18 +1763,30 @@ test('a malformed id sorts AFTER every well-formed one, never between them', asy
     // is redundant — it only decides for a conforming id that is ALSO 0/0,
     // which both the shape regex and the wire accept. Drop field 1 and
     // '2026-5a' sorts BEFORE '0000-0000', breaking the never-interleave rule.
-    for (const id of ['2026-0007', '2026-9999', '2026-10000', '0000-0000', '2026-5a', 'zz-legacy']) {
+    //
+    // `999-9999` makes the YEAR field's numeric-ness load-bearing. Every other
+    // fixture in this file uses a 4-digit year, and for equal-width years a
+    // string compare and a numeric one agree — so a stringly-compared year
+    // survives them all. Across DIFFERING widths they diverge: '999' > '2026'
+    // as a string, so a short-year id would lead the lane despite being the
+    // oldest. Same defect class as '2026-9999' vs '2026-10000', one field over,
+    // and reachable by the same route — a peer minting its own ids.
+    for (const id of ['2026-0007', '2026-9999', '2026-10000', '0000-0000', '999-9999', '2026-5a', 'zz-legacy']) {
       seedRawCard('demo', 'todo', { id, priorityLine: 'HIGH' });
     }
 
     const ids = (await board.listCards({ project: 'demo' })).cards.map((t) => t.id);
-    assert.deepEqual(ids, ['2026-10000', '2026-9999', '2026-0007', '0000-0000', 'zz-legacy', '2026-5a']);
+    assert.deepEqual(ids, ['2026-10000', '2026-9999', '2026-0007', '999-9999', '0000-0000', 'zz-legacy', '2026-5a']);
     // Stated as its own claim so a failure names the broken invariant rather
     // than just printing two arrays: the bucket boundary is a clean split.
     const shaped = (id) => /^\d+-\d+$/.test(id);
-    assert.equal(ids.filter(shaped).length, 4);
-    assert.deepEqual(ids.map(shaped), [true, true, true, true, false, false],
+    assert.equal(ids.filter(shaped).length, 5);
+    assert.deepEqual(ids.map(shaped), [true, true, true, true, true, false, false],
       'well-formed ids must form one leading run — a malformed id must never land between two of them');
+    // And the year key specifically: a short year loses to every 4-digit one no
+    // matter how large its own number is (999-9999 holds the joint-highest).
+    assert.ok(ids.indexOf('2026-0007') < ids.indexOf('999-9999'),
+      'the year must be compared NUMERICALLY across differing widths — 999 is older than 2026');
   } finally { await cleanup(root); }
 });
 
@@ -1789,9 +1801,12 @@ test('a malformed id sorts AFTER every well-formed one, never between them', asy
 // and therefore the only place the shape-bucket field decides on its own (the
 // neutral year:0/num:0 a malformed key carries makes the bucket redundant for
 // every other conforming id). Without field 1, '2026-5a' sorts ahead of it.
+// `999-9999` is the differing-WIDTH year: '999' > '2026' as a string but 999 <
+// 2026 as a number, so it is the only id here that tells a numeric year field
+// from a stringly-compared one.
 test('compareIdDesc is a strict weak ordering: same answer for every input order', async () => {
-  const IDS = ['2026-10000', '2026-9999', '2026-0007', '0000-0000', '2026-5a', 'zz-legacy'];
-  const EXPECTED = ['2026-10000', '2026-9999', '2026-0007', '0000-0000', 'zz-legacy', '2026-5a'];
+  const IDS = ['2026-10000', '2026-9999', '2026-0007', '0000-0000', '999-9999', '2026-5a', 'zz-legacy'];
+  const EXPECTED = ['2026-10000', '2026-9999', '2026-0007', '999-9999', '0000-0000', 'zz-legacy', '2026-5a'];
   const cmp = (a, b) => Math.sign(board._compareIdDesc(a, b));
 
   // 1. Antisymmetry, and no two DISTINCT ids tie: a tie would hand the order
@@ -1807,7 +1822,7 @@ test('compareIdDesc is a strict weak ordering: same answer for every input order
 
   // 2. Transitivity over every ordered triple — the property the old
   //    per-pair key selection violated. The reviewer's witness triple
-  //    ('2026-10000', '2026-9999', '2026-5a') is one of these 120.
+  //    ('2026-10000', '2026-9999', '2026-5a') is one of these 343.
   for (const a of IDS) {
     for (const b of IDS) {
       for (const c of IDS) {
@@ -1818,14 +1833,14 @@ test('compareIdDesc is a strict weak ordering: same answer for every input order
     }
   }
 
-  // 3. And the observable consequence: all 720 input permutations must sort to
+  // 3. And the observable consequence: all 5040 input permutations must sort to
   //    the SAME sequence. Under the old comparator this set produced three
   //    different answers depending on the order it arrived in.
   const permute = (xs) => (xs.length <= 1 ? [xs] : xs.flatMap(
     (x, i) => permute([...xs.slice(0, i), ...xs.slice(i + 1)]).map((rest) => [x, ...rest]),
   ));
   const perms = permute(IDS);
-  assert.equal(perms.length, 720);
+  assert.equal(perms.length, 5040);
   for (const p of perms) {
     assert.deepEqual([...p].sort(board._compareIdDesc), EXPECTED, `input order ${p.join(',')}`);
   }
