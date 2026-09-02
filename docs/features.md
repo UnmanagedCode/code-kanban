@@ -134,7 +134,9 @@ so it shares the same `board.js` service layer and per-project mutex as the MCP 
   `{op:'done'}` over MCP for that, so the read-view checkboxes stay `disabled`.
 - **Epics** — rollup table; "open" reads one epic (+ its cards). New-epic form upserts by slug; its
   "Span projects" multi-select makes a cross-project epic when ≥2 are picked (else project-scoped).
-  Cross-project epics show a badge + member list; their detail lists each card's project.
+  Cross-project epics show a badge + member list; their detail lists each card's project. The
+  rollup pane is capped at ~25% of the viewport height with its own scroller (a short list just
+  sizes to content), so a project with many epics can no longer push the board down.
 - **New card** — files into `triage` (acceptance is one line per line → checkboxes), with a
   Priority select that opens on `— unset —` so the form asks for a level without pre-answering it
   (matching `file_card`: a pre-selected `MEDIUM` would fabricate a judgement the same way a
