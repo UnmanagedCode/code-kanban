@@ -1756,17 +1756,24 @@ test('a malformed id sorts AFTER every well-formed one, never between them', asy
     // — a cycle, after which Array.prototype.sort's answer depends on the
     // input order, i.e. on readdirSync (src/store.js:154-172). All one
     // priority level, so the id key is the only thing deciding.
-    for (const id of ['2026-0007', '2026-9999', '2026-10000', '2026-5a', 'zz-legacy']) {
+    //
+    // `0000-0000` is in the pool to make the BUCKET FIELD ITSELF load-bearing.
+    // A malformed key carries year:0/num:0, so for any conforming id with a
+    // year > 0 those neutral fields already produce the grouping and the bucket
+    // is redundant — it only decides for a conforming id that is ALSO 0/0,
+    // which both the shape regex and the wire accept. Drop field 1 and
+    // '2026-5a' sorts BEFORE '0000-0000', breaking the never-interleave rule.
+    for (const id of ['2026-0007', '2026-9999', '2026-10000', '0000-0000', '2026-5a', 'zz-legacy']) {
       seedRawCard('demo', 'todo', { id, priorityLine: 'HIGH' });
     }
 
     const ids = (await board.listCards({ project: 'demo' })).cards.map((t) => t.id);
-    assert.deepEqual(ids, ['2026-10000', '2026-9999', '2026-0007', 'zz-legacy', '2026-5a']);
+    assert.deepEqual(ids, ['2026-10000', '2026-9999', '2026-0007', '0000-0000', 'zz-legacy', '2026-5a']);
     // Stated as its own claim so a failure names the broken invariant rather
     // than just printing two arrays: the bucket boundary is a clean split.
     const shaped = (id) => /^\d+-\d+$/.test(id);
-    assert.equal(ids.filter(shaped).length, 3);
-    assert.deepEqual(ids.map(shaped), [true, true, true, false, false],
+    assert.equal(ids.filter(shaped).length, 4);
+    assert.deepEqual(ids.map(shaped), [true, true, true, true, false, false],
       'well-formed ids must form one leading run — a malformed id must never land between two of them');
   } finally { await cleanup(root); }
 });
@@ -1777,10 +1784,14 @@ test('a malformed id sorts AFTER every well-formed one, never between them', asy
 // list), so this drives board._compareIdDesc directly — the seam exists for
 // exactly this. The set is the shipped intransitivity, reduced: two conforming
 // ids whose numeric and lexicographic orders DISAGREE, a malformed id that
-// sorted stringwise between them, an ordinary id, and a second malformed id.
+// sorted stringwise between them, an ordinary id, and a second malformed id —
+// plus `0000-0000`, the one conforming id whose year and number are BOTH zero
+// and therefore the only place the shape-bucket field decides on its own (the
+// neutral year:0/num:0 a malformed key carries makes the bucket redundant for
+// every other conforming id). Without field 1, '2026-5a' sorts ahead of it.
 test('compareIdDesc is a strict weak ordering: same answer for every input order', async () => {
-  const IDS = ['2026-10000', '2026-9999', '2026-0007', '2026-5a', 'zz-legacy'];
-  const EXPECTED = ['2026-10000', '2026-9999', '2026-0007', 'zz-legacy', '2026-5a'];
+  const IDS = ['2026-10000', '2026-9999', '2026-0007', '0000-0000', '2026-5a', 'zz-legacy'];
+  const EXPECTED = ['2026-10000', '2026-9999', '2026-0007', '0000-0000', 'zz-legacy', '2026-5a'];
   const cmp = (a, b) => Math.sign(board._compareIdDesc(a, b));
 
   // 1. Antisymmetry, and no two DISTINCT ids tie: a tie would hand the order
@@ -1796,7 +1807,7 @@ test('compareIdDesc is a strict weak ordering: same answer for every input order
 
   // 2. Transitivity over every ordered triple — the property the old
   //    per-pair key selection violated. The reviewer's witness triple
-  //    ('2026-10000', '2026-9999', '2026-5a') is one of these 60.
+  //    ('2026-10000', '2026-9999', '2026-5a') is one of these 120.
   for (const a of IDS) {
     for (const b of IDS) {
       for (const c of IDS) {
@@ -1807,14 +1818,14 @@ test('compareIdDesc is a strict weak ordering: same answer for every input order
     }
   }
 
-  // 3. And the observable consequence: all 120 input permutations must sort to
+  // 3. And the observable consequence: all 720 input permutations must sort to
   //    the SAME sequence. Under the old comparator this set produced three
   //    different answers depending on the order it arrived in.
   const permute = (xs) => (xs.length <= 1 ? [xs] : xs.flatMap(
     (x, i) => permute([...xs.slice(0, i), ...xs.slice(i + 1)]).map((rest) => [x, ...rest]),
   ));
   const perms = permute(IDS);
-  assert.equal(perms.length, 120);
+  assert.equal(perms.length, 720);
   for (const p of perms) {
     assert.deepEqual([...p].sort(board._compareIdDesc), EXPECTED, `input order ${p.join(',')}`);
   }
