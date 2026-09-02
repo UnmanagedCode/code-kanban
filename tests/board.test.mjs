@@ -1607,22 +1607,25 @@ test('list_cards sorts CRITICAL first, LOW last, and UNSET after LOW', async () 
   useProjects(['demo']);
   try {
     // Filed so that ID order CONTRADICTS priority order: ids ascend 0001..0005
-    // while ranks descend. An implementation that dropped the priority key (or
-    // reversed it) cannot produce the expected sequence by falling through to
-    // the id tiebreak.
+    // as ranks descend, and the tiebreak is newest-id-FIRST — so the id-only
+    // order is the exact REVERSE of the expected sequence. An implementation
+    // that dropped the priority key cannot produce the expected sequence by
+    // falling through to the id tiebreak.
     //
-    // The UNSET card is filed FIRST, so it holds the LOWEST id. That is the
-    // point: it must still come last. Two distinct mutants die here —
+    // The UNSET card is filed LAST, so it holds the HIGHEST id. That is the
+    // point: the newest-first tiebreak would float it to the TOP, and it must
+    // still come last. Two distinct mutants die here —
     //   * "unset ranks first"  -> it leads (its old integer-0 behaviour)
-    //   * "unset ranks MEDIUM" -> it lands ahead of `low`, because on a rank tie
-    //                             with `med` its smaller id wins the tiebreak.
-    const unset = (await board.fileCard({ project: 'demo', title: 'u' })).id;
-    const low = (await board.fileCard({ project: 'demo', title: 'l', priority: 'LOW' })).id;
-    const med = (await board.fileCard({ project: 'demo', title: 'm', priority: 'MEDIUM' })).id;
-    const high = (await board.fileCard({ project: 'demo', title: 'h', priority: 'HIGH' })).id;
+    //   * "unset ranks MEDIUM" -> it lands ahead of `med`, because on a rank tie
+    //                             with `med` its larger id wins the tiebreak.
     const crit = (await board.fileCard({ project: 'demo', title: 'c', priority: 'CRITICAL' })).id;
-    // ids really do ascend in filing order, so the tiebreak genuinely opposes us
-    assert.deepEqual([unset, low, med, high, crit].sort(), [unset, low, med, high, crit]);
+    const high = (await board.fileCard({ project: 'demo', title: 'h', priority: 'HIGH' })).id;
+    const med = (await board.fileCard({ project: 'demo', title: 'm', priority: 'MEDIUM' })).id;
+    const low = (await board.fileCard({ project: 'demo', title: 'l', priority: 'LOW' })).id;
+    const unset = (await board.fileCard({ project: 'demo', title: 'u' })).id;
+    // ids really do ascend in filing order, so the DESCENDING id tiebreak yields
+    // the exact reverse of the expected listing — it genuinely opposes us.
+    assert.deepEqual([crit, high, med, low, unset].sort(), [crit, high, med, low, unset]);
 
     const ids = (await board.listCards({ project: 'demo' })).cards.map((t) => t.id);
     assert.deepEqual(ids, [crit, high, med, low, unset]);
@@ -1633,7 +1636,7 @@ test('list_cards sorts CRITICAL first, LOW last, and UNSET after LOW', async () 
   } finally { await cleanup(root); }
 });
 
-test('column order dominates priority; id breaks a priority tie', async () => {
+test('column order dominates priority; newest id breaks a priority tie', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
@@ -1642,18 +1645,241 @@ test('column order dominates priority; id breaks a priority tie', async () => {
     const critDone = (await board.fileCard({ project: 'demo', title: 'crit/done', priority: 'CRITICAL', category: 'todo' })).id;
     await board.moveCard({ project: 'demo', id: critDone, to: 'in-progress' });
     await board.moveCard({ project: 'demo', id: critDone, to: 'done' });
-    // Two UNSET cards in one column: ascending id decides.
+    // Two UNSET cards in one column: the NEWER (higher) id decides.
     const u1 = (await board.fileCard({ project: 'demo', title: 'u1', category: 'todo' })).id;
     const u2 = (await board.fileCard({ project: 'demo', title: 'u2', category: 'todo' })).id;
 
     const ids = (await board.listCards({ project: 'demo' })).cards.map((t) => t.id);
-    // lowTodo leads its column despite a later id — unset does not outrank LOW.
-    assert.deepEqual(ids, [lowTodo, u1, u2, critDone]);
+    // lowTodo leads its column despite the OLDEST id — unset does not outrank LOW.
+    assert.deepEqual(ids, [lowTodo, u2, u1, critDone]);
     assert.ok(ids.indexOf(lowTodo) < ids.indexOf(critDone), 'column must dominate priority');
-    assert.ok(ids.indexOf(u1) < ids.indexOf(u2), 'equal priority falls through to ascending id');
+    assert.ok(ids.indexOf(u2) < ids.indexOf(u1), 'equal priority falls through to DESCENDING id — newest first');
     // An UNSET card in an earlier column still precedes a CRITICAL one further
     // right: column dominance holds for unset too, not just for judged levels.
     assert.ok(ids.indexOf(u1) < ids.indexOf(critDone), 'column must dominate unset as well');
+  } finally { await cleanup(root); }
+});
+
+// ---- the newest-first tiebreak (2026-0037) -----------------------------
+//
+// Within one priority level the id key decides, and its direction is NEWEST
+// FIRST. These pin the direction, the fact that the compare is NUMERIC rather
+// than lexicographic, the year clause, the non-conforming-id fallback, and that
+// the reversed key still never outranks the priority key.
+
+test('equal priority falls through to the newest card first', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    // Three cards at ONE level, so the priority key is a total tie and the id
+    // key is the only thing left. Filed oldest-to-newest; the listing must be
+    // the exact reverse. An ascending tiebreak returns filing order and dies.
+    const first = (await board.fileCard({ project: 'demo', title: 'first', priority: 'HIGH' })).id;
+    const second = (await board.fileCard({ project: 'demo', title: 'second', priority: 'HIGH' })).id;
+    const third = (await board.fileCard({ project: 'demo', title: 'third', priority: 'HIGH' })).id;
+
+    const ids = (await board.listCards({ project: 'demo' })).cards.map((t) => t.id);
+    assert.deepEqual(ids, [third, second, first]);
+  } finally { await cleanup(root); }
+});
+
+test('the newest-first tiebreak is numeric, not lexicographic, past card 9999', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    store.ensureProjectDirs('demo');
+    // `padStart(4, '0')` (src/store.js:91-104) pads but never truncates and the
+    // sequence has no cap, so a 5-digit id is a real id a live project reaches.
+    // As STRINGS '2026-10000' < '2026-9999', so a reversed localeCompare would
+    // answer ['2026-9999', '2026-10000', '2026-0999'] — the newest card filed
+    // as the middle one. Same level throughout, so only the id key is at work.
+    seedRawCard('demo', 'todo', { id: '2026-0999', priorityLine: 'HIGH' });
+    seedRawCard('demo', 'todo', { id: '2026-9999', priorityLine: 'HIGH' });
+    seedRawCard('demo', 'todo', { id: '2026-10000', priorityLine: 'HIGH' });
+
+    const ids = (await board.listCards({ project: 'demo' })).cards.map((t) => t.id);
+    assert.deepEqual(ids, ['2026-10000', '2026-9999', '2026-0999']);
+  } finally { await cleanup(root); }
+});
+
+test('a later year outranks a higher number from an earlier year', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    store.ensureProjectDirs('demo');
+    // Our own allocator never lets the year and the number disagree (the
+    // sequence does not reset on rollover, src/store.js:86-90), so such a pair
+    // can only arrive from a sync peer running its own counter — any non-empty
+    // id string is accepted on the wire (src/board.js:1416). The year clause is
+    // compared first and independently, so creation year wins: comparing the
+    // number alone would answer ['2026-0009', '2027-0005'].
+    seedRawCard('demo', 'todo', { id: '2026-0009', priorityLine: 'HIGH' });
+    seedRawCard('demo', 'todo', { id: '2027-0005', priorityLine: 'HIGH' });
+
+    const ids = (await board.listCards({ project: 'demo' })).cards.map((t) => t.id);
+    assert.deepEqual(ids, ['2027-0005', '2026-0009']);
+  } finally { await cleanup(root); }
+});
+
+test('an id with no numeric suffix still sorts deterministically', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    store.ensureProjectDirs('demo');
+    // Nothing validates the id format (store.listCards reads any *.md and
+    // trusts the frontmatter), so a shape-violating id is reachable. It must
+    // fall back to a reversed STRING compare rather than collapsing to a tie:
+    // a tie leaves the order to readdirSync, which is not a defined answer.
+    seedRawCard('demo', 'todo', { id: 'aa-legacy', priorityLine: 'HIGH' });
+    seedRawCard('demo', 'todo', { id: 'zz-legacy', priorityLine: 'HIGH' });
+
+    const ids = (await board.listCards({ project: 'demo' })).cards.map((t) => t.id);
+    assert.deepEqual(ids, ['zz-legacy', 'aa-legacy']);
+  } finally { await cleanup(root); }
+});
+
+test('a malformed id sorts AFTER every well-formed one, never between them', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    store.ensureProjectDirs('demo');
+    // The MIXED path. compareIdDesc's leading key is a shape BUCKET: a card
+    // whose id matches `YYYY-NNNN` outranks one whose id does not, and the two
+    // groups never interleave. That is not cosmetic — it is what keeps the
+    // order total. Selecting the numeric key for a conforming pair and the
+    // string key for a mixed pair (which is what this comparator used to do)
+    // is INTRANSITIVE, because the two keys disagree whenever the conforming
+    // pair's digit widths differ. Newest-first, with the old per-pair keys:
+    //     '2026-10000' before '2026-9999'  — numeric key, 10000 > 9999
+    //     '2026-9999'  before '2026-5a'    — string key, '9' > '5'
+    //     '2026-5a'    before '2026-10000' — string key, '5' > '1'
+    // — a cycle, after which Array.prototype.sort's answer depends on the
+    // input order, i.e. on readdirSync (src/store.js:154-172). All one
+    // priority level, so the id key is the only thing deciding.
+    //
+    // `0000-0000` is in the pool to make the BUCKET FIELD ITSELF load-bearing.
+    // A malformed key carries year:0/num:0, so for any conforming id with a
+    // year > 0 those neutral fields already produce the grouping and the bucket
+    // is redundant — it only decides for a conforming id that is ALSO 0/0,
+    // which both the shape regex and the wire accept. Drop field 1 and
+    // '2026-5a' sorts BEFORE '0000-0000', breaking the never-interleave rule.
+    //
+    // `999-9999` makes the YEAR field's numeric-ness load-bearing. Every other
+    // fixture in this file uses a 4-digit year, and for equal-width years a
+    // string compare and a numeric one agree — so a stringly-compared year
+    // survives them all. Across DIFFERING widths they diverge: '999' > '2026'
+    // as a string, so a short-year id would lead the lane despite being the
+    // oldest. Same defect class as '2026-9999' vs '2026-10000', one field over,
+    // and reachable by the same route — a peer minting its own ids.
+    for (const id of ['2026-0007', '2026-9999', '2026-10000', '0000-0000', '999-9999', '2026-5a', 'zz-legacy']) {
+      seedRawCard('demo', 'todo', { id, priorityLine: 'HIGH' });
+    }
+
+    const ids = (await board.listCards({ project: 'demo' })).cards.map((t) => t.id);
+    assert.deepEqual(ids, ['2026-10000', '2026-9999', '2026-0007', '999-9999', '0000-0000', 'zz-legacy', '2026-5a']);
+    // Stated as its own claim so a failure names the broken invariant rather
+    // than just printing two arrays: the bucket boundary is a clean split.
+    const shaped = (id) => /^\d+-\d+$/.test(id);
+    assert.equal(ids.filter(shaped).length, 5);
+    assert.deepEqual(ids.map(shaped), [true, true, true, true, true, false, false],
+      'well-formed ids must form one leading run — a malformed id must never land between two of them');
+    // And the year key specifically: a short year loses to every 4-digit one no
+    // matter how large its own number is (999-9999 holds the joint-highest).
+    assert.ok(ids.indexOf('2026-0007') < ids.indexOf('999-9999'),
+      'the year must be compared NUMERICALLY across differing widths — 999 is older than 2026');
+  } finally { await cleanup(root); }
+});
+
+// Exhaustive property test on the comparator itself. Transitivity is a property
+// of the comparator over an INPUT ORDER, and no public read lets a caller pick
+// that order (listCards takes readdirSync's, readEpic takes the epic's member
+// list), so this drives board._compareIdDesc directly — the seam exists for
+// exactly this. The set is the shipped intransitivity, reduced: two conforming
+// ids whose numeric and lexicographic orders DISAGREE, a malformed id that
+// sorted stringwise between them, an ordinary id, and a second malformed id —
+// plus `0000-0000`, the one conforming id whose year and number are BOTH zero
+// and therefore the only place the shape-bucket field decides on its own (the
+// neutral year:0/num:0 a malformed key carries makes the bucket redundant for
+// every other conforming id). Without field 1, '2026-5a' sorts ahead of it.
+// `999-9999` is the differing-WIDTH year: '999' > '2026' as a string but 999 <
+// 2026 as a number, so it is the only id here that tells a numeric year field
+// from a stringly-compared one.
+test('compareIdDesc is a strict weak ordering: same answer for every input order', async () => {
+  const IDS = ['2026-10000', '2026-9999', '2026-0007', '0000-0000', '999-9999', '2026-5a', 'zz-legacy'];
+  const EXPECTED = ['2026-10000', '2026-9999', '2026-0007', '999-9999', '0000-0000', 'zz-legacy', '2026-5a'];
+  const cmp = (a, b) => Math.sign(board._compareIdDesc(a, b));
+
+  // 1. Antisymmetry, and no two DISTINCT ids tie: a tie would hand the order
+  //    back to the input, which is the non-answer this test exists to exclude.
+  for (const a of IDS) {
+    assert.equal(cmp(a, a), 0, `${a} must equal itself`);
+    for (const b of IDS) {
+      if (a === b) continue;
+      assert.notEqual(cmp(a, b), 0, `${a} and ${b} must not tie`);
+      assert.equal(cmp(a, b), -cmp(b, a), `asymmetry broken for ${a} / ${b}`);
+    }
+  }
+
+  // 2. Transitivity over every ordered triple — the property the old
+  //    per-pair key selection violated. The reviewer's witness triple
+  //    ('2026-10000', '2026-9999', '2026-5a') is one of these 343.
+  for (const a of IDS) {
+    for (const b of IDS) {
+      for (const c of IDS) {
+        if (cmp(a, b) < 0 && cmp(b, c) < 0) {
+          assert.ok(cmp(a, c) < 0, `intransitive: ${a} < ${b} < ${c} but not ${a} < ${c}`);
+        }
+      }
+    }
+  }
+
+  // 3. And the observable consequence: all 5040 input permutations must sort to
+  //    the SAME sequence. Under the old comparator this set produced three
+  //    different answers depending on the order it arrived in.
+  const permute = (xs) => (xs.length <= 1 ? [xs] : xs.flatMap(
+    (x, i) => permute([...xs.slice(0, i), ...xs.slice(i + 1)]).map((rest) => [x, ...rest]),
+  ));
+  const perms = permute(IDS);
+  assert.equal(perms.length, 5040);
+  for (const p of perms) {
+    assert.deepEqual([...p].sort(board._compareIdDesc), EXPECTED, `input order ${p.join(',')}`);
+  }
+});
+
+test('unset cards sort newest-first among themselves but still below a deliberate LOW', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    // The interaction between the reversed id key and unset-ranks-last, stated
+    // in one place: the LOW card is filed FIRST, so it holds the OLDEST id and
+    // the newest-first tiebreak actively pushes against it. A mutant that lets
+    // the id key outrank the priority key floats unset3 to the top and dies.
+    const low = (await board.fileCard({ project: 'demo', title: 'low', priority: 'LOW' })).id;
+    const unset1 = (await board.fileCard({ project: 'demo', title: 'u1' })).id;
+    const unset2 = (await board.fileCard({ project: 'demo', title: 'u2' })).id;
+    const unset3 = (await board.fileCard({ project: 'demo', title: 'u3' })).id;
+
+    const ids = (await board.listCards({ project: 'demo' })).cards.map((t) => t.id);
+    assert.deepEqual(ids, [low, unset3, unset2, unset1]);
+    assert.equal(ids[0], low, 'a judged LOW leads even holding the oldest id');
+  } finally { await cleanup(root); }
+});
+
+test('read_epic lists an epic\'s cards newest-first too', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    // sortCards' SECOND call site (src/board.js:1584). It is otherwise unpinned
+    // for the id key, and the two surfaces disagreeing would be invisible from
+    // list_cards' tests alone.
+    assert.equal((await board.createEpic({ project: 'demo', slug: 'auth', title: 'Auth' })).ok, true);
+    const first = (await board.fileCard({ project: 'demo', title: 'first', epic: 'auth', priority: 'HIGH' })).id;
+    const second = (await board.fileCard({ project: 'demo', title: 'second', epic: 'auth', priority: 'HIGH' })).id;
+    const third = (await board.fileCard({ project: 'demo', title: 'third', epic: 'auth', priority: 'HIGH' })).id;
+
+    const re = await board.readEpic({ project: 'demo', slug: 'auth' });
+    assert.equal(re.ok, true, JSON.stringify(re));
+    assert.deepEqual(re.cards.map((c) => c.id), [third, second, first]);
   } finally { await cleanup(root); }
 });
 
@@ -1690,11 +1916,11 @@ test('a card written by the pre-enum build still loads, and sorts by its mapped 
     assert.notEqual(byId['2026-0001'], 'MEDIUM');
 
     // And they sort sanely: the mapped CRITICAL leads, the mapped LOW follows,
-    // and the unset cards trail in id order. Two wrong answers are excluded by
+    // and the unset cards trail newest-first. Two wrong answers are excluded by
     // this exact sequence — under the OLD ascending-integer compare the 0 card
     // would have LED, and under a 0->MEDIUM mapping it would sit ahead of LOW.
     assert.deepEqual(listed.map((t) => t.id), [
-      '2026-0002', '2026-0003', '2026-0001', '2026-0004', '2026-0005', '2026-0006',
+      '2026-0002', '2026-0003', '2026-0006', '2026-0005', '2026-0004', '2026-0001',
     ]);
     const order = listed.map((t) => t.id);
     assert.ok(order.indexOf('2026-0003') < order.indexOf('2026-0001'), 'legacy 0 must sort below a mapped LOW');

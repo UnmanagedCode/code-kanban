@@ -55,7 +55,7 @@ Board **data** lives in the conductor's tree, not here:
 - Card ids: `${year}-${NNNN}`, project-wide monotonic (no per-year reset).
 - Card priority: `CRITICAL | HIGH | MEDIUM | LOW`, or **unset** when omitted — there is no default,
   since unset means "nobody has judged this yet". Set it at filing time via `file_card`. Listings
-  sort column → priority (CRITICAL first, unset last) → id.
+  sort column → priority (CRITICAL first, unset last) → newest id first.
 - Result convention: `{ok:true,…}` / `{ok:false, code, reason}` inside the host's `{result}`
   envelope; refusals are returned, never thrown. Codes: `PROJECT_UNKNOWN`, `CARD_UNKNOWN`,
   `EPIC_UNKNOWN`, `INVALID_STATE`. See [docs/protocol.md](docs/protocol.md).

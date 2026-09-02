@@ -186,6 +186,14 @@ function transitionsFrom(from) {
 
 function renderBoard() {
   const board = $('#board');
+  // Lanes scroll independently now (styles.css .column-body), and this function
+  // rebuilds every one of them — so each lane's offset has to be carried across
+  // the rebuild by hand, or a refresh/move/edit would yank a deep `done` lane
+  // back to the top. Keyed by state, not DOM position, so it survives a change
+  // in lane count or order.
+  const offsets = new Map([...board.querySelectorAll('.column')].map(
+    (c) => [c.dataset.state, c.querySelector('.column-body')?.scrollTop ?? 0],
+  ));
   board.replaceChildren();
   for (const st of state.meta.states) {
     const cards = state.cards.filter((t) => t.state === st && (!state.planOnly || t.plan));
@@ -200,6 +208,10 @@ function renderBoard() {
       el('div', { class: 'column-body' }, body),
     ]);
     board.append(col);
+  }
+  // After append, in one pass: scrollTop on a detached element is a silent no-op.
+  for (const c of board.querySelectorAll('.column')) {
+    c.querySelector('.column-body').scrollTop = offsets.get(c.dataset.state) ?? 0;
   }
 }
 

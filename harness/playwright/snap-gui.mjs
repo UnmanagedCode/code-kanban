@@ -13,8 +13,16 @@
 //   14. the edit form's Acceptance textarea prefilled one criterion per line
 //   15. the read view after editing acceptance: a renamed criterion, a new
 //       one, and the untouched criterion's tick surviving the {replace} round trip
+//   16. per-lane scrolling: the overflowing `done` lane scrolls, the page doesn't
+//   17. the lane header staying put while its body scrolls, and lanes scrolling
+//       independently of one another
+//   18. a lane's scroll offset surviving a re-render (Refresh)
+//   19. lane ordering: priority first, then newest card number
+//   20. a project whose lanes are empty, plus the narrow and short-window
+//       fallbacks where the page scrolls again
 // Reuses withPage/waitForServer from the shared code-playwright harness — no
 // chromium/launch logic here. Run: node harness/playwright/snap-gui.mjs
+import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs/promises';
@@ -95,7 +103,25 @@ async function seed(base, projectsRoot) {
   await fs.writeFile(planFile, `# Plan — build the search index\n\n1. Tokenize documents.\n2. Build the inverted index.\n3. Wire the query path.\n`);
   await call(`/api/board/${PROJECT}/cards/${c.id}`, { method: 'PATCH', body: { plan: `${c.id}.md` } }, 'plan link on c');
 
-  return { a, b, c, d, e };
+  // Bulk-fill `done` so the lane genuinely overflows a 900px-tall viewport —
+  // per-lane scrolling is unobservable on a lane that fits. They all share ONE
+  // priority level (unset) on purpose: within the lane the order is then the id
+  // tiebreak and nothing else, which is what step 19 reads. Unset also keeps
+  // them out of step 9's judged-badge count. POST /cards always files into
+  // triage (the route does not forward `category`), so each chore walks the full
+  // LEGAL path triage → todo → in-progress → done via call() — a refused step
+  // fails loudly rather than leaving a short lane and a passing-looking scene.
+  const bulk = [];
+  for (let i = 1; i <= 14; i++) {
+    const n = String(i).padStart(2, '0');
+    const t = await call(`/api/board/${PROJECT}/cards`, { method: 'POST', body: { title: `Done chore ${n}`, goal: `Chore ${n}` } }, `file done chore ${n}`);
+    for (const to of ['todo', 'in-progress', 'done']) {
+      await call(`/api/board/${PROJECT}/cards/${t.id}/move`, { method: 'POST', body: { to } }, `chore ${n} → ${to}`);
+    }
+    bulk.push(t);
+  }
+
+  return { a, b, c, d, e, bulk };
 }
 
 async function main() {
@@ -124,6 +150,11 @@ async function main() {
       await page.waitForSelector('.epic-row', { timeout: 10_000 });
       // The cross-project epic must render with its badge on demo's board.
       await page.waitForSelector('.badge.epic-cross', { timeout: 10_000 });
+      // NOTE on fullPage: true (used by every shot below). It captures the whole
+      // SCROLLABLE DOCUMENT, and since 2026-0037 the lanes clip their own
+      // overflow instead of stretching the page — so these shots now show only
+      // the visible slice of a long lane. That is the intended new behaviour,
+      // not a truncated screenshot; step 16 is what asserts it.
       await page.screenshot({ path: path.join(SHOTS, 'gui-1-board.png'), fullPage: true });
       console.log('snapped board');
 
@@ -357,7 +388,165 @@ async function main() {
       if (checkedCount !== 1) throw new Error(`expected exactly 1 ticked criterion to survive the round trip, saw ${checkedCount}`);
       await page.screenshot({ path: path.join(SHOTS, 'gui-15-acceptance-edited.png'), fullPage: true });
       console.log('snapped read view after acceptance edit (renamed + added criterion, tick survived)');
+      await page.click('#detail-overlay .overlay-close');
+      await page.waitForSelector('#detail-overlay', { state: 'hidden', timeout: 10_000 });
+
+      // 16. Per-lane scrolling (2026-0037). `done` holds 15 cards, far more than
+      //     a 900px viewport fits, so the two halves of the claim are both
+      //     observable: the PAGE must no longer stretch, and the LANE must be
+      //     the thing that scrolls. Asserting only one of them would pass on a
+      //     board that simply clipped its overflow.
+      const geom = await page.evaluate(() => {
+        const main = document.querySelector('main');
+        const body = document.querySelector('.column[data-state="done"] .column-body');
+        return {
+          mainScroll: main.scrollHeight, mainClient: main.clientHeight,
+          laneScroll: body.scrollHeight, laneClient: body.clientHeight,
+        };
+      });
+      assert.ok(geom.mainScroll <= geom.mainClient + 1,
+        `the board must fit the viewport, but main scrolls: ${geom.mainScroll} > ${geom.mainClient}`);
+      assert.ok(geom.laneScroll > geom.laneClient,
+        `the done lane must overflow its own box, but ${geom.laneScroll} <= ${geom.laneClient} — the scene proves nothing`);
+      // fullPage:false on purpose: fullPage would expand the viewport to the
+      // document, which is exactly the constraint under test.
+      await page.screenshot({ path: path.join(SHOTS, 'gui-16-lane-scroll.png'), fullPage: false });
+      console.log(`snapped per-lane scroll (page fits ${geom.mainScroll}<=${geom.mainClient}, done lane ${geom.laneScroll}>${geom.laneClient})`);
+
+      // 17. The lane HEADER must stay put while its body scrolls (that is what
+      //     `.column-head { flex: 0 0 auto }` buys), and the other lanes must
+      //     not move with it — independent scrollers, not one shared one.
+      const headBefore = await page.locator('.column[data-state="done"] .column-head').evaluate((h) => h.getBoundingClientRect().top);
+      await page.evaluate(() => {
+        const body = document.querySelector('.column[data-state="done"] .column-body');
+        body.scrollTop = body.scrollHeight;
+      });
+      const headAfter = await page.locator('.column[data-state="done"] .column-head').evaluate((h) => h.getBoundingClientRect().top);
+      assert.equal(headAfter, headBefore, 'the done lane header moved when its body scrolled');
+      const otherOffsets = await page.evaluate(() => Object.fromEntries(
+        [...document.querySelectorAll('.column')]
+          .filter((c) => c.dataset.state !== 'done')
+          .map((c) => [c.dataset.state, c.querySelector('.column-body').scrollTop]),
+      ));
+      for (const [st, top] of Object.entries(otherOffsets)) {
+        assert.equal(top, 0, `scrolling done also scrolled ${st} (offset ${top}) — the lanes are not independent`);
+      }
+      await page.screenshot({ path: path.join(SHOTS, 'gui-17-lane-header-pinned.png'), fullPage: false });
+      console.log('snapped done lane scrolled to the bottom (header pinned, other lanes at 0)');
+
+      // 18. The offset must survive a re-render. renderBoard() rebuilds every
+      //     lane with replaceChildren(), which zeroes scrollTop — so Refresh
+      //     would silently yank a deep lane back to the top without the
+      //     capture/restore pass in frontend/app.js.
+      await page.evaluate(() => { document.querySelector('.column[data-state="done"] .column-body').scrollTop = 200; });
+      await page.click('#refresh-btn');
+      await page.waitForFunction(() => document.querySelectorAll('.column[data-state="done"] .card').length === 15, { timeout: 10_000 });
+      const afterRefresh = await page.evaluate(() => document.querySelector('.column[data-state="done"] .column-body').scrollTop);
+      assert.ok(Math.abs(afterRefresh - 200) <= 1, `lane scroll lost across the rebuild: expected ~200, saw ${afterRefresh}`);
+      await page.screenshot({ path: path.join(SHOTS, 'gui-18-lane-scroll-survives-refresh.png'), fullPage: false });
+      console.log(`snapped done lane still scrolled (${afterRefresh}px) after Refresh`);
+
+      // 19. Lane ORDERING — priority first, then card number DESCENDING. The
+      //     harness asserted badge counts and text but never card order. `done`
+      //     holds the judged CRITICAL (b, the OLDEST id in the lane) plus the 14
+      //     unset chores, so both keys are exercised at once: an ascending
+      //     tiebreak reverses the chores, and a dropped priority key sinks b.
+      const doneCards = await page.$$eval('.column[data-state="done"] .card', (els) => els.map((c) => ({
+        id: c.querySelector('.card-id').textContent,
+        prio: c.querySelector('.badge.prio')?.textContent ?? null,
+      })));
+      assert.equal(doneCards.length, 15, `expected 15 cards in done, saw ${doneCards.length}`);
+      assert.equal(doneCards[0].prio, 'critical', `the judged CRITICAL must lead its lane, saw ${JSON.stringify(doneCards[0])}`);
+      assert.equal(doneCards[0].id, seeded.b.id, 'the leading card must be b, which holds the OLDEST id in the lane');
+      const num = (id) => Number(id.split('-')[1]);
+      const chores = doneCards.slice(1);
+      for (const c of chores) assert.equal(c.prio, null, `expected the trailing chores to be unjudged, saw ${JSON.stringify(c)}`);
+      for (let i = 1; i < chores.length; i++) {
+        assert.ok(num(chores[i - 1].id) > num(chores[i].id),
+          `equal-priority cards must run newest-first: ${chores[i - 1].id} then ${chores[i].id}`);
+      }
+      await page.screenshot({ path: path.join(SHOTS, 'gui-19-lane-order.png'), fullPage: false });
+      console.log(`snapped lane ordering (${doneCards[0].id} leads, then ${chores[0].id}..${chores.at(-1).id} descending)`);
+
+      // 20a. Empty lanes: `web` holds a single card, so four of its five lanes
+      //      are empty. The '— empty —' placeholder must still render in each
+      //      and the board must still fit — a stretch-to-row-height lane with a
+      //      min-height floor is the case most likely to overflow.
+      await page.selectOption('#project-select', PROJECT2);
+      await page.waitForFunction((v) => document.querySelector('#project-select')?.value === v, PROJECT2, { timeout: 10_000 });
+      await page.waitForFunction(() => document.querySelectorAll('.column-empty').length === 4, { timeout: 10_000 });
+      const emptyGeom = await page.evaluate(() => {
+        const main = document.querySelector('main');
+        return { scroll: main.scrollHeight, client: main.clientHeight };
+      });
+      assert.ok(emptyGeom.scroll <= emptyGeom.client + 1,
+        `an all-but-one-empty board must still fit: ${emptyGeom.scroll} > ${emptyGeom.client}`);
+      await page.screenshot({ path: path.join(SHOTS, 'gui-20a-empty-lanes.png'), fullPage: false });
+      console.log('snapped a project with four empty lanes (placeholders render, board fits)');
     },{ headless: true, viewport: { width: 1440, height: 900 } });
+
+    // 20b. Narrow window: below 980px the grid reflows to 2 columns / 3 ROWS, so
+    //      the fixed-height board is deliberately opted out and the PAGE scrolls
+    //      again. Assert that fallback is really active — and that nothing
+    //      scrolls HORIZONTALLY, which `overflow-x: hidden` on the lane plus
+    //      `overflow-wrap: anywhere` on the card is what prevents.
+    await withPage(async (page) => {
+      await page.goto(srv.url + '/', { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('#project-select', { timeout: 10_000 });
+      await page.selectOption('#project-select', PROJECT);
+      await page.waitForFunction(() => document.querySelector('#project-select')?.value === 'demo', { timeout: 10_000 });
+      await page.waitForSelector('.card', { timeout: 10_000 });
+      const narrow = await page.evaluate(() => {
+        const main = document.querySelector('main');
+        const doc = document.documentElement;
+        return {
+          mainScroll: main.scrollHeight, mainClient: main.clientHeight,
+          docScrollW: doc.scrollWidth, docClientW: doc.clientWidth,
+        };
+      });
+      assert.ok(narrow.mainScroll > narrow.mainClient,
+        `below 980px the page must scroll again, but main fits: ${narrow.mainScroll} <= ${narrow.mainClient}`);
+      assert.ok(narrow.docScrollW <= narrow.docClientW + 1,
+        `no horizontal page scroll allowed, saw ${narrow.docScrollW} > ${narrow.docClientW}`);
+      await page.screenshot({ path: path.join(SHOTS, 'gui-20b-narrow-page-scroll.png'), fullPage: false });
+      console.log(`snapped narrow window (page scrolls ${narrow.mainScroll}>${narrow.mainClient}, no horizontal scroll)`);
+    }, { headless: true, viewport: { width: 700, height: 900 } });
+
+    // 20c. Short window: still the 5-column layout, but the viewport is shorter
+    //      than .board's min-height floor, so the board stops shrinking and
+    //      `main` scrolls the page — the pre-2026-0037 behaviour, kept as the
+    //      escape hatch. Every lane's cards must stay REACHABLE that way.
+    await withPage(async (page) => {
+      await page.goto(srv.url + '/', { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('#project-select', { timeout: 10_000 });
+      await page.selectOption('#project-select', PROJECT);
+      await page.waitForFunction(() => document.querySelector('#project-select')?.value === 'demo', { timeout: 10_000 });
+      await page.waitForSelector('.card', { timeout: 10_000 });
+      const short = await page.evaluate(() => {
+        const main = document.querySelector('main');
+        const doc = document.documentElement;
+        main.scrollTop = main.scrollHeight; // reach the bottom via the fallback
+        return {
+          mainScroll: main.scrollHeight, mainClient: main.clientHeight, mainTop: main.scrollTop,
+          docScrollW: doc.scrollWidth, docClientW: doc.clientWidth,
+          lanes: [...document.querySelectorAll('.column')].map((c) => ({
+            state: c.dataset.state,
+            bottom: Math.round(c.getBoundingClientRect().bottom),
+          })),
+        };
+      });
+      assert.ok(short.mainScroll > short.mainClient,
+        `a window shorter than the board floor must scroll the page: ${short.mainScroll} <= ${short.mainClient}`);
+      assert.ok(short.mainTop > 0, 'the page-scroll fallback did not actually scroll');
+      assert.ok(short.docScrollW <= short.docClientW + 1,
+        `no horizontal page scroll allowed, saw ${short.docScrollW} > ${short.docClientW}`);
+      for (const lane of short.lanes) {
+        assert.ok(lane.bottom <= short.mainClient + 1,
+          `lane ${lane.state} is still cut off after scrolling to the bottom (bottom ${lane.bottom})`);
+      }
+      await page.screenshot({ path: path.join(SHOTS, 'gui-20c-short-page-scroll.png'), fullPage: false });
+      console.log(`snapped short window (page scrolls to ${short.mainTop}, every lane reachable)`);
+    }, { headless: true, viewport: { width: 1440, height: 420 } });
   } finally {
     await srv.close();
   }

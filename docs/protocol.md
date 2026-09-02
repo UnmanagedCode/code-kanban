@@ -93,9 +93,10 @@ malformed envelope or an unexpected exception.
   call read: all five (0 for an empty lane) when no `state` was given, exactly one key when it was.
   `shown`/`done_hidden` split `cards.length` into what the text block shows vs. what it collapsed
   into the header's hidden-count clause. The listing groups by lane (`STATES` order, empty lanes
-  print nothing) then by the pre-sorted priority/id order within a lane; each row carries id,
-  priority, title, created date, plus `epic`/`owner`/`deps`/`plan` only when set — `project` and
-  `state` are not repeated per row (the header/group heading already carry them).
+  print nothing) then by the pre-sorted within-lane order — priority, then **newest card number
+  first**. Each row carries id, priority, title, created date, plus `epic`/`owner`/`deps`/`plan`
+  only when set — `project` and `state` are not repeated per row (the header/group heading already
+  carry them).
 - `read_card({project, id, logTail?, includePlan?}) → {ok, card, plan_path[, plan_body, plan_truncated, plan_missing]}` —
   the plan fields are **top-level** on the envelope, never inside `card` (which mirrors frontmatter
   1:1). `plan_path` (the resolved absolute path) is returned **always**, `includePlan` or not; it is
@@ -251,8 +252,12 @@ A `summary` is `{id, title, state, project, epic, priority, owner, depends_on, c
 (`plan` is the link, or `null`; `priority` is one of the four levels, or `null` when the card is
 unset — i.e. nobody has judged it). Card
 lists (`list_cards`, `read_epic`) are ordered **column (`STATES` order) → priority
-(`CRITICAL`→`HIGH`→`MEDIUM`→`LOW`→unset) → id ascending**; unset ranks after every judged level, so
-an unjudged card never outranks a judged one. `list_cards`' MCP text rendering of a `summary` prints
+(`CRITICAL`→`HIGH`→`MEDIUM`→`LOW`→unset) → card number descending (newest first)**; unset ranks
+after every judged level, so an unjudged card never outranks a judged one. The id tiebreak is
+**numeric** on the `YYYY-NNNN` shape — year, then number — not lexicographic, because the number is
+not a fixed width (`2026-10000` is a valid id and sorts ahead of `2026-9999`). An id **not** matching
+that shape (only reachable from a peer that minted it) sorts after every id that does, and such ids
+are ordered among themselves by reverse string compare. `list_cards`' MCP text rendering of a `summary` prints
 `id`, `priority`, `title` and the date-only `created`; `epic`/`owner`/`depends_on`/`plan` print only
 when set (never as a bare `epic —`); `project` and `state` are never repeated per row — the
 listing's header and per-lane group heading already carry them. A `rollup`

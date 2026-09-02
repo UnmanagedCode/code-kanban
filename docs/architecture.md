@@ -163,6 +163,13 @@ matching function and passes its `{ok}` envelope through as the HTTP body, so GU
 MCP-tool calls serialize on the **same** in-process mutex — one writer. `board.js`'s function
 interface (the `{ok}` / `{ok:false,code,reason}` return contract) remains the documented seam.
 
+`renderBoard` (`frontend/app.js`) rebuilds every lane with `replaceChildren()` on each load, move,
+edit and filter toggle, which zeroes each `.column-body`'s `scrollTop`. Since the lanes became
+independent scrollers, it captures every lane's offset **keyed by `data-state`** before the rebuild
+and restores it after `append` (a `scrollTop` write on a detached element is a silent no-op) —
+without that pass, any refresh would yank a deep `done` lane back to the top. See
+[.wiki/gotchas/lane-scroll-container.md](../.wiki/gotchas/lane-scroll-container.md).
+
 GUI mutations are attributed to the constant `GUI_ACTOR = 'gui'` (`src/routes.js`) — the GUI has
 no human identity, so `'gui'` is the honest logbook actor. `board.js` clears `owner` on any
 non-`in-progress` move regardless, so passing `GUI_ACTOR` on every move only stamps the move's

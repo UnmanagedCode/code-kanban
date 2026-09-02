@@ -115,6 +115,28 @@ back down. Sync's `mergeProject` seeds its own id allocator from this same floor
 reason (an incoming card reassigned a fresh id must not land on a locally-deleted high id either).
 Purely local bookkeeping — not part of the sync wire format (see [[cross-instance-sync]]).
 
+**`padStart(4, '0')` pads but never truncates**, so the `NNNN` field is a *minimum* width, not a
+fixed one: card 10000 mints `2026-10000`. Any id comparison must therefore be **numeric** — as
+strings `'2026-10000' < '2026-9999'`, so a `localeCompare` tiebreak files the newest card as one of
+the oldest the moment a project passes 9999. `board.js`'s `compareIdDesc` (`sortCards`' tiebreak)
+parses year and number out separately and compares each numerically for exactly this reason; the
+year is compared first so an id whose year and number *disagree* — impossible from this allocator,
+reachable from a sync peer running its own counter — still answers by creation year.
+
+**And mixing the two comparisons is a trap.** Nothing validates the id format (`store.listCards`
+reads any `*.md` and trusts the frontmatter, `src/store.js:154`), so a non-conforming id is
+reachable. Falling back to a string compare *for the mixed pair only* — numeric for conforming
+pairs, string when either side is malformed — is **intransitive**, because the two keys disagree
+about any conforming pair of differing digit widths: newest-first, `2026-10000` beats `2026-9999`
+numerically, `2026-9999` beats `2026-5a` stringwise, and `2026-5a` beats `2026-10000` stringwise. A
+cycle, and `Array.prototype.sort`'s answer then depends on its **input** order — which is
+`readdirSync` order, so the same lane can render differently run to run and differently across the
+GUI, `list_cards` and `read_epic`. `compareIdDesc` therefore reduces each id to a canonical key
+whose leading field is a **shape bucket**: conforming ids sort as a group ahead of non-conforming
+ones (which are ordered among themselves by reverse string compare), so the groups never interleave
+and the order stays total. The rule to carry forward: build a comparator as *one* key per value,
+never as a key chosen per pair.
+
 Ids are unique only **per-project, per-filesystem** — two machines mint the same `2026-NNNN` for
 different cards. Cross-instance sync therefore treats display id as sugar, not identity, and matches
 on a hidden `uid` instead. See [[cross-instance-sync]].
