@@ -93,9 +93,10 @@ malformed envelope or an unexpected exception.
   call read: all five (0 for an empty lane) when no `state` was given, exactly one key when it was.
   `shown`/`done_hidden` split `cards.length` into what the text block shows vs. what it collapsed
   into the header's hidden-count clause. The listing groups by lane (`STATES` order, empty lanes
-  print nothing) then by the pre-sorted priority/id order within a lane; each row carries id,
-  priority, title, created date, plus `epic`/`owner`/`deps`/`plan` only when set — `project` and
-  `state` are not repeated per row (the header/group heading already carry them).
+  print nothing) then by the pre-sorted within-lane order — priority, then **newest card number
+  first**. Each row carries id, priority, title, created date, plus `epic`/`owner`/`deps`/`plan`
+  only when set — `project` and `state` are not repeated per row (the header/group heading already
+  carry them).
 - `read_card({project, id, logTail?, includePlan?}) → {ok, card, plan_path[, plan_body, plan_truncated, plan_missing]}` —
   the plan fields are **top-level** on the envelope, never inside `card` (which mirrors frontmatter
   1:1). `plan_path` (the resolved absolute path) is returned **always**, `includePlan` or not; it is

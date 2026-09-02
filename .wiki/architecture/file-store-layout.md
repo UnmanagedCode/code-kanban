@@ -115,6 +115,14 @@ back down. Sync's `mergeProject` seeds its own id allocator from this same floor
 reason (an incoming card reassigned a fresh id must not land on a locally-deleted high id either).
 Purely local bookkeeping — not part of the sync wire format (see [[cross-instance-sync]]).
 
+**`padStart(4, '0')` pads but never truncates**, so the `NNNN` field is a *minimum* width, not a
+fixed one: card 10000 mints `2026-10000`. Any id comparison must therefore be **numeric** — as
+strings `'2026-10000' < '2026-9999'`, so a `localeCompare` tiebreak files the newest card as one of
+the oldest the moment a project passes 9999. `board.js`'s `compareIdDesc` (`sortCards`' tiebreak)
+parses year and number out separately and compares each numerically for exactly this reason; the
+year is compared first so an id whose year and number *disagree* — impossible from this allocator,
+reachable from a sync peer running its own counter — still answers by creation year.
+
 Ids are unique only **per-project, per-filesystem** — two machines mint the same `2026-NNNN` for
 different cards. Cross-instance sync therefore treats display id as sugar, not identity, and matches
 on a hidden `uid` instead. See [[cross-instance-sync]].

@@ -668,9 +668,10 @@ test('an incoming legacy 0 card sorts BELOW a local LOW, not above it', async ()
     // this card sorts its `0` FIRST (ascending integers), we sort it LAST. Same
     // card, opposite ends of the column — see
     // .wiki/gotchas/priority-legacy-tolerance.md. The peer card also holds the
-    // LOWER id, so the id tiebreak would put it first if the rank were dropped.
+    // HIGHER id, so the newest-first tiebreak would put it first if the rank
+    // were dropped.
     seedLocal('alpha', { id: '2026-0002', uid: 'u-local', title: 'local low', priority: 'LOW', state: 'todo' });
-    serveDump({ alpha: [card({ id: '2026-0001', uid: 'u-peer', title: 'peer was 0', priority: 0, state: 'todo' })] });
+    serveDump({ alpha: [card({ id: '2026-0003', uid: 'u-peer', title: 'peer was 0', priority: 0, state: 'todo' })] });
     assert.equal((await pull('project', 'alpha')).ok, true);
     const titles = (await board.listCards({ project: 'alpha' })).cards.map((t) => t.title);
     assert.deepEqual(titles, ['local low', 'peer was 0']);
@@ -679,8 +680,11 @@ test('an incoming legacy 0 card sorts BELOW a local LOW, not above it', async ()
 
 test('an incoming legacy card outranks a local MEDIUM once mapped', async () => {
   await withRoot(async () => {
-    seedLocal('alpha', { id: '2026-0001', uid: 'u-local', title: 'local', priority: 'MEDIUM', state: 'todo' });
-    serveDump({ alpha: [card({ id: '2026-0002', uid: 'u-peer', title: 'peer was 1', priority: 1, state: 'todo' })] });
+    // Ids are swapped relative to the ranks: the local MEDIUM holds the NEWER
+    // id, so the newest-first tiebreak alone would list it first. Only the
+    // priority key produces the expected order.
+    seedLocal('alpha', { id: '2026-0002', uid: 'u-local', title: 'local', priority: 'MEDIUM', state: 'todo' });
+    serveDump({ alpha: [card({ id: '2026-0001', uid: 'u-peer', title: 'peer was 1', priority: 1, state: 'todo' })] });
     assert.equal((await pull('project', 'alpha')).ok, true);
     const ids = (await board.listCards({ project: 'alpha' })).cards.map((t) => t.title);
     assert.deepEqual(ids, ['peer was 1', 'local']);

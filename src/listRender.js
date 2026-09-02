@@ -70,9 +70,10 @@ function renderRow(r, w) {
   return `    ${line}`.trimEnd();
 }
 
-// `cards` is already sorted by board.sortCards (column -> priority -> id); this
-// renderer never sorts — it only groups by iterating STATES and filtering, so
-// lane order comes from paths.js and within-lane order is preserved exactly.
+// `cards` is already sorted by board.sortCards (column -> priority -> newest id
+// first); this renderer never sorts — it only groups by iterating STATES and
+// filtering, so lane order comes from paths.js and within-lane order is
+// preserved exactly.
 export function renderCardList(cards, opts = {}) {
   const { project, doneHidden, state = null, epic = null, everyLane = false } = opts;
   const clauses = [`${cards.length} shown`];

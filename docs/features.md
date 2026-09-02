@@ -28,8 +28,8 @@ conductor's own tool — not a team/shared surface.
   unset; there is **no default**, because a fabricated `MEDIUM` is indistinguishable from a
   deliberate one afterwards. Set it at filing time (`file_card`'s `priority`, or the GUI's New-card
   form); change it later with `update_card`, which also accepts `null` to clear a level back to
-  unset. Listings sort by **column first, then priority CRITICAL→LOW, then unset, then id** — an
-  unjudged card never outranks a judged one. An unrecognised value from a live caller is refused
+  unset. Listings sort by **column first, then priority CRITICAL→LOW, then unset, then card number
+  descending (newest first)** — an unjudged card never outranks a judged one. An unrecognised value from a live caller is refused
   `INVALID_STATE`; a value read off disk is never refused — see "legacy tolerance" in
   `docs/architecture.md`.
 - **Epics:** first-class (`goal` + a per-state rollup computed on read). A card carries an optional
@@ -108,6 +108,12 @@ so it shares the same `board.js` service layer and per-project mutex as the MCP 
   board to cards carrying a plan link (client-side, not remembered across reloads). A card's legal
   move targets come from `GET /api/board/meta` (the single source `ALLOWED_TRANSITIONS`), so the
   GUI never offers an illegal move.
+  The board is **viewport-height** and **each lane scrolls on its own**: a long `done` lane no
+  longer stretches the page past every other lane header. Lane headers (name + count) stay visible
+  while their cards scroll, each lane keeps its own offset, and an offset survives a
+  refresh/move/edit re-render. On a **short or narrow** window (below 980px the grid reflows to two
+  lanes per row) the board falls back to its content height and the page scrolls again, so every
+  card stays reachable.
 - **Card detail** — opens to a read-only view: Goal, Priority (always stated, reading `unset` when
   the card is unjudged rather than showing blank),
   Acceptance checklist, the

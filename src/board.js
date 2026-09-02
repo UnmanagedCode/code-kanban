@@ -463,15 +463,38 @@ function summary(t) {
   };
 }
 
-// Stable ordering: by column, then priority (CRITICAL first, LOW last, unset
-// after LOW), then id. priorityRank is index-into-PRIORITIES, so ascending =
-// highest priority first, and unset ranks past the end — an unjudged card never
-// outranks a judged one.
+// Newest-first id compare — sortCards' tiebreak. NUMERIC on the `YYYY-NNNN`
+// shape rather than a reversed string compare: `padStart(4, '0')`
+// (src/store.js:91-104) pads but never truncates, so card 10000 mints
+// `2026-10000`, which a string compare would place BEFORE `2026-9999`.
+// The year is compared first and on its own so an id whose year and number
+// DISAGREE still answers by creation year — impossible from our own allocator
+// (the sequence never resets on rollover, src/store.js:86-90) but reachable
+// from a sync peer running its own counter, since any non-empty id string is
+// accepted on the wire (src/board.js:1416). It is also what makes readEpic's
+// cross-project listing, which flat-maps independent per-project counters,
+// come out newest-first rather than by whichever counter ran further.
+// An id that doesn't match the shape falls back to a reversed string compare,
+// so the order stays total and deterministic rather than collapsing to a tie.
+const ID_SHAPE = /^(\d+)-(\d+)$/;
+function compareIdDesc(a, b) {
+  const ma = ID_SHAPE.exec(a);
+  const mb = ID_SHAPE.exec(b);
+  if (!ma || !mb) return b.localeCompare(a);
+  return Number(mb[1]) - Number(ma[1]) || Number(mb[2]) - Number(ma[2]);
+}
+
+// Ordering: by column, then priority (CRITICAL first, LOW last, unset after
+// LOW), then card number DESCENDING — newest first within a level. priorityRank
+// is index-into-PRIORITIES, so ascending = highest priority first, and unset
+// ranks past the end: an unjudged card never outranks a judged one no matter
+// how new it is. The id key is ONLY a tiebreak within a priority level —
+// reversing its direction did not touch the priority semantics (src/priority.js).
 function sortCards(tasks) {
   return tasks.sort((a, b) =>
     STATES.indexOf(a.state) - STATES.indexOf(b.state)
     || priorityRank(a.priority) - priorityRank(b.priority)
-    || a.id.localeCompare(b.id));
+    || compareIdDesc(a.id, b.id));
 }
 
 // ---- worker + conductor ----
