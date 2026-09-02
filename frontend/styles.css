@@ -172,7 +172,28 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px 32px; display:
 .badge.epic-cross { color: var(--progress); border-color: var(--progress); margin-left: 6px; }
 .badge.plan { color: var(--warn); border-color: var(--warn); }
 
-.epics { display: flex; flex-direction: column; gap: 8px; }
+.epics {
+  display: flex; flex-direction: column; gap: 8px;
+  /* Capped at ~25% of the viewport, not reserved — flex-grow stays 0 (the
+     default) so a short epics list still sizes to its own content, and this
+     only clamps once it would otherwise outgrow the cap. overflow-x: hidden
+     is required alongside overflow-y: auto (see .column-body above): setting
+     only overflow-y computes overflow-x to auto too, adding a spurious
+     horizontal scrollbar. No breakpoint opt-out like .board's: that one
+     exists because the grid reflows to 3 rows below 980px, a reflow-specific
+     problem. Epics stays a single vertical list at every width, so nothing
+     forces the cap off — and dropping it on a narrow screen would bury the
+     board under a long epics list on exactly the viewport where a compact
+     layout matters most. min-height is a floor, same idea as .board's: a
+     non-visible overflow makes a flex item's automatic minimum size resolve
+     to 0 (spec quirk), so without it .board's own 260px floor squeezes this
+     pane away to nothing on a short window instead of sharing the space —
+     the header and part of the first row must always stay visible. */
+  max-height: 25vh;
+  min-height: 72px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
 .epics-head { display: flex; align-items: center; justify-content: space-between; }
 .epics-head h2 { font-size: 14px; margin: 0; }
 .epic-list { display: flex; flex-direction: column; gap: 6px; }
