@@ -32,7 +32,7 @@ the epic spans. Near-free: `listEpics` already walks those cards for the rollup.
 - **Empty ≠ completed.** `completed = total > 0 && done === total`, derived from the same
   `countStates` rollup — an epic with zero cards stays active.
 - **`lastActivity` is not in the response.** It's a hidden-stamp derivative; the listEpics entry
-  is a whitelist `{slug,title,rollup,projects,completed}` (pinned in `tests/sync.test.mjs`).
+  is a whitelist `{slug,title,plan,rollup,projects,completed}` (pinned in `tests/sync.test.mjs`).
 - **Blind spots (accepted):** deleting a card, or re-pointing it from epic A to B, does not bump A
   (no stamp moves on A's side).
 - **GUI never recomputes `completed`** — it splits on the server flag. No toggle, no collapsible

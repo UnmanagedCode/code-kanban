@@ -11,12 +11,12 @@ GUI relies on — the things a reader can't quickly re-derive by skimming the ro
 | `GET /api/projects` | `projects.listProjects` | Catalog for the selector; same source `validateProject` uses. Not board state — does **not** take the project mutex. |
 | `GET /api/board/meta` | `STATES` + `ALLOWED_TRANSITIONS` | Returns `{states, transitions:["from>to"]}`. The GUI's single source for legal move targets. |
 | `GET /api/board/:project/cards` | `listCards` | `?state`/`?epic` filters. |
-| `GET /api/board/:project/cards/:id` | `readCard` | Full card: goal, acceptance, logbook. |
+| `GET /api/board/:project/cards/:id` | `readCard` | Full card: goal, acceptance, logbook. `?includePlan=1\|true` (`wantsPlan`) adds the plan body. |
 | `POST /api/board/:project/cards` | `fileCard` | `sessionId: GUI_ACTOR`. Lands in `triage`. |
 | `PATCH /api/board/:project/cards/:id` | `updateCard` | Body **is** the `fields` object. |
 | `POST /api/board/:project/cards/:id/move` | `moveCard` | `owner: owner || GUI_ACTOR`; `commit` passed through as-is. |
-| `GET /api/board/:project/epics` | `listEpics` | With rollups. |
-| `GET /api/board/:project/epics/:slug` | `readEpic` | Epic + its cards. |
+| `GET /api/board/:project/epics` | `listEpics` | With rollups; each row carries its raw `plan` link for the row badge. |
+| `GET /api/board/:project/epics/:slug` | `readEpic` | Epic + its cards. `?includePlan` as for a card (also on `GET /api/epics/:slug`); the GUI renders it with the card's `planSection`. |
 | `POST /api/board/:project/epics` | `createEpic` | **Upsert** — see below. |
 
 ## Envelope pass-through
