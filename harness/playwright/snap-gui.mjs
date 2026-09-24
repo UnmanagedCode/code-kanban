@@ -24,7 +24,8 @@
 //       `Completed · N` separator, then completed epics; the epic <select>s
 //       list completed epics in a "Completed" optgroup
 //   22. an epic's plan: the `plan` badge on its epics-pane row, its detail
-//       panel's Plan section (link + file body), an unplanned epic showing no
+//       panel's Plan section (link + file body) for a project-scoped and a
+//       cross-project epic, an unplanned epic showing no
 //       Plan section, and a deleted plan file rendering "(file not found)"
 // Reuses withPage/waitForServer from the shared code-playwright harness — no
 // chromium/launch logic here. Run: node harness/playwright/snap-gui.mjs
@@ -34,7 +35,7 @@ import { fileURLToPath } from 'node:url';
 import fs from 'node:fs/promises';
 import { withPage, waitForServer } from '../../../code-playwright/browser.mjs';
 import { bootKanban } from './boot-kanban.mjs';
-import { plansDir } from '../../src/paths.js';
+import { plansDir, boardPlansDir } from '../../src/paths.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = path.join(__dirname, 'screenshots');
@@ -247,8 +248,8 @@ async function main() {
       // 6. Plan badge: back on demo, exactly one card carries a plan link.
       await page.selectOption('#project-select', PROJECT);
       await page.waitForFunction(() => document.querySelector('#project-select')?.value === 'demo', { timeout: 10_000 });
-      await page.waitForSelector('.badge.plan', { timeout: 10_000 });
-      const planBadges = await page.locator('.badge.plan').count();
+      await page.waitForSelector('.card .badge.plan', { timeout: 10_000 });
+      const planBadges = await page.locator('.card .badge.plan').count();
       if (planBadges !== 1) throw new Error(`expected exactly 1 plan badge, saw ${planBadges}`);
       await page.screenshot({ path: path.join(SHOTS, 'gui-6-plan-badge.png'), fullPage: true });
       console.log('snapped plan badge');
@@ -620,11 +621,20 @@ async function main() {
     //     the MCP bridge's create_epic (an upsert that keeps title/goal).
     const epicPlan = path.join(plansDir(PROJECT), 'epic-search.md');
     await fs.writeFile(epicPlan, '# Plan — search epic\n\nRank results by BM25.\n');
-    const mcp = await fetch(`${srv.url}/api/mcp`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ tool: 'create_epic', arguments: { project: PROJECT, slug: 'search', title: 'Search', plan: 'epic-search.md' } }),
-    }).then((x) => x.json());
-    if (mcp?.result?.ok !== true) throw new Error(`step 22 seed create_epic refused: ${JSON.stringify(mcp)}`);
+    const createEpic = async (args) => {
+      const mcp = await fetch(`${srv.url}/api/mcp`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ tool: 'create_epic', arguments: args }),
+      }).then((x) => x.json());
+      if (mcp?.result?.ok !== true) throw new Error(`step 22 seed create_epic ${args.slug} refused: ${JSON.stringify(mcp)}`);
+    };
+    await createEpic({ project: PROJECT, slug: 'search', title: 'Search', plan: 'epic-search.md' });
+    // The cross-project epic's board: plan lives in the board-level plans dir,
+    // and its detail reads through openEpic's other branch (api/epics/:slug).
+    const crossPlan = path.join(boardPlansDir(), 'epic-platform.md');
+    await fs.mkdir(path.dirname(crossPlan), { recursive: true });
+    await fs.writeFile(crossPlan, '# Plan — platform epic\n\nOne logger, one config service.\n');
+    await createEpic({ projects: [PROJECT, PROJECT2], slug: 'platform', title: 'Platform', plan: 'epic-platform.md' });
 
     await withPage(async (page) => {
       await page.goto(srv.url + '/', { waitUntil: 'domcontentloaded' });
@@ -633,10 +643,11 @@ async function main() {
       await page.waitForFunction((v) => document.querySelector('#project-select')?.value === v, PROJECT, { timeout: 10_000 });
       await page.waitForSelector('.epic-row .badge.plan', { timeout: 10_000 });
       const epicBadges = await page.locator('.epic-row .badge.plan').count();
-      assert.equal(epicBadges, 1, `expected exactly 1 epic plan badge, saw ${epicBadges}`);
+      assert.equal(epicBadges, 2, `expected exactly 2 epic plan badges (search + platform), saw ${epicBadges}`);
       const searchRow = '.epic-row:has(.epic-slug:text-is("search"))';
       assert.equal(await page.locator(`${searchRow} .badge.plan`).count(), 1, 'the plan badge must sit on the search row');
       assert.equal(await page.locator(`${searchRow} .badge.plan`).getAttribute('title'), 'board:epic-search.md');
+      assert.equal(await page.locator('.epic-row:has(.epic-slug:text-is("auth")) .badge.plan').count(), 0, 'auth is unplanned');
       await page.locator('#epics').screenshot({ path: path.join(SHOTS, 'gui-22a-epic-plan-badge.png') });
 
       const openEpicDetail = async (slug) => {
@@ -653,6 +664,14 @@ async function main() {
       await page.waitForSelector('#detail-overlay .detail-section:has-text("Rank results by BM25")', { timeout: 10_000 });
       assert.equal(await page.locator('#detail-overlay .plan-link').textContent(), 'board:epic-search.md');
       await page.screenshot({ path: path.join(SHOTS, 'gui-22b-epic-plan-detail.png'), fullPage: false });
+      await closeDetail();
+
+      // Cross-project branch: the row's slug text is "platform · demo, web".
+      await page.click('.epic-row:has(.badge.epic-cross) button');
+      await page.waitForSelector('#detail-overlay:not(.hidden) .detail-title', { timeout: 10_000 });
+      await page.waitForSelector('#detail-overlay .detail-section:has-text("One logger, one config service.")', { timeout: 10_000 });
+      assert.equal(await page.locator('#detail-overlay .plan-link').textContent(), 'board:epic-platform.md');
+      await page.screenshot({ path: path.join(SHOTS, 'gui-22d-cross-epic-plan-detail.png'), fullPage: false });
       await closeDetail();
 
       await openEpicDetail('auth');
