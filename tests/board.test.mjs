@@ -3326,3 +3326,169 @@ test('create_epic with a malformed plan -> INVALID_STATE before any lock; nothin
     assert.equal((await board.readEpic({ project: 'demo', slug: 'auth' })).code, 'EPIC_UNKNOWN');
   } finally { await cleanup(root); }
 });
+
+// ---- epic ordering (list_epics): active first, most-recent activity, slug ----
+// Stamps are fixed ISO strings written straight to disk (no wall clock), so
+// every recency relation below is set by the fixture, not by write timing.
+const T = (d) => `2026-0${d}-01T00:00:00.000Z`;
+function seedEpic(project, slug, { created = T(1), updated } = {}) {
+  store.ensureProjectDirs(project);
+  store.writeEpic(project, { slug, title: slug.toUpperCase(), created, updated, goal: '', logbook: [] });
+}
+let seedSeq = 0;
+function seedCard(project, state, { epic, created = T(1), updated } = {}) {
+  store.ensureProjectDirs(project);
+  const id = `2026-${String(++seedSeq).padStart(4, '0')}`;
+  store.writeCard(project, state, { id, title: id, epic, created, updated, depends_on: [], goal: '', acceptance: [], logbook: [] });
+  return id;
+}
+const slugsOf = async (project) => (await board.listEpics({ project })).epics.map((e) => e.slug);
+
+// Pins: with no card activity, epics come back newest `updated` first.
+test('listEpics: orders epics by their own updated stamp, newest first', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    seedEpic('demo', 'mid', { updated: T(3) });
+    seedEpic('demo', 'old', { updated: T(2) });
+    seedEpic('demo', 'new', { updated: T(5) });
+    assert.deepEqual(await slugsOf('demo'), ['new', 'mid', 'old']);
+  } finally { await cleanup(root); }
+});
+
+// Pins: a member card's updated counts toward its epic's recency (last activity).
+test('listEpics: a recently touched member card floats its epic to the top', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    seedEpic('demo', 'old', { updated: T(2) });
+    seedEpic('demo', 'new', { updated: T(5) });
+    seedCard('demo', 'todo', { epic: 'old', updated: T(7) });
+    // A card of NO epic, newer still, must not lift anything.
+    seedCard('demo', 'todo', { epic: null, updated: T(9) });
+    assert.deepEqual(await slugsOf('demo'), ['old', 'new']);
+  } finally { await cleanup(root); }
+});
+
+// Pins: a card's recency counts only for ITS epic, not for another epic.
+test('listEpics: a card only lifts the epic it belongs to', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    seedEpic('demo', 'a', { updated: T(3) });
+    seedEpic('demo', 'b', { updated: T(2) });
+    seedEpic('demo', 'c', { updated: T(4) });
+    seedCard('demo', 'todo', { epic: 'b', updated: T(8) });
+    assert.deepEqual(await slugsOf('demo'), ['b', 'c', 'a']);
+  } finally { await cleanup(root); }
+});
+
+// Pins: a missing updated falls back to created — for the epic AND for a card.
+test('listEpics: missing updated falls back to created (epic and card)', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    seedEpic('demo', 'stamped', { created: T(1), updated: T(4) });
+    seedEpic('demo', 'legacy', { created: T(6) }); // no updated: created (6) wins over 4
+    assert.deepEqual(await slugsOf('demo'), ['legacy', 'stamped']);
+    seedEpic('demo', 'cardy', { created: T(1) });
+    seedCard('demo', 'todo', { epic: 'cardy', created: T(8) }); // card with no updated
+    assert.deepEqual(await slugsOf('demo'), ['cardy', 'legacy', 'stamped']);
+  } finally { await cleanup(root); }
+});
+
+// Pins: an unparseable stamp neither throws nor outranks any real stamp.
+test('listEpics: an unparseable stamp sorts last in its group without throwing', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    seedEpic('demo', 'aaa-garbled', { created: 'not-a-date', updated: 'garbage' });
+    seedEpic('demo', 'zzz-real', { updated: T(1) });
+    const r = await board.listEpics({ project: 'demo' });
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.epics.map((e) => e.slug), ['zzz-real', 'aaa-garbled']);
+  } finally { await cleanup(root); }
+});
+
+// Pins: equal last activity is broken by slug ascending.
+test('listEpics: equal activity ties break by slug ascending', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    for (const s of ['delta', 'alpha', 'charlie', 'bravo']) seedEpic('demo', s, { updated: T(3) });
+    assert.deepEqual(await slugsOf('demo'), ['alpha', 'bravo', 'charlie', 'delta']);
+  } finally { await cleanup(root); }
+});
+
+// Pins: completed = ≥1 card and all done; empty and mixed epics stay active; the
+// completed group sorts after every active epic even when it is the newest, and
+// orders internally by recency then slug.
+test('listEpics: all-done epics are completed and sort after every active epic', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    seedEpic('demo', 'done-new', { updated: T(9) });
+    seedCard('demo', 'done', { epic: 'done-new', updated: T(9) });
+    seedCard('demo', 'done', { epic: 'done-new', updated: T(1) });
+    seedEpic('demo', 'done-old-b', { updated: T(2) });
+    seedCard('demo', 'done', { epic: 'done-old-b', updated: T(2) });
+    seedEpic('demo', 'done-old-a', { updated: T(2) });
+    seedCard('demo', 'done', { epic: 'done-old-a', updated: T(2) });
+    seedEpic('demo', 'empty', { updated: T(1) });
+    seedEpic('demo', 'mixed', { updated: T(3) });
+    seedCard('demo', 'done', { epic: 'mixed', updated: T(3) });
+    seedCard('demo', 'todo', { epic: 'mixed', updated: T(3) });
+
+    const { epics } = await board.listEpics({ project: 'demo' });
+    assert.deepEqual(epics.map((e) => e.slug), ['mixed', 'empty', 'done-new', 'done-old-a', 'done-old-b']);
+    assert.deepEqual(
+      Object.fromEntries(epics.map((e) => [e.slug, e.completed])),
+      { mixed: false, empty: false, 'done-new': true, 'done-old-a': true, 'done-old-b': true },
+    );
+  } finally { await cleanup(root); }
+});
+
+// Pins: a cross epic interleaves with project epics by recency (not appended),
+// and its completed flag spans every member project's cards.
+test('listEpics: cross epics interleave by recency; completed spans all members', async () => {
+  const root = await freshRoot();
+  useProjects(['web', 'api']);
+  try {
+    seedEpic('web', 'newer', { updated: T(6) });
+    seedEpic('web', 'older', { updated: T(2) });
+    store.writeCrossEpic({ slug: 'plat', title: 'Plat', projects: ['web', 'api'], created: T(4), goal: '', logbook: [] });
+    seedCard('web', 'done', { epic: 'plat', updated: T(4) });
+    const apiCard = seedCard('api', 'todo', { epic: 'plat', updated: T(4) });
+
+    let { epics } = await board.listEpics({ project: 'web' });
+    assert.deepEqual(epics.map((e) => e.slug), ['newer', 'plat', 'older']);
+    assert.equal(epics[1].completed, false); // done in web, todo in api
+
+    // Now the api card is done too: completed across both projects.
+    fs.renameSync(path.join(stateDir('api', 'todo'), `${apiCard}.md`), path.join(stateDir('api', 'done'), `${apiCard}.md`));
+    ({ epics } = await board.listEpics({ project: 'web' }));
+    assert.deepEqual(epics.map((e) => e.slug), ['newer', 'older', 'plat']);
+    assert.equal(epics[2].completed, true);
+
+    // A card in the OTHER member project is what makes the cross epic most recent.
+    seedCard('api', 'todo', { epic: 'plat', updated: T(8) });
+    assert.deepEqual(await slugsOf('web'), ['plat', 'newer', 'older']);
+  } finally { await cleanup(root); }
+});
+
+// Pins: compareEpics is a strict total order — every input order sorts to one answer.
+test('compareEpics: same answer for every input order', async () => {
+  const E = (slug, completed, lastActivity) => ({ slug, completed, lastActivity });
+  const SET = [
+    E('b', false, 5), E('a', false, 5), E('c', false, 9), E('d', false, -Infinity),
+    E('x', true, 10), E('w', true, 1), E('v', true, 1),
+  ];
+  const EXPECTED = ['c', 'a', 'b', 'd', 'x', 'v', 'w'];
+  const permute = (xs) => (xs.length <= 1 ? [xs] : xs.flatMap(
+    (x, i) => permute([...xs.slice(0, i), ...xs.slice(i + 1)]).map((rest) => [x, ...rest]),
+  ));
+  for (const p of permute(SET)) {
+    assert.deepEqual([...p].sort(board._compareEpics).map((e) => e.slug), EXPECTED);
+  }
+  assert.equal(board._compareEpics(SET[0], { ...SET[0] }), 0);
+});

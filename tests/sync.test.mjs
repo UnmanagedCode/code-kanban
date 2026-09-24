@@ -477,6 +477,8 @@ test('epic hidden fields: absent from readEpic/listEpics + summary; present only
     assert.ok(!('updated' in re.epic) && !('node' in re.epic));
     for (const e of (await board.listEpics({ project: 'alpha' })).epics) {
       assert.ok(!('updated' in e) && !('node' in e));
+      // Pins: the listEpics entry is a whitelist — the lastActivity sort key never leaks.
+      assert.deepEqual(Object.keys(e).sort(), ['completed', 'projects', 'rollup', 'slug', 'title']);
     }
     const exp = await board.exportBoard({ scope: 'all' });
     assert.ok(exp.projectEpics.alpha[0].updated && exp.projectEpics.alpha[0].node);
@@ -940,5 +942,19 @@ test('a cross epic with non-string members is filtered, not fatal — and the le
     const re = await board.readEpic({ slug: 'plat' });
     assert.equal(re.ok, true);
     assert.deepEqual(re.epic.projects, ['alpha', 'beta']);
+  });
+});
+
+// Pins: epic order follows the synced `updated` stamp, not file mtime — a peer
+// epic just written by the pull, but carrying an OLDER stamp, sorts below a
+// locally newer epic.
+test('listEpics after a pull orders by synced stamp, not by write time', async () => {
+  await withRoot(async () => {
+    seedProjectEpic('alpha', { slug: 'local', updated: '2026-05-01T00:00:00.000Z' });
+    serveFull({ projects: { alpha: [] }, projectEpics: { alpha: [pEpic({ slug: 'peer', updated: '2026-02-01T00:00:00.000Z' })] } });
+    const r = await pull('project', 'alpha');
+    assert.equal(r.summary.epicsAdded, 1);
+    const slugs = (await board.listEpics({ project: 'alpha' })).epics.map((e) => e.slug);
+    assert.deepEqual(slugs, ['local', 'peer']);
   });
 });
