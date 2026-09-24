@@ -27,6 +27,8 @@ the epic spans. Near-free: `listEpics` already walks those cards for the rollup.
 - **Fallback, no migration.** `updated` can be null at read time on a legacy epic (the sync
   backfill only runs on export/merge), so read `updated ?? created`. Missing or unparseable →
   `-Infinity`: sorts last in its group, never throws (a peer may send any string).
+  A bare `updated:` line would read as `''` (not nullish) and skip the fallback, so
+  `parseEpicFile` (`src/store.js`) coerces empty `created`/`updated` to `null`, as `cardfile.parse` does.
 - **Empty ≠ completed.** `completed = total > 0 && done === total`, derived from the same
   `countStates` rollup — an epic with zero cards stays active.
 - **`lastActivity` is not in the response.** It's a hidden-stamp derivative; the listEpics entry

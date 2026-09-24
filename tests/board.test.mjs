@@ -3492,3 +3492,17 @@ test('compareEpics: same answer for every input order', async () => {
   }
   assert.equal(board._compareEpics(SET[0], { ...SET[0] }), 0);
 });
+
+// Pins: a bare `updated:` line on disk reads as unset, so recency falls back to
+// `created` — an empty string must not defeat the `updated ?? created` fallback.
+test('listEpics: a bare `updated:` line falls back to created', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    seedEpic('demo', 'stamped', { updated: T(4) });
+    fs.writeFileSync(path.join(epicsDir('demo'), 'bare.md'),
+      `---\nslug: bare\ntitle: Bare\nproject: demo\ncreated: ${T(6)}\nupdated:\n---\n## Goal\n\n## Logbook\n`);
+    assert.deepEqual(await slugsOf('demo'), ['bare', 'stamped']);
+    assert.equal(store.readEpic('demo', 'bare').updated, null);
+  } finally { await cleanup(root); }
+});
