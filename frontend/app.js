@@ -241,6 +241,7 @@ function renderEpics() {
       el('div', { class: 'epic-title' }, [
         e.title,
         e.projects ? el('span', { class: 'badge epic-cross' }, 'cross-project') : null,
+        e.plan ? el('span', { class: 'badge plan', title: e.plan }, 'plan') : null,
       ]),
       el('div', { class: 'epic-slug' }, e.projects ? `${e.slug} · ${e.projects.join(', ')}` : e.slug),
     ]),
@@ -281,9 +282,10 @@ function renderRollup(rollup) {
 async function openEpic(e) {
   // A cross-project epic (e.projects present) has no owning project — read it by
   // slug at the top-level route; a project-scoped one reads under its project.
+  // includePlan=1 as in openDetail: the plan fields ride top-level on the envelope.
   const url = e.projects
-    ? `api/epics/${encodeURIComponent(e.slug)}`
-    : `api/board/${encodeURIComponent(state.current)}/epics/${encodeURIComponent(e.slug)}`;
+    ? `api/epics/${encodeURIComponent(e.slug)}?includePlan=1`
+    : `api/board/${encodeURIComponent(state.current)}/epics/${encodeURIComponent(e.slug)}?includePlan=1`;
   let data;
   try { data = await api(url); }
   catch (err) { return setStatus(`Read epic failed: ${err.message}`, 'err'); }
@@ -302,6 +304,7 @@ async function openEpic(e) {
         cross ? el('span', { class: 'badge' }, t.project) : null,
       ]))),
     ),
+    planSection(data.epic, planFromEnvelope(data)),
   ]);
   showDetail(body);
 }
@@ -323,9 +326,12 @@ async function openDetail(id) {
   catch (e) { return setStatus(`Read card failed: ${e.message}`, 'err'); }
   const r = refusalReason(data);
   if (r) return setStatus(r, 'err');
-  openDetailNode(data.card, false, {
-    body: data.plan_body, missing: data.plan_missing, truncated: data.plan_truncated,
-  });
+  openDetailNode(data.card, false, planFromEnvelope(data));
+}
+
+// A card or epic read envelope's top-level plan fields, in planSection's shape.
+function planFromEnvelope(data) {
+  return { body: data.plan_body, missing: data.plan_missing, truncated: data.plan_truncated };
 }
 
 function planSection(t, plan) {

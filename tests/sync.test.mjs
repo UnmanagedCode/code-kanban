@@ -478,7 +478,7 @@ test('epic hidden fields: absent from readEpic/listEpics + summary; present only
     for (const e of (await board.listEpics({ project: 'alpha' })).epics) {
       assert.ok(!('updated' in e) && !('node' in e));
       // Pins: the listEpics entry is a whitelist — the lastActivity sort key never leaks.
-      assert.deepEqual(Object.keys(e).sort(), ['completed', 'projects', 'rollup', 'slug', 'title']);
+      assert.deepEqual(Object.keys(e).sort(), ['completed', 'plan', 'projects', 'rollup', 'slug', 'title']);
     }
     const exp = await board.exportBoard({ scope: 'all' });
     assert.ok(exp.projectEpics.alpha[0].updated && exp.projectEpics.alpha[0].node);

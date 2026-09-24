@@ -37,6 +37,9 @@ const wrap = (fn) => async (req, res) => {
   }
 };
 
+// ?includePlan=1|true on the card and epic reads; any other value is false.
+const wantsPlan = (req) => req.query.includePlan === '1' || req.query.includePlan === 'true';
+
 export function buildRoutes() {
   const r = express.Router();
   r.use(express.json({ limit: '256kb' }));
@@ -85,7 +88,7 @@ export function buildRoutes() {
   r.get('/board/:project/cards/:id', wrap((req) => board.readCard({
     project: req.params.project,
     id: req.params.id,
-    includePlan: req.query.includePlan === '1' || req.query.includePlan === 'true',
+    includePlan: wantsPlan(req),
   })));
 
   // File a new card into triage. acceptance is string[] -> checkboxes.
@@ -117,8 +120,9 @@ export function buildRoutes() {
   r.get('/board/:project/epics', wrap((req) =>
     board.listEpics({ project: req.params.project })));
 
+  // ?includePlan=1 additionally returns the linked plan file's body, as for a card.
   r.get('/board/:project/epics/:slug', wrap((req) =>
-    board.readEpic({ project: req.params.project, slug: req.params.slug })));
+    board.readEpic({ project: req.params.project, slug: req.params.slug, includePlan: wantsPlan(req) })));
 
   // Create or refresh an epic (upsert: `title` overwrites, every omitted optional
   // field is preserved). Deliberately does NOT pass `plan` — same precedent as
@@ -138,7 +142,7 @@ export function buildRoutes() {
     return board.createEpic({ projects, slug, title, goal });
   }));
 
-  r.get('/epics/:slug', wrap((req) => board.readEpic({ slug: req.params.slug })));
+  r.get('/epics/:slug', wrap((req) => board.readEpic({ slug: req.params.slug, includePlan: wantsPlan(req) })));
 
   // ---- cross-instance sync ----
 

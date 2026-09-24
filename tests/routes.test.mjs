@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { freshRoot, cleanup } from './_helpers.mjs';
-import { plansDir } from '../src/paths.js';
+import { plansDir, boardPlansDir } from '../src/paths.js';
 import { _setProjectFetcher } from '../src/projects.js';
 import * as board from '../src/board.js';
 import { PRIORITIES } from '../src/priority.js';
@@ -496,6 +496,89 @@ test('GET /cards/:id?includePlan=1 returns plan_path + plan_body; without it, on
     // Any other value is falsy — the route coerces, it doesn't guess.
     assert.equal('plan_body' in (await json(`/api/board/demo/cards/${id}?includePlan=0`)).body, false);
   });
+});
+
+// Pins: both epic read routes forward ?includePlan=1|true to readEpic exactly as
+// the card route does — the body only when asked, plan_path always.
+test('GET /epics/:slug?includePlan=1 returns plan_body for project-scoped and cross-project epics', async () => {
+  const root = await freshRoot();
+  useProjects(['demo', 'api']);
+  const srv = await boot();
+  try {
+    const file = path.join(plansDir('demo'), 'e.md');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '# epic plan\n');
+    assert.equal((await board.createEpic({ project: 'demo', slug: 'search', title: 'Search', plan: 'e.md' })).ok, true);
+
+    const plain = (await srv.json('/api/board/demo/epics/search')).body;
+    assert.equal(plain.epic.plan, 'board:e.md');
+    assert.equal(plain.plan_path, file);
+    assert.equal('plan_body' in plain, false); // no body unless asked
+    const withPlan = (await srv.json('/api/board/demo/epics/search?includePlan=1')).body;
+    assert.equal(withPlan.plan_body, '# epic plan\n');
+    assert.equal(withPlan.plan_missing, false);
+    assert.equal((await srv.json('/api/board/demo/epics/search?includePlan=true')).body.plan_body, '# epic plan\n');
+    assert.equal('plan_body' in (await srv.json('/api/board/demo/epics/search?includePlan=0')).body, false);
+
+    // A cross-project epic's board: link resolves under the board-level plans dir.
+    const xfile = path.join(boardPlansDir(), 'x.md');
+    fs.mkdirSync(path.dirname(xfile), { recursive: true });
+    fs.writeFileSync(xfile, '# cross plan\n');
+    assert.equal((await board.createEpic({ projects: ['demo', 'api'], slug: 'plat', title: 'Plat', plan: 'x.md' })).ok, true);
+    assert.equal('plan_body' in (await srv.json('/api/epics/plat')).body, false);
+    const x = (await srv.json('/api/epics/plat?includePlan=1')).body;
+    assert.equal(x.plan_path, xfile);
+    assert.equal(x.plan_body, '# cross plan\n');
+  } finally {
+    await srv.close();
+    await cleanup(root);
+  }
+});
+
+// Pins: a dead epic plan link degrades to plan_missing:true (never a refusal),
+// and an unplanned epic reports no plan at all.
+test('GET /epics/:slug?includePlan=1 with a deleted plan file -> ok, plan_missing; no plan -> nulls', async () => {
+  await withServer(async ({ json }) => {
+    const file = path.join(plansDir('demo'), 'gone.md');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, 'x');
+    await board.createEpic({ project: 'demo', slug: 'dead', title: 'Dead', plan: 'gone.md' });
+    fs.rmSync(file);
+    const dead = (await json('/api/board/demo/epics/dead?includePlan=1')).body;
+    assert.equal(dead.ok, true);
+    assert.equal(dead.plan_body, null);
+    assert.equal(dead.plan_missing, true);
+    assert.equal(dead.epic.plan, 'board:gone.md');
+
+    await board.createEpic({ project: 'demo', slug: 'none', title: 'None' });
+    const none = (await json('/api/board/demo/epics/none?includePlan=1')).body;
+    assert.equal(none.epic.plan, null);
+    assert.equal(none.plan_path, null);
+    assert.equal(none.plan_missing, false);
+  });
+});
+
+// Pins: each /board/:project/epics row carries its raw plan link (null when
+// unplanned), for project-scoped and cross-project rows alike.
+test('GET /board/:project/epics rows carry the plan link', async () => {
+  const root = await freshRoot();
+  useProjects(['demo', 'api']);
+  const srv = await boot();
+  try {
+    fs.mkdirSync(plansDir('demo'), { recursive: true });
+    fs.writeFileSync(path.join(plansDir('demo'), 'e.md'), 'x');
+    fs.mkdirSync(boardPlansDir(), { recursive: true });
+    fs.writeFileSync(path.join(boardPlansDir(), 'x.md'), 'x');
+    await board.createEpic({ project: 'demo', slug: 'planned', title: 'P', plan: 'e.md' });
+    await board.createEpic({ project: 'demo', slug: 'bare', title: 'B' });
+    await board.createEpic({ projects: ['demo', 'api'], slug: 'xplan', title: 'X', plan: 'x.md' });
+    await board.createEpic({ projects: ['demo', 'api'], slug: 'xbare', title: 'XB' });
+    const rows = Object.fromEntries((await srv.json('/api/board/demo/epics')).body.epics.map((e) => [e.slug, e.plan]));
+    assert.deepEqual(rows, { planned: 'board:e.md', bare: null, xplan: 'board:x.md', xbare: null });
+  } finally {
+    await srv.close();
+    await cleanup(root);
+  }
 });
 
 test('PATCH with an unresolvable plan field returns 200 PLAN_UNKNOWN', async () => {

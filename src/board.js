@@ -1578,7 +1578,7 @@ function compareEpics(a, b) {
 // which no caller can choose, so the permutation test drives the comparator.
 export const _compareEpics = compareEpics;
 
-// Entries: {slug, title, rollup, projects, completed}, ordered by compareEpics.
+// Entries: {slug, title, plan, rollup, projects, completed}, ordered by compareEpics.
 // lastActivity = max(epic's updated ?? created, each member card's updated ??
 // created) over every project the epic spans. completed = at least one card and
 // all of them done — an empty epic stays active.
@@ -1598,7 +1598,7 @@ export async function listEpics({ project } = {}) {
     for (const t of cards) {
       if (t.epic === slug) lastActivity = Math.max(lastActivity, stampMs(t));
     }
-    return { slug, title, rollup: counts, projects, completed: total > 0 && counts.done === total, lastActivity };
+    return { slug, title, plan: record?.plan ?? null, rollup: counts, projects, completed: total > 0 && counts.done === total, lastActivity };
   };
   const epics = store.listEpicSlugs(project).map((slug) => {
     const e = store.readEpic(project, slug);

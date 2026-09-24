@@ -138,7 +138,9 @@ so it shares the same `board.js` service layer and per-project mutex as the MCP 
   when its text is unchanged; saving with an empty box clears the list. Per-item ticking (toggling a
   single checkbox without touching the wording) is not exposed in the GUI — use `update_card`'s
   `{op:'done'}` over MCP for that, so the read-view checkboxes stay `disabled`.
-- **Epics** — rollup table; "open" reads one epic (+ its cards). New-epic form upserts by slug; its
+- **Epics** — rollup table; a row carries a `plan` badge (the link as its tooltip) when the epic
+  links a plan. "open" reads one epic (+ its cards) and, when linked, ends with a **Plan** section
+  exactly like a card's: the link plus the file body, `(file not found)` for a dead link. New-epic form upserts by slug; its
   "Span projects" multi-select makes a cross-project epic when ≥2 are picked (else project-scoped).
   Cross-project epics show a badge + member list; their detail lists each card's project. The
   rollup pane is capped at ~25% of the viewport height with its own scroller (a short list just
