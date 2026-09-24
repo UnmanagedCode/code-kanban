@@ -309,3 +309,13 @@ test('no description contains a changelog artifact', () => {
       `"${hit?.[0]}" is a changelog artifact — nobody reading this saw the earlier version. State the fact, not its history: ${desc}`);
   }
 });
+
+// Pins: the manifest (the conductor's only channel) advertises list_epics'
+// ordering and the `completed` flag, including the empty-epic rule.
+test('list_epics description advertises recency ordering and completed-last', () => {
+  const listEpics = manifest.mcp.tools.find((t) => t.name === 'list_epics');
+  assert.match(listEpics.description, /most-recently-active first/);
+  assert.match(listEpics.description, /completed: true/);
+  assert.match(listEpics.description, /come last/);
+  assert.match(listEpics.description, /no cards is not completed/);
+});

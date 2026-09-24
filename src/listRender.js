@@ -107,7 +107,15 @@ export function renderEpicList(epics, opts = {}) {
   if (epics.length === 0) return header;
 
   const lines = [header, ''];
+  // listEpics sorts completed epics last, so one separator before the first
+  // completed one splits the roster; it is omitted when none are completed.
+  const completed = epics.filter((e) => e.completed).length;
+  let separated = false;
   for (const e of epics) {
+    if (e.completed && !separated) {
+      lines.push(`── completed (${completed}) ──`);
+      separated = true;
+    }
     let line = `▸ ${e.slug}  ${oneLine(dash(e.title), 100)}`;
     if (Array.isArray(e.projects) && e.projects.length) line += `  cross: ${e.projects.join(', ')}`;
     lines.push(line);

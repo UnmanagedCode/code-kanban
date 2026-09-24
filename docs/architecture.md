@@ -88,6 +88,12 @@ Board DATA lives in the conductor's tree, not this repo:
 
 - **Epic rollups** are never stored — recomputed by scanning cards on each read. A cross-project
   epic aggregates the scan across every project in its frontmatter `projects:[…]` list.
+  `countStates` (`src/board.js`) is the one counter behind `read_epic` and `list_epics`.
+- **Epic order** (`list_epics`) is computed on read by `compareEpics` (`src/board.js`, test seam
+  `_compareEpics`): active before completed, then last activity (max of epic + member-card
+  `updated ?? created`) descending, then slug. **No migration** — the read-time `?? created`
+  fallback gives legacy files the value sync's backfill would persist. `listEpics` memoizes each
+  project's `listCards` for the call. See `.wiki/architecture/epic-ordering.md`.
 - **Cross-project epics** live in the top-level `epics/` dir (above `projects/`) and join cards by
   the same `epic:<slug>` field. A slug can't be both a cross-project epic and a per-project epic in
   one of its members (`createEpic` refuses `EPIC_CONFLICT` in both orders), so a card's epic slug is

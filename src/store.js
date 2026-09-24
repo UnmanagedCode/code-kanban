@@ -231,7 +231,10 @@ function parseEpicFile(text, seed) {
       if (idx === -1) continue;
       const key = lines[i].slice(0, idx).trim();
       const val = lines[i].slice(idx + 1).trim();
-      if (key === 'title' || key === 'created' || key === 'updated' || key === 'node') epic[key] = val;
+      // An empty timestamp reads as unset (null), as cardfile.parse does, so a
+      // bare `updated:` still takes readers' `updated ?? created` fallback.
+      if (key === 'created' || key === 'updated') epic[key] = val === '' ? null : val;
+      else if (key === 'title' || key === 'node') epic[key] = val;
       else if (key === 'plan') epic.plan = val === '' ? null : val;
       else if (key === 'projects' && Array.isArray(epic.projects)) {
         const inner = val.replace(/^\[/, '').replace(/\]$/, '').trim();

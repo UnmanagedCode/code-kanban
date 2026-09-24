@@ -149,7 +149,7 @@
       },
       {
         "name": "list_epics",
-        "description": "List a project's epics, including cross-project epics that span it. Conductor.",
+        "description": "List a project's epics, including cross-project epics that span it, ordered most-recently-active first (latest `updated` of the epic or any of its cards). Epics whose cards are all done (`completed: true`; an epic with no cards is not completed) come last. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {

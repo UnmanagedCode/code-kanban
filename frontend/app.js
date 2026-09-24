@@ -232,25 +232,43 @@ function renderCard(t) {
 
 // ---- epics ----------------------------------------------------------------
 
+// state.epics arrives sorted by the server (active by recency, then completed
+// ones); `completed` is the server's flag — never recomputed here.
 function renderEpics() {
   const root = $('#epics');
+  const row = (e) => el('div', { class: 'epic-row' }, [
+    el('div', {}, [
+      el('div', { class: 'epic-title' }, [
+        e.title,
+        e.projects ? el('span', { class: 'badge epic-cross' }, 'cross-project') : null,
+      ]),
+      el('div', { class: 'epic-slug' }, e.projects ? `${e.slug} · ${e.projects.join(', ')}` : e.slug),
+    ]),
+    renderRollup(e.rollup),
+    el('button', { class: 'ghost', type: 'button', onclick: () => openEpic(e) }, 'open'),
+  ]);
+  const active = state.epics.filter((e) => !e.completed);
+  const done = state.epics.filter((e) => e.completed);
   const list = state.epics.length
-    ? state.epics.map((e) => el('div', { class: 'epic-row' }, [
-        el('div', {}, [
-          el('div', { class: 'epic-title' }, [
-            e.title,
-            e.projects ? el('span', { class: 'badge epic-cross' }, 'cross-project') : null,
-          ]),
-          el('div', { class: 'epic-slug' }, e.projects ? `${e.slug} · ${e.projects.join(', ')}` : e.slug),
-        ]),
-        renderRollup(e.rollup),
-        el('button', { class: 'ghost', type: 'button', onclick: () => openEpic(e) }, 'open'),
-      ]))
+    ? [...active.map(row), done.length ? el('div', { class: 'epic-sep' }, `Completed · ${done.length}`) : null, ...done.map(row)]
     : [el('div', { class: 'hint' }, 'No epics yet.')];
   root.replaceChildren(
     el('div', { class: 'epics-head' }, [el('h2', {}, 'Epics')]),
     el('div', { class: 'epic-list' }, list),
   );
+}
+
+// Options for an epic <select>: none, active epics, then completed ones in a
+// "Completed" optgroup (a <select>'s native separator). `selected` keeps the
+// card's current epic selected even when it is completed.
+function epicOptions(selected) {
+  const opt = (e) => el('option', { value: e.slug, ...(selected === e.slug ? { selected: '' } : {}) }, e.slug);
+  const done = state.epics.filter((e) => e.completed);
+  return [
+    el('option', { value: '' }, '— none —'),
+    ...state.epics.filter((e) => !e.completed).map(opt),
+    done.length ? el('optgroup', { label: 'Completed' }, done.map(opt)) : null,
+  ];
 }
 
 function renderRollup(rollup) {
@@ -379,7 +397,6 @@ function renderLogLine(line) {
 // the plan body it already has (no second fetch). The plan link is NOT editable
 // here — it is set by the conductor / plan worker, never typed into the GUI.
 function renderEditForm(t, plan = null) {
-  const epicOpts = [el('option', { value: '' }, '— none —'), ...state.epics.map((e) => el('option', { value: e.slug, ...(t.epic === e.slug ? { selected: '' } : {}) }, e.slug))];
   // Captured now (form-build time) so doEdit can tell an untouched textarea
   // from an edited one at submit time — see acceptanceEdit.js.
   const acceptancePrefill = (t.acceptance || []).map((a) => a.text).join('\n');
@@ -389,7 +406,7 @@ function renderEditForm(t, plan = null) {
     el('label', { class: 'field' }, ['Acceptance (one per line)',
       el('textarea', { name: 'acceptance', rows: '3', dataset: { prefill: acceptancePrefill } }, acceptancePrefill)]),
     el('p', { class: 'hint' }, 'Ticked criteria keep their tick when the text is unchanged. Empty clears the list.'),
-    el('label', { class: 'field' }, ['Epic', el('select', { name: 'epic' }, epicOpts)]),
+    el('label', { class: 'field' }, ['Epic', el('select', { name: 'epic' }, epicOptions(t.epic))]),
     el('label', { class: 'field' }, ['Priority', el('select', { name: 'priority' }, priorityOptions(t.priority))]),
     el('label', { class: 'field' }, ['Depends on (comma-separated ids)', el('input', { name: 'depends_on', value: (t.depends_on || []).join(', ') })]),
     el('div', { class: 'form-error' }, ''),
@@ -449,13 +466,12 @@ async function moveCard(id, to) {
 // ---- new card form --------------------------------------------------------
 
 function renderCardForm() {
-  const epicOpts = [el('option', { value: '' }, '— none —'), ...state.epics.map((e) => el('option', { value: e.slug }, e.slug))];
   const form = el('form', { class: 'form-grid', onsubmit: doFileCard }, [
     el('h2', {}, 'New card'),
     el('label', { class: 'field' }, ['Title', el('input', { name: 'title', required: '' })]),
     el('label', { class: 'field' }, ['Goal', el('textarea', { name: 'goal', rows: '3' })]),
     el('label', { class: 'field' }, ['Acceptance (one per line)', el('textarea', { name: 'acceptance', rows: '3' })]),
-    el('label', { class: 'field' }, ['Epic', el('select', { name: 'epic' }, epicOpts)]),
+    el('label', { class: 'field' }, ['Epic', el('select', { name: 'epic' }, epicOptions(null))]),
     el('label', { class: 'field' }, ['Priority', el('select', { name: 'priority' }, priorityOptions(null))]),
     el('label', { class: 'field' }, ['Depends on (comma-separated ids)', el('input', { name: 'depends_on' })]),
     el('div', { class: 'form-error' }, ''),

@@ -548,6 +548,15 @@ test('list_epics rides the raw-text channel too: {ok, count} meta plus one text 
     assert.match(r.body.text[0], /▸ reads/);
     assert.match(r.body.text[0], /▸ platform/);
     assert.match(r.body.text[0], /cross: web, api/);
+    // Nothing is completed yet, so no separator.
+    assert.doesNotMatch(r.body.text[0], /── completed/);
+
+    // Pins: once an epic is completed the text carries the separator right
+    // above it, and meta stays exactly {ok, count}.
+    await mcp.handle({ tool: 'move_card', arguments: { project: 'api', id: t2.body.result.id, to: 'done' } });
+    const r2 = await mcp.handle({ tool: 'list_epics', arguments: { project: 'web' } });
+    assert.deepEqual(r2.body.meta, { ok: true, count: 2 });
+    assert.match(r2.body.text[0], /── completed \(1\) ──\n▸ platform/);
   } finally { await cleanup(root); }
 });
 

@@ -1534,41 +1534,83 @@ function mergeProject(project, remoteCards, remoteEpics, summary) {
   return { added: inserts.length, updated: replaces.length };
 }
 
-// Per-state counts for a project-scoped epic (one project's cards).
-function rollup(project, slug) {
+// Per-state counts of `slug`'s cards among `cards` (one or more projects'
+// listings). The one counter behind rollup/crossRollup AND listEpics, so the
+// read_epic rollup and the list_epics rollup (and its `completed` flag) can't drift.
+function countStates(cards, slug) {
   const counts = Object.fromEntries(STATES.map((s) => [s, 0]));
-  for (const t of store.listCards(project)) {
+  for (const t of cards) {
     if (t.epic === slug) counts[t.state] += 1;
   }
   return counts;
 }
 
-// Per-state counts for a cross-project epic, aggregated across all members.
-function crossRollup(slug, members) {
-  const counts = Object.fromEntries(STATES.map((s) => [s, 0]));
-  for (const p of members) {
-    for (const t of store.listCards(p)) {
-      if (t.epic === slug) counts[t.state] += 1;
-    }
-  }
-  return counts;
+// Per-state counts for a project-scoped epic (one project's cards).
+function rollup(project, slug) {
+  return countStates(store.listCards(project), slug);
 }
 
+// Per-state counts for a cross-project epic, aggregated across all members.
+function crossRollup(slug, members) {
+  return countStates(members.flatMap((p) => store.listCards(p)), slug);
+}
+
+// A version stamp as epoch ms for ordering; a missing or unparseable stamp (a
+// sync peer may send any string) is -Infinity, so it sorts last, never throws.
+function stampMs(rec) {
+  const ms = Date.parse(rec?.updated ?? rec?.created ?? '');
+  return Number.isNaN(ms) ? -Infinity : ms;
+}
+
+// Epic ordering: active before completed, then most recent activity first,
+// then slug ascending by code units (no locale dependence). Total within one
+// listEpics result: a slug is unique there (EPIC_CONFLICT forbids a project
+// epic and a cross epic sharing one). `lastActivity` is a sort key only — never
+// in the response (see .wiki/architecture/epic-ordering.md).
+function compareEpics(a, b) {
+  if (a.completed !== b.completed) return a.completed ? 1 : -1;
+  if (a.lastActivity !== b.lastActivity) return a.lastActivity > b.lastActivity ? -1 : 1;
+  if (a.slug === b.slug) return 0;
+  return a.slug < b.slug ? -1 : 1;
+}
+
+// Seam for tests, like _compareIdDesc: listEpics' input order is readdirSync's,
+// which no caller can choose, so the permutation test drives the comparator.
+export const _compareEpics = compareEpics;
+
+// Entries: {slug, title, rollup, projects, completed}, ordered by compareEpics.
+// lastActivity = max(epic's updated ?? created, each member card's updated ??
+// created) over every project the epic spans. completed = at least one card and
+// all of them done — an empty epic stays active.
 export async function listEpics({ project } = {}) {
   const bad = await requireProject(project);
   if (bad) return bad;
+  const cardCache = new Map();
+  const cardsOf = (p) => {
+    if (!cardCache.has(p)) cardCache.set(p, store.listCards(p));
+    return cardCache.get(p);
+  };
+  const entry = (slug, title, record, members, projects) => {
+    const cards = members.flatMap(cardsOf);
+    const counts = countStates(cards, slug);
+    const total = STATES.reduce((n, s) => n + counts[s], 0);
+    let lastActivity = stampMs(record);
+    for (const t of cards) {
+      if (t.epic === slug) lastActivity = Math.max(lastActivity, stampMs(t));
+    }
+    return { slug, title, rollup: counts, projects, completed: total > 0 && counts.done === total, lastActivity };
+  };
   const epics = store.listEpicSlugs(project).map((slug) => {
     const e = store.readEpic(project, slug);
-    return { slug, title: e?.title ?? '', rollup: rollup(project, slug), projects: null };
+    return entry(slug, e?.title ?? '', e, [project], null);
   });
   // Cross-project epics that span this project, with rollups over ALL members.
   for (const slug of store.listCrossEpicSlugs()) {
     const x = store.readCrossEpic(slug);
-    if (x && x.projects.includes(project)) {
-      epics.push({ slug, title: x.title, rollup: crossRollup(slug, x.projects), projects: x.projects });
-    }
+    if (x && x.projects.includes(project)) epics.push(entry(slug, x.title, x, x.projects, x.projects));
   }
-  return { ok: true, epics };
+  epics.sort(compareEpics);
+  return { ok: true, epics: epics.map(({ lastActivity, ...rest }) => rest) };
 }
 
 // Envelope: {ok, epic, logbook_total, plan_path[, plan_body, plan_truncated,

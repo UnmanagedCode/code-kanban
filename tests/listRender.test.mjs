@@ -109,3 +109,32 @@ test('renderEpicList: golden two-epic roster', () => {
 test('renderEpicList: zero epics renders the header alone', () => {
   assert.equal(renderEpicList([], { project: 'demo' }), 'EPICS demo (none)');
 });
+
+// Pins: exactly one separator, carrying the completed count, sits immediately
+// before the first completed epic (listEpics has already sorted them last).
+test('renderEpicList: one completed separator before the first completed epic', () => {
+  const r = { triage: 0, backlog: 0, todo: 0, 'in-progress': 0, done: 1 };
+  const out = renderEpicList([
+    { slug: 'live', title: 'Live', rollup: { ...r, todo: 1 }, projects: null, completed: false },
+    { slug: 'fin1', title: 'Fin 1', rollup: r, projects: null, completed: true },
+    { slug: 'fin2', title: 'Fin 2', rollup: r, projects: null, completed: true },
+  ], { project: 'demo' });
+  const lines = out.split('\n');
+  assert.equal(lines.filter((l) => l.startsWith('── completed')).length, 1, out);
+  const sep = lines.indexOf('── completed (2) ──');
+  assert.ok(sep > lines.indexOf('▸ live  Live'), out);
+  assert.equal(lines[sep + 1], '▸ fin1  Fin 1');
+});
+
+// Pins: the separator still appears (at the top) when every epic is completed.
+test('renderEpicList: all-completed roster still carries the separator', () => {
+  const r = { triage: 0, backlog: 0, todo: 0, 'in-progress': 0, done: 1 };
+  const out = renderEpicList([{ slug: 'fin', title: 'Fin', rollup: r, projects: null, completed: true }], { project: 'demo' });
+  assert.deepEqual(out.split('\n').slice(0, 4), ['EPICS demo (1)', '', '── completed (1) ──', '▸ fin  Fin']);
+});
+
+// Pins: no completed epic means no separator line at all.
+test('renderEpicList: no separator when nothing is completed', () => {
+  const out = renderEpicList(EPICS.map((e) => ({ ...e, completed: false })), { project: 'demo' });
+  assert.equal(out, GOLDEN_EPICS);
+});

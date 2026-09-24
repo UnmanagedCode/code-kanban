@@ -82,8 +82,8 @@ This is the key divergence from the card model, and it's deliberate. Cards use a
 because their numeric ids auto-mint and a collision means DIFFERENT cards. **Epics match by slug**
 (project epic keyed by `(project,slug)`, cross epic by `slug`) because the slug is human-chosen,
 addressable identity that cards reference via `epic:`. Consequences:
-- **No `uid` on epics.** They carry only `updated` (LWW clock, bumped by `createEpic` — the sole
-  epic mutator) and `node` (tiebreak). Both codec pairs in `store.js` (`writeEpic`/`readEpic`,
+- **No `uid` on epics.** They carry only `updated` (LWW clock, bumped by both epic mutators,
+  `createEpic` and `logEpic`) and `node` (tiebreak). Both codec pairs in `store.js` (`writeEpic`/`readEpic`,
   `writeCrossEpic`/`readCrossEpic`) share one serializer/parser half (`serializeEpicFile`/
   `parseEpicFile`), so a field added to an epic file lands on both kinds at once. Legacy epics get
   `updated = created` backfilled deterministically so shared slugs match.

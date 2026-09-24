@@ -207,6 +207,11 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px 32px; display:
   border-radius: 8px;
   padding: 6px 10px;
 }
+.epic-sep {
+  font-size: 11px; font-variant: small-caps; letter-spacing: .04em;
+  color: var(--ink-dim); border-top: 1px solid var(--line);
+  padding-top: 4px; margin-top: 2px;
+}
 .epic-title { font-weight: 500; }
 .epic-slug { color: var(--ink-dim); font-size: 12px; }
 .rollup { display: flex; gap: 4px; flex-wrap: wrap; }

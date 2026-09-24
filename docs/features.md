@@ -36,6 +36,12 @@ conductor's own tool — not a team/shared surface.
   `epic` slug. Splitting an epic needs no verb — file N cards sharing the same `epic`. An epic is
   either **project-scoped** or **cross-project** (spans ≥2 projects, rollup aggregated across all
   members); a card's slug joins whichever kind covers its project.
+- **Epic order:** every epic list (GUI rollup pane, the Edit-card and New-card epic pickers,
+  `list_epics`) shows **active epics first, most-recently-active first** — an epic's activity is the
+  latest edit to the epic *or to any of its cards* — then **completed** epics (≥1 card, all
+  `done`; an epic with no cards stays active) in the same order. The pane marks the split with a
+  `Completed · N` separator; the pickers put completed epics in a `Completed` option group (a card's
+  current epic stays selected even when completed); `list_epics` text prints `── completed (N) ──`.
 - **Epic plan + logbook:** an epic carries the same two things a card does, and the split between
   them is the point — an epic outlives every card under it, so its backing reasoning has somewhere
   durable to live instead of dying in a plan worker's transcript.
@@ -76,7 +82,7 @@ conductor's own tool — not a team/shared surface.
 | `move_card` | conductor | Move between states; sets `owner` on entering `in-progress`; on landing (`→done`), stamps `commit` (given, or auto-captured from the owning worker's live worktree HEAD). |
 | `update_card` | conductor | Update `title`/`goal`/`epic` (a live slug, or `null` to clear it)/`priority` (same four levels, or `null` to clear back to unset)/`depends_on`, attach or clear the `plan` link (pointer, or an absolute path copied in as `plans/<id>.md`; the stored link comes back in the result), edit the `acceptance` list (`{ops:[…]}` add/remove/rename/done, `{replace:[…]}`, or `null` to clear), and reassign `owner` on an in-progress card (plan worker → implementer, no lane move). |
 | `create_epic` | conductor | Create/refresh an epic — `project` (project-scoped) or `projects` (cross-project) — plus an optional `plan` link (pointer, or an absolute path copied in as `plans/epic-<slug>.md`). An idempotent upsert that **preserves every optional field you omit**; `goal: ''` / `plan: null` clear one explicitly. |
-| `list_epics` | conductor | A project's epics + cross-project epics spanning it, with computed rollups. |
+| `list_epics` | conductor | A project's epics + cross-project epics spanning it, with computed rollups and a `completed` flag; most-recently-active first, completed epics last. |
 | `read_epic` | conductor | One epic (goal + plan link + logbook + `logbook_total` + rollup) and its cards; cross-project epics aggregate across members. Always returns the resolved plan path, and with `includePlan` the plan file's body. |
 | `log_epic` | conductor | Append a logbook line to an epic — no lane gate, since an epic has no state. |
 | `delete_card` | conductor | Permanently delete a card by id, plus its `board:` plan file (never a `repo:` one). Irreversible; not sync-aware (see "Cross-instance sync" in `docs/architecture.md`). |

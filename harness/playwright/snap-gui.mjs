@@ -20,6 +20,9 @@
 //   19. lane ordering: priority first, then newest card number
 //   20. a project whose lanes are empty, plus the narrow and short-window
 //       fallbacks where the page scrolls again
+//   21. epic ordering: active epics most-recently-active first, a
+//       `Completed · N` separator, then completed epics; the epic <select>s
+//       list completed epics in a "Completed" optgroup
 // Reuses withPage/waitForServer from the shared code-playwright harness — no
 // chromium/launch logic here. Run: node harness/playwright/snap-gui.mjs
 import assert from 'node:assert/strict';
@@ -34,6 +37,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = path.join(__dirname, 'screenshots');
 const PROJECT = 'demo';
 const PROJECT2 = 'web'; // second project, for the cross-project epic
+const PROJECT3 = 'ordering'; // own project for step 21, so no other step's epics shift
 
 async function ensureShotsDir() {
   await fs.mkdir(SHOTS, { recursive: true });
@@ -547,6 +551,66 @@ async function main() {
       await page.screenshot({ path: path.join(SHOTS, 'gui-20c-short-page-scroll.png'), fullPage: false });
       console.log(`snapped short window (page scrolls to ${short.mainTop}, every lane reachable)`);
     }, { headless: true, viewport: { width: 1440, height: 420 } });
+
+    // 21. Epic ordering, seeded through the real routes (wall-clock stamps, so a
+    //     few ms between steps keeps each one strictly newer). Creation order is
+    //     empty → alpha-old → beta-new → shipped; then shipped's only card walks
+    //     to done (completed), and LAST alpha-old's card moves, which must lift
+    //     alpha-old above beta-new despite the older epic record.
+    await fs.mkdir(path.join(srv.sandbox.dirs.PROJECTS_ROOT, PROJECT3), { recursive: true });
+    const post = async (p, body, method = 'POST') => {
+      const r = await fetch(srv.url + p, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then((x) => x.json());
+      if (!r || r.ok === false) throw new Error(`step 21 seed ${p} refused: ${JSON.stringify(r)}`);
+      await new Promise((res) => setTimeout(res, 5));
+      return r;
+    };
+    const B = `/api/board/${PROJECT3}`;
+    await post(`${B}/epics`, { slug: 'empty', title: 'Empty epic' });
+    await post(`${B}/epics`, { slug: 'alpha-old', title: 'Older epic, fresh card move' });
+    const oldCard = await post(`${B}/cards`, { title: 'Old epic card', epic: 'alpha-old' });
+    await post(`${B}/epics`, { slug: 'beta-new', title: 'Newer epic record' });
+    await post(`${B}/cards`, { title: 'New epic card', epic: 'beta-new' });
+    await post(`${B}/epics`, { slug: 'shipped', title: 'All cards done' });
+    const shipCard = await post(`${B}/cards`, { title: 'Shipped card', epic: 'shipped' });
+    for (const to of ['todo', 'in-progress', 'done']) await post(`${B}/cards/${shipCard.id}/move`, { to });
+    await post(`${B}/cards/${oldCard.id}/move`, { to: 'todo' });
+
+    await withPage(async (page) => {
+      await page.goto(srv.url + '/', { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('#project-select', { timeout: 10_000 });
+      await page.selectOption('#project-select', PROJECT3);
+      await page.waitForFunction((v) => document.querySelector('#project-select')?.value === v, PROJECT3, { timeout: 10_000 });
+      await page.waitForSelector('.epic-sep', { timeout: 10_000 });
+      const pane = await page.evaluate(() => [...document.querySelectorAll('.epic-list > *')].map((n) => (
+        n.classList.contains('epic-sep') ? `SEP:${n.textContent}` : n.querySelector('.epic-slug').textContent)));
+      assert.deepEqual(pane, ['alpha-old', 'beta-new', 'empty', 'SEP:Completed · 1', 'shipped'], `epics pane order: ${pane.join(', ')}`);
+      await page.locator('#epics').screenshot({ path: path.join(SHOTS, 'gui-21a-epic-order.png') });
+      await page.screenshot({ path: path.join(SHOTS, 'gui-21b-epic-order-board.png'), fullPage: false });
+      // The pane is capped at 25vh, so the completed group sits below the fold:
+      // scroll it to the bottom to show the separator above the completed row.
+      await page.evaluate(() => { const p = document.querySelector('#epics'); p.scrollTop = p.scrollHeight; });
+      await page.locator('#epics').screenshot({ path: path.join(SHOTS, 'gui-21c-epic-order-completed.png') });
+
+      // New-card <select>: a native open dropdown can't be screenshotted, so
+      // read its structure — top-level options, then the Completed optgroup.
+      const selectShape = (sel) => page.evaluate((s) => [...document.querySelector(s).children].map((n) => (
+        n.tagName === 'OPTGROUP' ? `[${n.label}: ${[...n.children].map((o) => o.value).join(', ')}]` : n.value || '(none)')), sel);
+      await page.click('#new-card-btn');
+      await page.waitForSelector('#form-overlay select[name="epic"]', { timeout: 10_000 });
+      const newShape = await selectShape('#form-overlay select[name="epic"]');
+      assert.deepEqual(newShape, ['(none)', 'alpha-old', 'beta-new', 'empty', '[Completed: shipped]'], `new-card epic select: ${newShape.join(', ')}`);
+      await page.click('#form-overlay .overlay-close');
+      await page.waitForSelector('#form-overlay', { state: 'hidden', timeout: 10_000 });
+
+      // Edit-card <select> on the shipped card keeps its (completed) epic selected.
+      await page.locator('.card', { hasText: 'Shipped card' }).click();
+      await page.waitForSelector('#detail-overlay:not(.hidden) .detail-title', { timeout: 10_000 });
+      await page.click('#detail-overlay .detail-head button');
+      await page.waitForSelector('#detail-overlay select[name="epic"]', { timeout: 10_000 });
+      const editEpic = await page.inputValue('#detail-overlay select[name="epic"]');
+      assert.equal(editEpic, 'shipped', 'edit form must keep a completed epic selected');
+      console.log(`snapped epic ordering (${pane.join(' | ')}); selects: ${newShape.join(', ')}; edit keeps "${editEpic}"`);
+    }, { headless: true, viewport: { width: 1440, height: 900 } });
   } finally {
     await srv.close();
   }
