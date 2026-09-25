@@ -275,7 +275,7 @@ function epicOptions(selected) {
 function renderRollup(rollup) {
   return el('div', { class: 'rollup' }, state.meta.states.map((s) => {
     const n = rollup?.[s] ?? 0;
-    return el('span', { class: 'rollup-pill', dataset: { zero: String(n === 0) } }, `${ROLLUP_LABEL[s] ?? s}: `, el('b', {}, String(n)));
+    return el('span', { class: 'rollup-pill', dataset: { zero: String(n === 0) } }, [`${ROLLUP_LABEL[s] ?? s}: `, el('b', {}, String(n))]);
   }));
 }
 

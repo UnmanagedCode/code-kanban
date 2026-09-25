@@ -27,6 +27,7 @@
 //       panel's Plan section (link + file body) for a project-scoped and a
 //       cross-project epic, an unplanned epic showing no
 //       Plan section, and a deleted plan file rendering "(file not found)"
+//   23. epic rollup pills: each pill shows its lane label and its count, zero included (dimmed)
 // Reuses withPage/waitForServer from the shared code-playwright harness — no
 // chromium/launch logic here. Run: node harness/playwright/snap-gui.mjs
 import assert from 'node:assert/strict';
@@ -42,6 +43,7 @@ const SHOTS = path.join(__dirname, 'screenshots');
 const PROJECT = 'demo';
 const PROJECT2 = 'web'; // second project, for the cross-project epic
 const PROJECT3 = 'ordering'; // own project for step 21, so no other step's epics shift
+const PROJECT4 = 'rollup'; // own project for step 23, so no other step's counts shift
 
 async function ensureShotsDir() {
   await fs.mkdir(SHOTS, { recursive: true });
@@ -684,6 +686,41 @@ async function main() {
       assert.equal(await page.locator('#detail-overlay .plan-link').textContent(), 'board:epic-search.md');
       await page.screenshot({ path: path.join(SHOTS, 'gui-22c-epic-plan-missing.png'), fullPage: false });
       console.log('snapped epic plan (badge, detail body, unplanned witness, missing file)');
+    }, { headless: true, viewport: { width: 1440, height: 900 } });
+
+    // 23. Rollup pills. Distinct per-lane counts (1/2/3/4) so a wrong or swapped
+    //     number fails, plus an empty `done` lane for the zero rendering.
+    await fs.mkdir(path.join(srv.sandbox.dirs.PROJECTS_ROOT, PROJECT4), { recursive: true });
+    const R = `/api/board/${PROJECT4}`;
+    await post(`${R}/epics`, { slug: 'counts', title: 'Rollup counts' });
+    // Every POST files into triage; each entry is the legal walk to the card's lane.
+    const walks = [[], ['backlog'], ['backlog'], ['todo'], ['todo'], ['todo'],
+      ['todo', 'in-progress'], ['todo', 'in-progress'], ['todo', 'in-progress'], ['todo', 'in-progress']];
+    for (const [i, moves] of walks.entries()) {
+      const c = await post(`${R}/cards`, { title: `Rollup card ${i + 1}`, epic: 'counts' });
+      for (const to of moves) await post(`${R}/cards/${c.id}/move`, { to });
+    }
+
+    await withPage(async (page) => {
+      await page.goto(srv.url + '/', { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('#project-select', { timeout: 10_000 });
+      await page.selectOption('#project-select', PROJECT4);
+      await page.waitForFunction((v) => document.querySelector('#project-select')?.value === v, PROJECT4, { timeout: 10_000 });
+      const row = '.epic-row:has(.epic-slug:text-is("counts"))';
+      await page.waitForSelector(`${row} .rollup-pill`, { timeout: 10_000 });
+      // Order follows STATES (src/paths.js, served as meta.states); labels are ROLLUP_LABEL (frontend/app.js).
+      const expected = [['tr: 1', '1', 'false'], ['bk: 2', '2', 'false'], ['td: 3', '3', 'false'], ['ip: 4', '4', 'false'], ['dn: 0', '0', 'true']];
+      const readPills = (sel) => page.locator(sel).evaluateAll((ns) => ns.map((n) => [n.textContent, n.querySelector('b')?.textContent ?? null, n.dataset.zero]));
+      const pane = await readPills(`${row} .rollup-pill`);
+      assert.deepEqual(pane, expected, `epics-pane rollup pills: ${JSON.stringify(pane)}`);
+      await page.locator('#epics').screenshot({ path: path.join(SHOTS, 'gui-23a-rollup-counts.png') });
+
+      await page.click(`${row} button`);
+      await page.waitForSelector('#detail-overlay:not(.hidden) .detail-title', { timeout: 10_000 });
+      const detail = await readPills('#detail-overlay .rollup-pill');
+      assert.deepEqual(detail, expected, `epic-detail rollup pills: ${JSON.stringify(detail)}`);
+      await page.screenshot({ path: path.join(SHOTS, 'gui-23b-rollup-counts-detail.png'), fullPage: false });
+      console.log('snapped rollup pill counts (pane + epic detail)');
     }, { headless: true, viewport: { width: 1440, height: 900 } });
   } finally {
     await srv.close();
