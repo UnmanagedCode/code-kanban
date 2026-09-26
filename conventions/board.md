@@ -4,8 +4,7 @@ The `code-kanban` board (`mcp__code-conductor__code-kanban__*`) is an overlay on
 workflow, not a replacement for it.
 
 - **When to file.** `file_card` for a non-trivial, multi-step piece of work; skip conversational
-  one-offs and trivial single-turn fixes. Pass `category: 'todo'|'backlog'` to skip triage when the
-  lane is already known; omit it to land in triage (the default).
+  one-offs and trivial single-turn fixes.
 - **Priority.** Give every card you file a judged level rather than omitting it — unset means nobody
   has judged the card yet and sorts below `LOW`, so "do this last" is `LOW`, not omission.
 - **Deleting.** `delete_card` is permanent — no undo, no history, not sync-aware. Prefer it only

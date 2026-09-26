@@ -16,7 +16,7 @@ GUI relies on — the things a reader can't quickly re-derive by skimming the ro
 | `PATCH /api/board/:project/cards/:id` | `updateCard` | Body **is** the `fields` object. |
 | `POST /api/board/:project/cards/:id/move` | `moveCard` | `owner: owner || GUI_ACTOR`; `commit` passed through as-is. |
 | `GET /api/board/:project/epics` | `listEpics` | With rollups; each row carries its raw `plan` link for the row badge. |
-| `GET /api/board/:project/epics/:slug` | `readEpic` | Epic + its cards. `?includePlan` as for a card (also on `GET /api/epics/:slug`); the GUI renders it with the card's `planSection`. |
+| `GET /api/board/:project/epics/:slug` | `readEpic` | Epic + its cards. `?includePlan` as for a card (also on `GET /api/epics/:slug`); the GUI renders it with the card's `planSection`. Passes no `logTail`/`cardLimit`, so it is **unbounded** — MCP's `READ_EPIC_BOUNDS` never apply here. |
 | `POST /api/board/:project/epics` | `createEpic` | **Upsert** — see below. |
 
 ## Envelope pass-through
@@ -52,7 +52,8 @@ target is `in-progress` — it can never leave a stuck `gui` owner on a non-`in-
 The Logbook stays **read-only, append-only-by-worker**: there is no route to append a log line.
 `log_card` stays worker/conductor-only — it resolves the card from `caller.sessionId`, which
 the GUI cannot supply; `log_epic` has no route either. The two epic-detail routes' envelopes gained
-`logbook_total` (additive; the GUI reads named fields and ignores it).
+`logbook_total`, `cards_total` and `cards_truncated` (additive; the GUI reads named fields and
+ignores them).
 
 Acceptance, by contrast, **is** PATCHable: the Edit form's textarea sends
 `{acceptance: {replace: [...]}}` (2026-0020), and `update_card`'s `acceptance` validator
