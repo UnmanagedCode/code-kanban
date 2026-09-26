@@ -654,6 +654,9 @@ test('a refusal on any raw-text tool keeps the plain {result} path', async () =>
       assert.equal(r.body.result.ok, false, `${tool}: ok:false`);
       assert.equal(r.body.result.code, code, `${tool}: code`);
     }
+    // The EPIC_UNKNOWN refusal names the scope's known slugs through MCP too.
+    const e = await mcp.handle({ tool: 'read_epic', arguments: { project: 'demo', slug: 'nope' } });
+    assert.match(e.body.result.reason, /known:/);
   } finally { await cleanup(root); }
 });
 
@@ -802,4 +805,50 @@ test('create_epic via mcp: an absolute plan is ingested and the stored link repo
     assert.equal(c.body.result.plan, 'board:epic-auth.md');
     assert.equal(fs.readFileSync(path.join(plansDir('demo'), 'epic-auth.md'), 'utf8'), '# the epic strategy');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); await cleanup(root); }
+});
+
+// Pins: an MCP read_epic is bounded by default — logTail from
+// READ_EPIC_BOUNDS.logTail (logbook_total still full), cards capped at
+// READ_EPIC_BOUNDS.cardLimit with cards_total/cards_truncated in the metadata
+// block — and an explicit logTail escapes the logbook bound.
+test('read_epic over MCP applies READ_EPIC_BOUNDS by default; logTail escapes it', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { logTail, cardLimit } = mcp.READ_EPIC_BOUNDS;
+    await mcp.handle({ tool: 'create_epic', arguments: { project: 'demo', slug: 'big', title: 'B' } });
+    for (let i = 0; i <= logTail; i++) {
+      await mcp.handle({ tool: 'log_epic', arguments: { project: 'demo', slug: 'big', entry: `entry ${i}` } });
+    }
+    for (let i = 0; i <= cardLimit; i++) {
+      await mcp.handle({ tool: 'file_card', arguments: { project: 'demo', title: `c${i}`, epic: 'big' } });
+    }
+    const r = await mcp.handle({ tool: 'read_epic', arguments: { project: 'demo', slug: 'big' } });
+    const logbook = r.body.text[r.body.text.length - 1];
+    assert.equal(logbook.split('\n').length, logTail);
+    assert.doesNotMatch(logbook, /· entry 0$/m, 'the oldest entry is the one cut');
+    assert.equal(r.body.meta.logbook_total, logTail + 1);
+    assert.equal(r.body.meta.cards.length, cardLimit);
+    assert.equal(r.body.meta.cards_total, cardLimit + 1);
+    assert.equal(r.body.meta.cards_truncated, true);
+
+    const full = await mcp.handle({ tool: 'read_epic', arguments: { project: 'demo', slug: 'big', logTail: logTail + 1 } });
+    assert.equal(full.body.text[full.body.text.length - 1].split('\n').length, logTail + 1);
+  } finally { await cleanup(root); }
+});
+
+// Pins: the MCP log_card wiring passes the id-path lane rule through — a done
+// card accepts a conductor log over MCP.
+test('log_card via MCP with id logs on a done card', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = (await mcp.handle({ tool: 'file_card', arguments: { project: 'demo', title: 't', category: 'todo' } })).body.result;
+    await mcp.handle({ tool: 'move_card', arguments: { project: 'demo', id, to: 'in-progress', owner: 'w' } });
+    await mcp.handle({ tool: 'move_card', arguments: { project: 'demo', id, to: 'done' } });
+    const r = await mcp.handle({ tool: 'log_card', arguments: { project: 'demo', id, entry: 'landed' } });
+    assert.equal(r.body.result.ok, true);
+    const log = await mcp.handle({ tool: 'read_card_log', arguments: { project: 'demo', id } });
+    assert.match(log.body.text[0], /landed/);
+  } finally { await cleanup(root); }
 });

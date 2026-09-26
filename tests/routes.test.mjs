@@ -9,6 +9,7 @@ import { _setProjectFetcher } from '../src/projects.js';
 import * as board from '../src/board.js';
 import { PRIORITIES } from '../src/priority.js';
 import { createServer } from '../server.js';
+import { READ_EPIC_BOUNDS } from '../src/mcp.js';
 import { acceptanceFieldForEdit } from '../frontend/acceptanceEdit.js';
 
 // Drive the web GUI's HTTP routes end-to-end through the Express app (the same
@@ -696,5 +697,23 @@ test('the pre-rename /tasks routes are gone — each returns 404', async () => {
       });
       assert.equal(res.status, 404, `${method} ${route}`);
     }
+  });
+});
+
+// Pins: the MCP-only READ_EPIC_BOUNDS never leak into the GUI — the HTTP epic
+// read returns every card and logbook entry (more than the MCP caps), with
+// cards_truncated false.
+test('GET /api/board/:project/epics/:slug is unbounded (no MCP card or logbook cap)', async () => {
+  await withServer(async ({ json }) => {
+    await json('/api/board/demo/epics', { method: 'POST', body: { slug: 'auth', title: 'Auth' } });
+    const n = READ_EPIC_BOUNDS.cardLimit + 1;
+    for (let i = 0; i < n; i++) await board.fileCard({ project: 'demo', title: `c${i}`, epic: 'auth' });
+    const entries = READ_EPIC_BOUNDS.logTail + 1;
+    for (let i = 0; i < entries; i++) await board.logEpic({ project: 'demo', slug: 'auth', entry: `e${i}` });
+    const read = await json('/api/board/demo/epics/auth');
+    assert.equal(read.body.epic.logbook.length, entries);
+    assert.equal(read.body.cards.length, n);
+    assert.equal(read.body.cards_total, n);
+    assert.equal(read.body.cards_truncated, false);
   });
 });

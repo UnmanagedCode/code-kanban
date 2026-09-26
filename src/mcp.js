@@ -3,6 +3,11 @@ import { serializeBody } from './cardfile.js';
 import { renderCardList, renderEpicList } from './listRender.js';
 import { STATES } from './paths.js';
 
+// read_epic's MCP-only bounds (the HTTP routes the GUI reads stay unbounded — the
+// same MCP-only presentation default as list_cards' done-hide). The manifest
+// advertises both; tests/pluginManifest.test.mjs pins them to this constant.
+export const READ_EPIC_BOUNDS = { logTail: 20, cardLimit: 50 };
+
 // Thin dispatch over board.js. Domain refusals from the service layer are
 // {ok:false, code, reason} objects returned as the {result} payload (a normal
 // MCP outcome the conductor relays to the model) — they are NOT {error}. Only a
@@ -20,7 +25,7 @@ const handlers = {
   delete_card: (a) => board.deleteCard(a),
   create_epic: (a) => board.createEpic(a),
   list_epics:  (a) => board.listEpics(a),
-  read_epic:   (a) => board.readEpic(a),
+  read_epic:   (a) => board.readEpic({ ...a, logTail: a.logTail ?? READ_EPIC_BOUNDS.logTail, cardLimit: READ_EPIC_BOUNDS.cardLimit }),
 };
 
 // Test seam (mirrors board.js's _setSyncFetcher / projects.js's

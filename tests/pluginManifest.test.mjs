@@ -4,6 +4,8 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PRIORITIES } from '../src/priority.js';
+import { CATEGORIES } from '../src/board.js';
+import { READ_EPIC_BOUNDS } from '../src/mcp.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const manifest = JSON.parse(readFileSync(path.join(ROOT, 'conductor.plugin.json'), 'utf8'));
@@ -218,6 +220,7 @@ test('log_epic addresses an epic exactly as read_epic does', () => {
     assert.deepEqual({ type: a.type, minLength: a.minLength }, { type: b.type, minLength: b.minLength }, key);
   }
   assert.deepEqual(logEpic.inputSchema.required, ['slug', 'entry']);
+  assert.equal(logEpic.inputSchema.properties.slug.description, readEpic.inputSchema.properties.slug.description);
 });
 
 // T4 — no mutual-exclusion PROSE anywhere. Banned manifest-wide deliberately:
@@ -318,4 +321,38 @@ test('list_epics description advertises recency ordering and completed-last', ()
   assert.match(listEpics.description, /completed: true/);
   assert.match(listEpics.description, /come last/);
   assert.match(listEpics.description, /no cards is not completed/);
+});
+
+// Pins: the advertised file_card lanes are exactly the board's CATEGORIES (the
+// manifest is static JSON, so this test is what stops the two drifting).
+test('file_card.category enum equals CATEGORIES', () => {
+  assert.deepEqual(tool('file_card').inputSchema.properties.category.enum, CATEGORIES);
+});
+
+// Pins: read_epic advertises the MCP bounds from READ_EPIC_BOUNDS — logTail as a
+// machine-readable schema default, the card cap and cards_truncated in prose.
+test('read_epic advertises READ_EPIC_BOUNDS', () => {
+  const readEpic = tool('read_epic');
+  assert.equal(readEpic.inputSchema.properties.logTail.default, READ_EPIC_BOUNDS.logTail);
+  assert.match(readEpic.description, new RegExp(`capped at ${READ_EPIC_BOUNDS.cardLimit}\\b`));
+  assert.match(readEpic.description, /cards_truncated/);
+  assert.equal('cardLimit' in readEpic.inputSchema.properties, false, 'cardLimit is not a caller param');
+});
+
+// Pins: log_card's lane rule (in-progress or done with id) is stated once, in the
+// tool description, and no param description restates a lane.
+test("log_card states its lane rule once, at tool level", () => {
+  const logCard = tool('log_card');
+  assert.match(logCard.description, /in-progress or done/);
+  for (const [k, p] of Object.entries(logCard.inputSchema.properties)) {
+    assert.equal(/in-progress|done|triage|backlog|todo/.test(p.description ?? ''), false, `log_card.${k}`);
+  }
+});
+
+// Pins: every epic-addressing `slug` param carries a description.
+test('epic slug params are described', () => {
+  for (const name of ['read_epic', 'log_epic', 'create_epic']) {
+    const d = tool(name).inputSchema.properties.slug.description;
+    assert.ok(typeof d === 'string' && d.trim() !== '', name);
+  }
 });

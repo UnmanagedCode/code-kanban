@@ -42,7 +42,7 @@
             "acceptance": { "type": "array", "items": { "type": "string" }, "description": "Acceptance criteria; each becomes an unchecked checkbox." },
             "epic": { "type": "string", "description": "Epic slug to file under; the epic must already exist (create_epic)." },
             "depends_on": { "type": "array", "items": { "type": "string" }, "description": "Card ids this card depends on." },
-            "category": { "type": "string", "enum": ["todo", "backlog"], "description": "Land directly in this lane instead of triage. Omit to file into triage (default)." },
+            "category": { "type": "string", "enum": ["triage", "backlog", "todo"], "description": "Lane to file into; omitting it files into `triage`." },
             "priority": { "type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"], "description": "How urgent this is. There is no default: omit it (or send null) and the card stays unset — unjudged, sorting after LOW. An unrecognised value is refused (INVALID_STATE)." },
             "plan": { "type": "string", "description": "Link to a plan file, in one of three input forms: `board:<rel>` (under the board's plans/ dir) or `repo:<rel>` (under the project's base checkout) — a pointer that must already resolve to a file and is never copied; a bare relative path (means board:); or an ABSOLUTE path, which is COPIED IN — the file is copied to the board's plans/<id>.md and stored as `board:<id>.md` (the source is never moved or modified; an existing copy is overwritten). Missing/unreadable source or pointer → PLAN_UNKNOWN and no card is created." }
           },
@@ -51,12 +51,12 @@
       },
       {
         "name": "log_card",
-        "description": "Log a progress line (a logbook entry) on an in-progress card. Worker + conductor.",
+        "description": "Log a progress line on a card. Worker + conductor. Without `id`: the in-progress card this session owns. With `id`: that card, in-progress or done.",
         "inputSchema": {
           "type": "object",
           "properties": {
             "project": { "type": "string", "minLength": 1, "description": "Optional when `id` is omitted; required when `id` is given." },
-            "id": { "type": "string", "minLength": 1, "description": "Optional, conductor-only: target a specific in-progress card. Requires `project`." },
+            "id": { "type": "string", "minLength": 1, "description": "Conductor-only; requires `project`." },
             "entry": { "type": "string", "minLength": 1, "description": "Log line text." }
           },
           "required": ["entry"]
@@ -139,7 +139,7 @@
           "properties": {
             "project": { "type": "string", "minLength": 1, "description": "Owning project for a project-scoped epic." },
             "projects": { "type": "array", "items": { "type": "string" }, "description": "Member projects (≥2) for a cross-project epic." },
-            "slug": { "type": "string", "minLength": 1, "pattern": "^[a-z0-9._-]+$" },
+            "slug": { "type": "string", "minLength": 1, "pattern": "^[a-z0-9._-]+$", "description": "The key every epic tool, and a card's `epic`, addresses it by." },
             "title": { "type": "string", "minLength": 1 },
             "goal": { "type": "string", "description": "What + why." },
             "plan": { "type": "string", "description": "Link to the epic's PLAN file. Same three input forms as `file_card`'s `plan`, with these deltas: an ABSOLUTE path is copied to the board's `plans/epic-<slug>.md` and stored as `board:epic-<slug>.md`; a cross-project epic has no owning project, so its `board:` resolves under the BOARD-LEVEL plans/ dir and `repo:` is refused (INVALID_STATE). Missing/unreadable source or pointer → PLAN_UNKNOWN and nothing is written, leaving an existing epic untouched." }
@@ -160,13 +160,13 @@
       },
       {
         "name": "read_epic",
-        "description": "Read an epic (goal + plan link + logbook + computed rollup) and its cards; a cross-project epic aggregates across its member projects. Returns plan_path always. Conductor.",
+        "description": "Read an epic (goal + plan link + logbook + computed rollup) and its cards; a cross-project epic aggregates across its member projects. `cards` is capped at 50, done last (`cards_truncated`); `list_cards` with `epic` lists all. Returns plan_path always. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
             "project": { "type": "string", "minLength": 1, "description": "Owning project for a project-scoped epic, or any member of a cross-project epic (the project's own epic wins). Omit to address a cross-project epic by slug." },
-            "slug": { "type": "string", "minLength": 1 },
-            "logTail": { "type": "integer", "minimum": 0, "description": "Keep only the last N logbook entries." },
+            "slug": { "type": "string", "minLength": 1, "description": "As `list_epics` reports it; epics have no `id`." },
+            "logTail": { "type": "integer", "minimum": 0, "default": 20, "description": "Keep only the last N logbook entries." },
             "includePlan": { "type": "boolean", "default": false, "description": "Also return the linked plan file's body (plan_body, bounded; plan_truncated / plan_missing flags)." }
           },
           "required": ["slug"]
@@ -179,7 +179,7 @@
           "type": "object",
           "properties": {
             "project": { "type": "string", "minLength": 1, "description": "Resolves the epic exactly as `read_epic`'s `project` does." },
-            "slug": { "type": "string", "minLength": 1 },
+            "slug": { "type": "string", "minLength": 1, "description": "As `list_epics` reports it; epics have no `id`." },
             "entry": { "type": "string", "minLength": 1, "description": "Log line text: what landed, what got resequenced and why." }
           },
           "required": ["slug", "entry"]
