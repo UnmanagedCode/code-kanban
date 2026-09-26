@@ -69,6 +69,13 @@ conductor's own tool — not a team/shared surface.
 - The conductor owns no card, so it can't use the session path. Instead it may pass `log_card`
   an explicit `id` (+ required `project`) to log against that exact `in-progress` card directly,
   bypassing the owner check. Workers never pass `id`.
+- **Why workers stay off the board:** a worker that could read it would see orchestration state
+  and could self-dispatch onto work it wasn't scoped to. Duplicates that workers file are merged
+  during triage.
+- **Enforced by convention scope, not by the server.** `conductor.plugin.json` scopes
+  `conventions/board.md` to `conductor` and `conventions/reporting.md` (covering only `file_card` and
+  `log_card`) to `project`, so a worker loads only the reporting convention. `src/mcp.js` does
+  not gate tools by caller, so the tools table's "Who" column is a convention.
 
 ## Tools
 
