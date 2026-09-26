@@ -119,6 +119,56 @@ test('refusal codes: PROJECT_UNKNOWN, CARD_UNKNOWN, EPIC_UNKNOWN, INVALID_STATE'
   } finally { await cleanup(root); }
 });
 
+// Puts a fresh card into `lane` via legal moves only.
+async function cardIn(project, lane) {
+  const path_ = { triage: [], backlog: ['backlog'], todo: ['todo'], 'in-progress': ['todo', 'in-progress'], done: ['todo', 'in-progress', 'done'] }[lane];
+  const { id } = await board.fileCard({ project, title: lane });
+  for (const to of path_) await board.moveCard({ project, id, to, owner: to === 'in-progress' ? 'w' : undefined });
+  assert.equal((await board.readCard({ project, id })).card.state, lane);
+  return id;
+}
+
+// Pins: every move_card refusal from lane X names exactly the moves move_card
+// accepts from X — each listed target succeeds from a fresh card in X, every other
+// state is refused — so the list and the check share one table.
+test('move_card refusals list exactly the legal targets, matching behaviour', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const STATES = ['triage', 'backlog', 'todo', 'in-progress', 'done'];
+    for (const from of STATES) {
+      // The same-state move is always illegal, so it is a refusal every lane has.
+      const r = await board.moveCard({ project: 'demo', id: await cardIn('demo', from), to: from });
+      assert.equal(r.code, 'INVALID_STATE');
+      const m = r.reason.match(new RegExp(`legal from ${from}: (.*)$`));
+      assert.ok(m, r.reason);
+      const listed = m[1].split(', ');
+      for (const to of STATES.filter((s) => s !== from)) {
+        const mv = await board.moveCard({ project: 'demo', id: await cardIn('demo', from), to, owner: 'w' });
+        assert.equal(mv.ok, listed.includes(to), `${from} -> ${to}: ${JSON.stringify(mv)}`);
+        if (!mv.ok) assert.equal(mv.reason, `illegal transition ${from} -> ${to}; legal from ${from}: ${m[1]}`);
+      }
+    }
+    const todo = await cardIn('demo', 'todo');
+    assert.equal((await board.moveCard({ project: 'demo', id: todo, to: 'done' })).reason,
+      'illegal transition todo -> done; legal from todo: in-progress, backlog');
+  } finally { await cleanup(root); }
+});
+
+// Pins: the same-state and unknown-target refusals name the valid set too.
+test('move_card same-state and unknown-target refusals name the valid set', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const id = await cardIn('demo', 'todo');
+    assert.equal((await board.moveCard({ project: 'demo', id, to: 'todo' })).reason,
+      'already in todo; legal from todo: in-progress, backlog');
+    const bogus = await board.moveCard({ project: 'demo', id, to: 'bogus' });
+    assert.equal(bogus.code, 'INVALID_STATE');
+    assert.equal(bogus.reason, 'unknown target state: bogus; states: triage, backlog, todo, in-progress, done');
+  } finally { await cleanup(root); }
+});
+
 test('corrective transitions are allowed (demote, abandon, reopen)', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
@@ -210,23 +260,63 @@ test('log_card with id targeting a non-existent card -> CARD_UNKNOWN', async () 
   const root = await freshRoot();
   useProjects(['demo']);
   try {
-    assert.equal(
-      (await board.logCard({ project: 'demo', id: 'ghost-0001', entry: 'hi' })).code,
-      'CARD_UNKNOWN',
-    );
+    const r = await board.logCard({ project: 'demo', id: 'ghost-0001', entry: 'hi' });
+    assert.equal(r.code, 'CARD_UNKNOWN');
+    assert.equal(r.reason, 'unknown card: ghost-0001');
   } finally { await cleanup(root); }
 });
 
-test('log_card with id targeting a card that is not in-progress -> CARD_UNKNOWN', async () => {
+// Pins: only LOGGABLE_STATES accept an id-path log — each pre-start lane is refused
+// INVALID_STATE (not CARD_UNKNOWN), the reason names the loggable lanes, and the
+// logbook is untouched.
+test('log_card with id on a pre-start lane -> INVALID_STATE naming the loggable lanes', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
-    // filed into triage, never moved -> not in-progress
-    const { id } = await board.fileCard({ project: 'demo', title: 't' });
-    assert.equal(
-      (await board.logCard({ project: 'demo', id, entry: 'hi' })).code,
-      'CARD_UNKNOWN',
-    );
+    for (const lane of ['triage', 'backlog', 'todo']) {
+      const { id } = await board.fileCard({ project: 'demo', title: lane, category: lane });
+      const r = await board.logCard({ project: 'demo', id, entry: 'hi' });
+      assert.equal(r.code, 'INVALID_STATE', lane);
+      assert.equal(r.reason, `card ${id} is in ${lane}; log_card logs only a card in in-progress or done`);
+      assert.equal((await board.readCardLog({ project: 'demo', id })).total, 1, `${lane}: logbook unchanged`);
+    }
+  } finally { await cleanup(root); }
+});
+
+// Pins: a done card accepts an id-path log (the landing note after move_card
+// to:'done') and stays in done — the write goes to the card's own lane.
+test('log_card with id logs a landing note on a done card, which stays done', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileCard({ project: 'demo', title: 't', category: 'todo' });
+    await board.moveCard({ project: 'demo', id, to: 'in-progress', owner: 'w' });
+    await board.moveCard({ project: 'demo', id, to: 'done' });
+    assert.equal((await board.logCard({ project: 'demo', id, entry: 'landed as abc123' })).ok, true);
+    const r = await board.readCard({ project: 'demo', id });
+    assert.equal(r.card.state, 'done');
+    assert.match(r.card.logbook.at(-1), /· conductor · landed as abc123$/);
+    assert.deepEqual(store.listCards('demo', { state: 'in-progress' }), [], 'no copy left in in-progress');
+  } finally { await cleanup(root); }
+});
+
+// Pins: the id-less (ownership) form never resolves a done card — once the
+// conductor lands the worker's card, the worker's log is refused CARD_UNKNOWN with
+// the NO_OWNED_CARD text, and the done card's logbook is unchanged.
+test('log_card without id never resolves a done card the session used to own', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileCard({ project: 'demo', title: 't', category: 'todo' });
+    await board.moveCard({ project: 'demo', id, to: 'in-progress', owner: 'w' });
+    await board.moveCard({ project: 'demo', id, to: 'done' });
+    const before = (await board.readCardLog({ project: 'demo', id })).total;
+    for (const project of ['demo', undefined]) {
+      const r = await board.logCard({ project, entry: 'late note', sessionId: 'w' });
+      assert.equal(r.code, 'CARD_UNKNOWN');
+      assert.equal(r.reason, 'no in-progress card owned by this session: without id, log_card targets only the in-progress card this session owns (ownership clears when a card leaves in-progress); a conductor targets a card with id + project');
+    }
+    assert.equal((await board.readCardLog({ project: 'demo', id })).total, before);
   } finally { await cleanup(root); }
 });
 
@@ -567,12 +657,30 @@ test('file_card with category "backlog" lands directly in backlog', async () => 
   } finally { await cleanup(root); }
 });
 
+// Pins: an illegal category is refused, and the reason names exactly CATEGORIES.
 test('file_card with an illegal category -> INVALID_STATE', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
   try {
-    assert.equal((await board.fileCard({ project: 'demo', title: 't', category: 'done' })).code, 'INVALID_STATE');
-    assert.equal((await board.fileCard({ project: 'demo', title: 't', category: 'bogus' })).code, 'INVALID_STATE');
+    for (const category of ['done', 'in-progress', 'bogus']) {
+      const r = await board.fileCard({ project: 'demo', title: 't', category });
+      assert.equal(r.code, 'INVALID_STATE', category);
+      assert.equal(r.reason, 'category must be one of triage, backlog, todo');
+    }
+  } finally { await cleanup(root); }
+});
+
+// Pins: file_card's lanes are the intake lane plus triage's legal exits (derived,
+// not a second list), and an explicit category:'triage' is accepted and lands there.
+test("file_card accepts category 'triage'; CATEGORIES = triage + triage's exits", async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    assert.deepEqual(board.CATEGORIES, ['triage', ...board.legalTargets('triage')]);
+    assert.deepEqual(board.CATEGORIES, ['triage', 'backlog', 'todo']);
+    const f = await board.fileCard({ project: 'demo', title: 't', category: 'triage' });
+    assert.equal(f.ok, true);
+    assert.equal((await board.readCard({ project: 'demo', id: f.id })).card.state, 'triage');
   } finally { await cleanup(root); }
 });
 
@@ -2766,7 +2874,7 @@ test("update_card: null is the ONE way to clear a card's epic; a slug still sets
     const unknown = await board.updateCard({ project: 'demo', id, fields: { epic: 'Missing' } });
     assert.equal(unknown.ok, false);
     assert.equal(unknown.code, 'EPIC_UNKNOWN');
-    assert.equal(unknown.reason, 'unknown epic: Missing');
+    assert.equal(unknown.reason, 'unknown epic: Missing in project demo; known: ep; or create it with create_epic');
     assert.equal((await read()).epic, 'ep');
   } finally { await cleanup(root); }
 });
@@ -3504,5 +3612,116 @@ test('listEpics: a bare `updated:` line falls back to created', async () => {
       `---\nslug: bare\ntitle: Bare\nproject: demo\ncreated: ${T(6)}\nupdated:\n---\n## Goal\n\n## Logbook\n`);
     assert.deepEqual(await slugsOf('demo'), ['bare', 'stamped']);
     assert.equal(store.readEpic('demo', 'bare').updated, null);
+  } finally { await cleanup(root); }
+});
+
+// Pins: EPIC_UNKNOWN lists exactly the slugs that resolve for the scope — own
+// epics plus member cross epics with a project, cross epics only without one,
+// `(none)` when empty — from one builder shared by every EPIC_UNKNOWN site, with
+// the create_epic hint only on the two card mutators.
+test('EPIC_UNKNOWN lists the known slugs for the scope, identically at every site', async () => {
+  const root = await freshRoot();
+  useProjects(['demo', 'api', 'infra', 'empty']);
+  try {
+    await board.createEpic({ project: 'demo', slug: 'auth', title: 'A' });
+    await board.createEpic({ projects: ['demo', 'api'], slug: 'platform', title: 'P' });
+    await board.createEpic({ projects: ['api', 'infra'], slug: 'other', title: 'O' });
+
+    const scoped = await board.readEpic({ project: 'demo', slug: 'nope' });
+    assert.equal(scoped.code, 'EPIC_UNKNOWN');
+    assert.equal(scoped.reason, 'unknown epic: nope in project demo; known: auth, platform');
+    const bare = await board.readEpic({ slug: 'nope' });
+    assert.equal(bare.reason, 'unknown epic: nope; with no project only cross-project epics resolve: other, platform — pass project for a project-scoped epic');
+
+    // Every listed slug resolves for the same scope.
+    for (const slug of ['auth', 'platform']) assert.equal((await board.readEpic({ project: 'demo', slug })).ok, true, slug);
+    for (const slug of ['other', 'platform']) assert.equal((await board.readEpic({ slug })).ok, true, slug);
+
+    // logEpic shares readEpic's reason for the same args.
+    assert.equal((await board.logEpic({ project: 'demo', slug: 'nope', entry: 'x' })).reason, scoped.reason);
+    assert.equal((await board.logEpic({ slug: 'nope', entry: 'x' })).reason, bare.reason);
+
+    // The card mutators add the create hint to the same base text.
+    const hinted = `${scoped.reason}; or create it with create_epic`;
+    const filed = await board.fileCard({ project: 'demo', title: 't', epic: 'nope' });
+    assert.equal(filed.code, 'EPIC_UNKNOWN');
+    assert.equal(filed.reason, hinted);
+    const { id } = await board.fileCard({ project: 'demo', title: 't' });
+    const upd = await board.updateCard({ project: 'demo', id, fields: { epic: 'nope' } });
+    assert.equal(upd.code, 'EPIC_UNKNOWN');
+    assert.equal(upd.reason, hinted);
+
+    assert.equal((await board.readEpic({ project: 'empty', slug: 'nope' })).reason,
+      'unknown epic: nope in project empty; known: (none)');
+  } finally { await cleanup(root); }
+});
+
+// Pins: readEpic's cardLimit cuts in board order (done last, so done goes first),
+// cards_total/cards_truncated report the cut, and omitting cardLimit — what board
+// callers like the GUI do — returns every card with cards_truncated false.
+test('readEpic cardLimit caps cards in board order and reports the cut', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    await board.createEpic({ project: 'demo', slug: 'ep', title: 'E' });
+    const done = (await board.fileCard({ project: 'demo', title: 'd', epic: 'ep', category: 'todo' })).id;
+    await board.moveCard({ project: 'demo', id: done, to: 'in-progress', owner: 'w' });
+    await board.moveCard({ project: 'demo', id: done, to: 'done' });
+    await board.fileCard({ project: 'demo', title: 'a', epic: 'ep' });
+    await board.fileCard({ project: 'demo', title: 'b', epic: 'ep', category: 'todo' });
+
+    const capped = await board.readEpic({ project: 'demo', slug: 'ep', cardLimit: 2 });
+    assert.equal(capped.cards.length, 2);
+    assert.equal(capped.cards.some((c) => c.state === 'done'), false);
+    assert.equal(capped.cards_total, 3);
+    assert.equal(capped.cards_truncated, true);
+
+    const all = await board.readEpic({ project: 'demo', slug: 'ep' });
+    assert.equal(all.cards.length, 3);
+    assert.equal(all.cards_total, 3);
+    assert.equal(all.cards_truncated, false);
+  } finally { await cleanup(root); }
+});
+
+// Pins: knownEpicSlugs sorts the combined list — own epics are gathered before
+// member cross epics, so an own slug sorting after a cross slug (own `zeta`,
+// cross `alpha`) must still be listed `alpha, zeta`.
+test('EPIC_UNKNOWN lists own and cross slugs in one code-unit sorted order', async () => {
+  const root = await freshRoot();
+  useProjects(['demo', 'api']);
+  try {
+    await board.createEpic({ project: 'demo', slug: 'zeta', title: 'Z' });
+    await board.createEpic({ projects: ['demo', 'api'], slug: 'alpha', title: 'A' });
+    assert.equal((await board.readEpic({ project: 'demo', slug: 'nope' })).reason,
+      'unknown epic: nope in project demo; known: alpha, zeta');
+  } finally { await cleanup(root); }
+});
+
+// Pins: the card mutators' create_epic hint is withheld exactly when a cross epic
+// has the slug — an absent slug (even one another project owns as a project epic)
+// gets the hint on both fileCard and updateCard; a non-member cross slug gets the
+// bare EPIC_UNKNOWN reason on both.
+test('EPIC_UNKNOWN create_epic hint is withheld for a non-member cross slug only', async () => {
+  const root = await freshRoot();
+  useProjects(['demo', 'api', 'infra']);
+  try {
+    await board.createEpic({ projects: ['api', 'infra'], slug: 'platform', title: 'P' });
+    await board.createEpic({ project: 'api', slug: 'apionly', title: 'A' });
+    const { id } = await board.fileCard({ project: 'demo', title: 't' });
+    const base = (slug) => `unknown epic: ${slug} in project demo; known: (none)`;
+    const calls = {
+      fileCard: (slug) => board.fileCard({ project: 'demo', title: 't', epic: slug }),
+      updateCard: (slug) => board.updateCard({ project: 'demo', id, fields: { epic: slug } }),
+    };
+    for (const [name, call] of Object.entries(calls)) {
+      for (const slug of ['nope', 'apionly']) {
+        const r = await call(slug);
+        assert.equal(r.code, 'EPIC_UNKNOWN', `${name}/${slug}`);
+        assert.equal(r.reason, `${base(slug)}; or create it with create_epic`, `${name}/${slug}`);
+      }
+      const cross = await call('platform');
+      assert.equal(cross.code, 'EPIC_UNKNOWN', name);
+      assert.equal(cross.reason, base('platform'), name);
+    }
   } finally { await cleanup(root); }
 });

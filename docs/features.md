@@ -58,7 +58,12 @@ conductor's own tool — not a team/shared surface.
   any card starts, a retrospective after the last one lands) happen with nothing in progress.
   `read_epic` returns the plan link, the resolved `plan_path` and the logbook by default — in
   **chronological** order, alongside `logbook_total` (the full length before any `logTail` cap, so
-  a tail'd read can tell 5 entries from 50). It is conductor-only, like every other epic verb.
+  a tail'd read can tell 5 entries from 50). Over MCP the read is **bounded**: `logTail` defaults
+  and `cards` is capped (done cards cut first), both from `READ_EPIC_BOUNDS` in `src/mcp.js`, with
+  `cards_total`/`cards_truncated` reporting the cut; pass `logTail` for more entries and use
+  `list_cards` with `epic` and `includeDone: true` (per member project for a cross epic) for every
+  card — without `includeDone` the done cards the cap cut stay hidden. The GUI's epic view is unbounded. It is conductor-only,
+  like every other epic verb.
 
 ## Duties (who may do what)
 
@@ -67,8 +72,9 @@ conductor's own tool — not a team/shared surface.
   handles a card id: `log_card` resolves the target card **server-side from the caller's
   session** (the card the conductor assigned it in `in-progress`).
 - The conductor owns no card, so it can't use the session path. Instead it may pass `log_card`
-  an explicit `id` (+ required `project`) to log against that exact `in-progress` card directly,
-  bypassing the owner check. Workers never pass `id`.
+  an explicit `id` (+ required `project`) to log against that exact `in-progress` or `done` card
+  directly (so a landing note can follow the move to `done`), bypassing the owner check. Workers
+  never pass `id`.
 - **Why workers stay off the board:** a worker that could read it would see orchestration state
   and could self-dispatch onto work it wasn't scoped to. Duplicates that workers file are merged
   during triage.
@@ -81,8 +87,8 @@ conductor's own tool — not a team/shared surface.
 
 | Tool | Who | Effect |
 |------|-----|--------|
-| `file_card` | worker + conductor | Create a card in `triage`, or directly in `todo`/`backlog` via `category`; takes `priority` (`CRITICAL`/`HIGH`/`MEDIUM`/`LOW`; omit to leave it unset — no default) and an optional `plan` (pointer or an absolute path copied in as `plans/<id>.md`); returns the new id (plus the stored `plan` link when given). |
-| `log_card` | worker + conductor | Append a logbook line to a card: the worker's owned in-progress card (no `id`), or the conductor's target card (`id` + `project`). |
+| `file_card` | worker + conductor | Create a card in the lane `category` names — `triage` (the default) or one of triage's legal exits (`CATEGORIES`); takes `priority` (`CRITICAL`/`HIGH`/`MEDIUM`/`LOW`; omit to leave it unset — no default) and an optional `plan` (pointer or an absolute path copied in as `plans/<id>.md`); returns the new id (plus the stored `plan` link when given). |
+| `log_card` | worker + conductor | Append a logbook line to a card: the worker's owned in-progress card (no `id`), or the conductor's target card in `in-progress` or `done` (`id` + `project`). |
 | `list_cards` | conductor | List cards, optionally filtered by `state`/`epic`; hides `done` by default (`state:'done'`, or `includeDone:true` for every lane). |
 | `read_card` | conductor | Read one card (+ logbook, optionally last `logTail`); always returns the resolved plan path, and with `includePlan` the plan file's body. |
 | `read_card_log` | conductor | Read a card's logbook only, most-recent first. |
@@ -90,7 +96,7 @@ conductor's own tool — not a team/shared surface.
 | `update_card` | conductor | Update `title`/`goal`/`epic` (a live slug, or `null` to clear it)/`priority` (same four levels, or `null` to clear back to unset)/`depends_on`, attach or clear the `plan` link (pointer, or an absolute path copied in as `plans/<id>.md`; the stored link comes back in the result), edit the `acceptance` list (`{ops:[…]}` add/remove/rename/done, `{replace:[…]}`, or `null` to clear), and reassign `owner` on an in-progress card (plan worker → implementer, no lane move). |
 | `create_epic` | conductor | Create/refresh an epic — `project` (project-scoped) or `projects` (cross-project) — plus an optional `plan` link (pointer, or an absolute path copied in as `plans/epic-<slug>.md`). An idempotent upsert that **preserves every optional field you omit**; `goal: ''` / `plan: null` clear one explicitly. |
 | `list_epics` | conductor | A project's epics + cross-project epics spanning it, with computed rollups and a `completed` flag; most-recently-active first, completed epics last. |
-| `read_epic` | conductor | One epic (goal + plan link + logbook + `logbook_total` + rollup) and its cards; cross-project epics aggregate across members. Always returns the resolved plan path, and with `includePlan` the plan file's body. |
+| `read_epic` | conductor | One epic (goal + plan link + logbook + `logbook_total` + rollup) and its cards (+ `cards_total`/`cards_truncated`); cross-project epics aggregate across members. Over MCP the logbook tail and card count are bounded by default (`READ_EPIC_BOUNDS`). Always returns the resolved plan path, and with `includePlan` the plan file's body. |
 | `log_epic` | conductor | Append a logbook line to an epic — no lane gate, since an epic has no state. |
 | `delete_card` | conductor | Permanently delete a card by id, plus its `board:` plan file (never a `repo:` one). Irreversible; not sync-aware (see "Cross-instance sync" in `docs/architecture.md`). |
 

@@ -16,7 +16,8 @@ Consequences for our tools:
 - Array params (`acceptance`, `depends_on`) are fine: `{type:"array", items:{type:"string"}}`.
 - `enum` is allowed and used by `move_card.to`/`list_cards.state` (states), `file_card.category`
   and `file_card.priority`; `default` is allowed too (`read_card.includePlan` pairs it with
-  `default: false`). `file_card.priority` deliberately carries `enum` and **no** `default` — a
+  `default: false`; `read_epic.logTail` carries its MCP default as `default`, pinned to
+  `READ_EPIC_BOUNDS` in `src/mcp.js`). `file_card.priority` deliberately carries `enum` and **no** `default` — a
   default there would have the host's schema layer fill in a level nobody chose (see
   [priority-legacy-tolerance.md](priority-legacy-tolerance.md)).
 - `integer`+`minimum` is allowed — `read_card.logTail`, `read_card_log.limit`.

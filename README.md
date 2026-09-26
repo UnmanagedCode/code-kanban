@@ -13,7 +13,7 @@ team surface. Same extension pattern as the sibling plugins `code-hub` and `code
   `log_card`) that never handle a card id — `log_card` finds the card owned by the calling
   session server-side; `project` is optional on `log_card` and, if omitted, every project is
   scanned for the owned card. The conductor, which owns no card, may instead pass `log_card`
-  an explicit `id` (+ required `project`) to target a specific in-progress card directly.
+  an explicit `id` (+ required `project`) to target a specific in-progress or done card directly.
 - **Epics:** first-class, per-state rollups computed on read; project-scoped **or** cross-project
   (spanning several projects with an aggregated rollup).
 - **Web GUI:** a local zero-build board UI is served at `/` (manifest `frontend.path`), in-process

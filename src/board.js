@@ -424,6 +424,12 @@ export const ALLOWED_TRANSITIONS = new Set([
   'done>in-progress',                // reopen
 ]);
 
+// Legal targets from `from`, in ALLOWED_TRANSITIONS order — refusals list these,
+// derived from the same Set the check reads (never a second table).
+export function legalTargets(from) {
+  return [...ALLOWED_TRANSITIONS].map((k) => k.split('>')).filter(([a]) => a === from).map(([, b]) => b);
+}
+
 async function requireProject(project) {
   return (await validateProject(project))
     ? null
@@ -532,9 +538,9 @@ function sortCards(tasks) {
 
 // ---- worker + conductor ----
 
-// file_card's only non-default landing lanes — mirrors triage's legal exits
-// (ALLOWED_TRANSITIONS has triage>backlog, triage>todo) rather than a separate list.
-const CATEGORIES = ['todo', 'backlog'];
+// file_card's landing lanes: the intake lane plus triage's legal exits, derived
+// from ALLOWED_TRANSITIONS rather than kept as a separate list.
+export const CATEGORIES = ['triage', ...legalTargets('triage')];
 
 export async function fileCard({ project, title, goal, acceptance, epic, depends_on, category, priority, plan, sessionId } = {}) {
   const bad = await requireProject(project);
@@ -577,7 +583,7 @@ export async function fileCard({ project, title, goal, acceptance, epic, depends
   return withLock(project, () => {
     store.ensureProjectDirs(project);
     if (epic != null && !epicVisibleIn(project, epic)) {
-      return fail('EPIC_UNKNOWN', `unknown epic: ${epic} (create it first with create_epic)`);
+      return epicUnknown(project, epic, createHint(epic));
     }
     const id = store.nextId(project);
     // Copy-then-write: a refused plan returns BEFORE store.writeCard, so no card
@@ -631,8 +637,8 @@ export async function deleteCard({ project, id } = {}) {
 // Two resolution paths, chosen by whether `id` is given:
 // - `id` given (conductor path): targets that exact card directly, BYPASSING the
 //   owner check — the conductor owns no card. `project` is required alongside `id`
-//   (ids are per-project, not globally unique). The card must be `in-progress` or
-//   this returns CARD_UNKNOWN. Logged with conductor attribution (logLine's
+//   (ids are per-project, not globally unique). A missing card is CARD_UNKNOWN; a
+//   card outside LOGGABLE_STATES is INVALID_STATE naming them. Logged with conductor attribution (logLine's
 //   sessionId ?? 'conductor' convention — see cardfile.js), matching how moveCard
 //   attributes its own logbook lines.
 // - `id` omitted (worker path): resolves the in-progress card owned by
@@ -641,6 +647,13 @@ export async function deleteCard({ project, id } = {}) {
 //   the owned card. If a session owns MORE THAN ONE in-progress card, resolve to the
 //   most recently modified one, across projects when scanning.
 // (see .wiki/gotchas/owner-from-caller-sessionid.md)
+//
+// done is loggable on the id path because a landing note may follow
+// move_card(to:'done'). The id-less path stays in-progress-only: ownership
+// clears when a card leaves in-progress, so a done card has no owner to match.
+const LOGGABLE_STATES = ['in-progress', 'done'];
+const NO_OWNED_CARD = 'no in-progress card owned by this session: without id, log_card targets only the in-progress card this session owns (ownership clears when a card leaves in-progress); a conductor targets a card with id + project';
+
 export async function logCard({ project, id, entry, sessionId } = {}) {
   if (id !== undefined) {
     if (project === undefined) {
@@ -653,11 +666,12 @@ export async function logCard({ project, id, entry, sessionId } = {}) {
     }
     return withLock(project, () => {
       const task = store.readCardById(project, id);
-      if (!task || task.state !== 'in-progress') {
-        return fail('CARD_UNKNOWN', `no in-progress card: ${id}`);
+      if (!task) return fail('CARD_UNKNOWN', `unknown card: ${id}`);
+      if (!LOGGABLE_STATES.includes(task.state)) {
+        return fail('INVALID_STATE', `card ${id} is in ${task.state}; log_card logs only a card in ${LOGGABLE_STATES.join(' or ')}`);
       }
       task.logbook.push(logLine(nowIso(), null, entry.trim()));
-      store.writeCard(project, 'in-progress', touch(task));
+      store.writeCard(project, task.state, touch(task));
       return { ok: true };
     });
   }
@@ -674,7 +688,7 @@ export async function logCard({ project, id, entry, sessionId } = {}) {
   }
   const targetProject = project !== undefined ? project : await resolveOwningProject(sessionId);
   if (targetProject === null) {
-    return fail('CARD_UNKNOWN', 'no in-progress card owned by this session');
+    return fail('CARD_UNKNOWN', NO_OWNED_CARD);
   }
   return withLock(targetProject, () => {
     // Re-verify under the lock: if the card lost ownership or left in-progress
@@ -683,7 +697,7 @@ export async function logCard({ project, id, entry, sessionId } = {}) {
     // .wiki/gotchas/owner-from-caller-sessionid.md).
     const task = findOwnedInProgressCard(targetProject, sessionId);
     if (!task) {
-      return fail('CARD_UNKNOWN', 'no in-progress card owned by this session');
+      return fail('CARD_UNKNOWN', NO_OWNED_CARD);
     }
     task.logbook.push(logLine(nowIso(), sessionId, entry.trim()));
     store.writeCard(targetProject, 'in-progress', touch(task));
@@ -706,11 +720,11 @@ export async function logEpic({ project, slug, entry } = {}) {
     return fail('INVALID_STATE', 'entry is required and must be a non-empty string');
   }
   const t = resolveEpic(project, slug);
-  if (!t) return fail('EPIC_UNKNOWN', `unknown epic: ${slug}`);
+  if (!t) return epicUnknown(project, slug);
   return withLock(epicLockKey(t), () => {
     // Re-read under the lock — the resolve above ran unlocked.
     const fresh = rereadEpic(t);
-    if (!fresh) return fail('EPIC_UNKNOWN', `unknown epic: ${slug}`);
+    if (!fresh) return epicUnknown(project, slug);
     fresh.epic.logbook.push(logLine(nowIso(), null, entry.trim())); // conductor attribution
     // touch() is load-bearing: an edit that does not move `updated` is
     // invisible to the LWW merge.
@@ -773,14 +787,14 @@ function tail(logbook, limit) {
 export async function moveCard({ project, id, to, owner, commit } = {}) {
   const bad = await requireProject(project);
   if (bad) return bad;
-  if (!STATES.includes(to)) return fail('INVALID_STATE', `unknown target state: ${to}`);
+  if (!STATES.includes(to)) return fail('INVALID_STATE', `unknown target state: ${to}; states: ${STATES.join(', ')}`);
   return withLock(project, async () => {
     const task = store.readCardById(project, id);
     if (!task) return fail('CARD_UNKNOWN', `unknown card: ${id}`);
     const from = task.state;
-    if (from === to) return fail('INVALID_STATE', `already in ${to}`);
+    if (from === to) return fail('INVALID_STATE', `already in ${to}; legal from ${to}: ${legalTargets(to).join(', ')}`);
     if (!ALLOWED_TRANSITIONS.has(`${from}>${to}`)) {
-      return fail('INVALID_STATE', `illegal transition ${from} -> ${to}`);
+      return fail('INVALID_STATE', `illegal transition ${from} -> ${to}; legal from ${from}: ${legalTargets(from).join(', ')}`);
     }
     // Capture before the clear below — landing needs the PRIOR (in-progress)
     // owner to know whose worktree to read.
@@ -843,7 +857,7 @@ export async function updateCard({ project, id, fields } = {}) {
       if (bad) return bad;
       // null is the clear; a slug must name a record visible to this project.
       if (fields.epic !== null && !epicVisibleIn(project, fields.epic)) {
-        return fail('EPIC_UNKNOWN', `unknown epic: ${fields.epic}`);
+        return epicUnknown(project, fields.epic, createHint(fields.epic));
       }
     }
     // null clears the level back to unset (and round-trips: serialize then drops
@@ -951,6 +965,36 @@ function resolveEpic(project, slug) {
   const x = store.readCrossEpic(slug);
   if (!x || (project !== undefined && !x.projects.includes(project))) return null;
   return { kind: 'cross', epic: x };
+}
+
+// Every slug resolveEpic / epicVisibleIn accept for `project`: its own epics plus
+// the cross epics it is a member of; with no project, cross epics only
+// (resolveEpic's no-project branch). Code-unit sorted.
+function knownEpicSlugs(project) {
+  const cross = store.listCrossEpicSlugs().filter((slug) => {
+    if (project === undefined) return true;
+    const x = store.readCrossEpic(slug);
+    return !!x && x.projects.includes(project);
+  });
+  const own = project === undefined ? [] : store.listEpicSlugs(project);
+  return [...new Set([...own, ...cross])].sort();
+}
+
+// The one EPIC_UNKNOWN refusal: names every slug that would resolve for the scope.
+// The card mutators' create_epic hint — withheld when a cross epic already has the
+// slug (the project just isn't a member): creating a same-slug project epic would
+// shadow it, and later block adding the project to it (EPIC_CONFLICT). A same-slug
+// epic in another project is project-scoped and never clashes.
+function createHint(slug) {
+  return store.crossEpicExists(slug) ? '' : '; or create it with create_epic';
+}
+function epicUnknown(project, slug, suffix = '') {
+  const known = knownEpicSlugs(project);
+  const list = known.length ? known.join(', ') : '(none)';
+  const reason = project === undefined
+    ? `unknown epic: ${slug}; with no project only cross-project epics resolve: ${list} — pass project for a project-scoped epic`
+    : `unknown epic: ${slug} in project ${project}; known: ${list}`;
+  return fail('EPIC_UNKNOWN', reason + suffix);
 }
 
 // A cross epic's writes serialize on CROSS_LOCK, a project epic's on its own
@@ -1614,24 +1658,28 @@ export async function listEpics({ project } = {}) {
 }
 
 // Envelope: {ok, epic, logbook_total, plan_path[, plan_body, plan_truncated,
-// plan_missing], cards}. Like read_card, the plan fields sit TOP-LEVEL and `epic`
+// plan_missing], cards, cards_total, cards_truncated}. `cardLimit` caps `cards`
+// in board order (sortCards puts done last, so a cut drops done cards first);
+// cards_total/cards_truncated are returned on every read. Like read_card, the plan fields sit TOP-LEVEL and `epic`
 // mirrors the record (minus the hidden updated/node stamp — the response is a
 // field whitelist), so `logbook_total` — the FULL logbook length, before any
 // logTail cap, which is what tells a tail'd caller 5 entries from 50 — sits
 // top-level too rather than inside `epic`.
-export async function readEpic({ project, slug, logTail, includePlan } = {}) {
+export async function readEpic({ project, slug, logTail, includePlan, cardLimit } = {}) {
   if (project !== undefined) {
     const bad = await requireProject(project);
     if (bad) return bad;
   }
   const t = resolveEpic(project, slug);
-  if (!t) return fail('EPIC_UNKNOWN', `unknown epic: ${slug}`);
+  if (!t) return epicUnknown(project, slug);
   const e = t.epic;
   const isCross = t.kind === 'cross';
   const members = isCross ? e.projects : [t.project];
-  const cards = sortCards(
+  let cards = sortCards(
     members.flatMap((p) => store.listCards(p).filter((x) => x.epic === slug)),
   ).map(summary);
+  const cardsTotal = cards.length;
+  if (Number.isFinite(cardLimit) && cardLimit >= 0) cards = cards.slice(0, cardLimit);
   let logbook = e.logbook ?? [];
   const logbookTotal = logbook.length;
   if (Number.isFinite(logTail) && logTail >= 0) {
@@ -1645,5 +1693,5 @@ export async function readEpic({ project, slug, logTail, includePlan } = {}) {
     ...(isCross ? { projects: e.projects } : {}),
     logbook,
   };
-  return { ok: true, epic, logbook_total: logbookTotal, ...planFields(epicPlanScope(t), e.plan, includePlan), cards };
+  return { ok: true, epic, logbook_total: logbookTotal, ...planFields(epicPlanScope(t), e.plan, includePlan), cards, cards_total: cardsTotal, cards_truncated: cards.length < cardsTotal };
 }

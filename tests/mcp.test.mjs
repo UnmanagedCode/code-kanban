@@ -654,6 +654,9 @@ test('a refusal on any raw-text tool keeps the plain {result} path', async () =>
       assert.equal(r.body.result.ok, false, `${tool}: ok:false`);
       assert.equal(r.body.result.code, code, `${tool}: code`);
     }
+    // The EPIC_UNKNOWN refusal names the scope's known slugs through MCP too.
+    const e = await mcp.handle({ tool: 'read_epic', arguments: { project: 'demo', slug: 'nope' } });
+    assert.match(e.body.result.reason, /known:/);
   } finally { await cleanup(root); }
 });
 
@@ -802,4 +805,100 @@ test('create_epic via mcp: an absolute plan is ingested and the stored link repo
     assert.equal(c.body.result.plan, 'board:epic-auth.md');
     assert.equal(fs.readFileSync(path.join(plansDir('demo'), 'epic-auth.md'), 'utf8'), '# the epic strategy');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); await cleanup(root); }
+});
+
+// Pins: an MCP read_epic is bounded by default — logTail from
+// READ_EPIC_BOUNDS.logTail (logbook_total still full), cards capped at
+// READ_EPIC_BOUNDS.cardLimit with cards_total/cards_truncated in the metadata
+// block — and an explicit logTail escapes the logbook bound.
+test('read_epic over MCP applies READ_EPIC_BOUNDS by default; logTail escapes it', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { logTail, cardLimit } = mcp.READ_EPIC_BOUNDS;
+    await mcp.handle({ tool: 'create_epic', arguments: { project: 'demo', slug: 'big', title: 'B' } });
+    for (let i = 0; i <= logTail; i++) {
+      await mcp.handle({ tool: 'log_epic', arguments: { project: 'demo', slug: 'big', entry: `entry ${i}` } });
+    }
+    for (let i = 0; i <= cardLimit; i++) {
+      await mcp.handle({ tool: 'file_card', arguments: { project: 'demo', title: `c${i}`, epic: 'big' } });
+    }
+    const r = await mcp.handle({ tool: 'read_epic', arguments: { project: 'demo', slug: 'big' } });
+    const logbook = r.body.text[r.body.text.length - 1];
+    assert.equal(logbook.split('\n').length, logTail);
+    assert.doesNotMatch(logbook, /· entry 0$/m, 'the oldest entry is the one cut');
+    assert.equal(r.body.meta.logbook_total, logTail + 1);
+    assert.equal(r.body.meta.cards.length, cardLimit);
+    assert.equal(r.body.meta.cards_total, cardLimit + 1);
+    assert.equal(r.body.meta.cards_truncated, true);
+
+    const full = await mcp.handle({ tool: 'read_epic', arguments: { project: 'demo', slug: 'big', logTail: logTail + 1 } });
+    assert.equal(full.body.text[full.body.text.length - 1].split('\n').length, logTail + 1);
+  } finally { await cleanup(root); }
+});
+
+// Pins: the MCP log_card wiring passes the id-path lane rule through — a done
+// card accepts a conductor log over MCP.
+test('log_card via MCP with id logs on a done card', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = (await mcp.handle({ tool: 'file_card', arguments: { project: 'demo', title: 't', category: 'todo' } })).body.result;
+    await mcp.handle({ tool: 'move_card', arguments: { project: 'demo', id, to: 'in-progress', owner: 'w' } });
+    await mcp.handle({ tool: 'move_card', arguments: { project: 'demo', id, to: 'done' } });
+    const r = await mcp.handle({ tool: 'log_card', arguments: { project: 'demo', id, entry: 'landed' } });
+    assert.equal(r.body.result.ok, true);
+    const log = await mcp.handle({ tool: 'read_card_log', arguments: { project: 'demo', id } });
+    assert.match(log.body.text[0], /landed/);
+  } finally { await cleanup(root); }
+});
+
+// Pins: read_epic's advertised recovery call really recovers what the MCP card cap
+// cuts. The cap drops done cards first and list_cards hides done by default, so the
+// recovery args are parsed FROM the manifest description (not restated here) and,
+// run once per member project, must return every card of an epic whose cards are
+// all done — for a project epic and a cross epic alike.
+test("read_epic's advertised list_cards recovery returns every card the cap cut", async () => {
+  const root = await freshRoot();
+  useProjects(['demo', 'api']);
+  try {
+    const manifest = JSON.parse(fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'conductor.plugin.json'), 'utf8'));
+    const desc = manifest.mcp.tools.find((t) => t.name === 'read_epic').description;
+    const m = desc.match(/`list_cards` per project with `epic` and `(\w+): (\w+)` lists all/);
+    assert.ok(m, `read_epic names its recovery call: ${desc}`);
+    const recoveryArgs = { [m[1]]: JSON.parse(m[2]) };
+
+    const { cardLimit } = mcp.READ_EPIC_BOUNDS;
+    const call = async (tool, args) => (await mcp.handle({ tool, arguments: args })).body;
+    const fileDone = async (project, epic) => {
+      const { id } = (await call('file_card', { project, title: 't', epic, category: 'todo' })).result;
+      await call('move_card', { project, id, to: 'in-progress', owner: 'w' });
+      await call('move_card', { project, id, to: 'done' });
+      return id;
+    };
+    await call('create_epic', { project: 'demo', slug: 'own', title: 'O' });
+    await call('create_epic', { projects: ['demo', 'api'], slug: 'cross', title: 'C' });
+    const cases = [
+      { readArgs: { project: 'demo', slug: 'own' }, members: ['demo'] },
+      { readArgs: { slug: 'cross' }, members: ['demo', 'api'] },
+    ];
+    for (const { readArgs, members } of cases) {
+      const ids = [];
+      for (let i = 0; i <= cardLimit; i++) ids.push(`${members[i % members.length]}/${await fileDone(members[i % members.length], readArgs.slug)}`);
+
+      const read = await call('read_epic', readArgs);
+      assert.equal(read.meta.cards_truncated, true, readArgs.slug);
+      assert.equal(read.meta.cards_total, ids.length);
+
+      const recovered = [];
+      for (const project of members) {
+        const r = await call('list_cards', { project, epic: readArgs.slug, ...recoveryArgs });
+        assert.equal(r.meta.done_hidden, 0, `${readArgs.slug}/${project}`);
+        for (const id of ids) if (id.startsWith(`${project}/`) && r.text.join('\n').includes(id.slice(project.length + 1))) recovered.push(id);
+        assert.equal(r.meta.shown, ids.filter((id) => id.startsWith(`${project}/`)).length);
+      }
+      assert.deepEqual(recovered.sort(), [...ids].sort(), `${readArgs.slug}: every cut card recovered`);
+    }
+  } finally { await cleanup(root); }
 });
