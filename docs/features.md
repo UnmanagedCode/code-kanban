@@ -61,7 +61,8 @@ conductor's own tool — not a team/shared surface.
   a tail'd read can tell 5 entries from 50). Over MCP the read is **bounded**: `logTail` defaults
   and `cards` is capped (done cards cut first), both from `READ_EPIC_BOUNDS` in `src/mcp.js`, with
   `cards_total`/`cards_truncated` reporting the cut; pass `logTail` for more entries and use
-  `list_cards` with `epic` for every card. The GUI's epic view is unbounded. It is conductor-only,
+  `list_cards` with `epic` and `includeDone: true` (per member project for a cross epic) for every
+  card — without `includeDone` the done cards the cap cut stay hidden. The GUI's epic view is unbounded. It is conductor-only,
   like every other epic verb.
 
 ## Duties (who may do what)

@@ -49,7 +49,9 @@ caps `cards` from `READ_EPIC_BOUNDS` in `src/mcp.js`; the HTTP epic routes pass 
 GUI's epic detail is unbounded. `board.readEpic` itself is unbounded unless given `cardLimit` — a
 new board caller gets every card. `cardLimit` is not a caller param over MCP (the handler
 overrides any value); the recovery path for `cards_truncated: true` is `list_cards({project,
-epic})`.
+epic, includeDone: true})`, once per member project for a cross epic. **`includeDone: true` is
+load-bearing:** the cap cuts `done` cards first and `list_cards` hides `done` by default, so
+without it the recovery call returns none of what was cut.
 
 Two consequences: a tool on this path has **no `result` key** at all, so anything reading
 `body.result` must handle its absence — and it is now the *normal* path for all five reads, not a

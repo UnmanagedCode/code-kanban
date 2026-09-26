@@ -583,7 +583,7 @@ export async function fileCard({ project, title, goal, acceptance, epic, depends
   return withLock(project, () => {
     store.ensureProjectDirs(project);
     if (epic != null && !epicVisibleIn(project, epic)) {
-      return epicUnknown(project, epic, CREATE_HINT);
+      return epicUnknown(project, epic, createHint(epic));
     }
     const id = store.nextId(project);
     // Copy-then-write: a refused plan returns BEFORE store.writeCard, so no card
@@ -857,7 +857,7 @@ export async function updateCard({ project, id, fields } = {}) {
       if (bad) return bad;
       // null is the clear; a slug must name a record visible to this project.
       if (fields.epic !== null && !epicVisibleIn(project, fields.epic)) {
-        return epicUnknown(project, fields.epic, CREATE_HINT);
+        return epicUnknown(project, fields.epic, createHint(fields.epic));
       }
     }
     // null clears the level back to unset (and round-trips: serialize then drops
@@ -981,7 +981,13 @@ function knownEpicSlugs(project) {
 }
 
 // The one EPIC_UNKNOWN refusal: names every slug that would resolve for the scope.
-const CREATE_HINT = '; or create it with create_epic';
+// The card mutators' create_epic hint — withheld when a cross epic already has the
+// slug (the project just isn't a member): creating a same-slug project epic would
+// shadow it, and later block adding the project to it (EPIC_CONFLICT). A same-slug
+// epic in another project is project-scoped and never clashes.
+function createHint(slug) {
+  return store.crossEpicExists(slug) ? '' : '; or create it with create_epic';
+}
 function epicUnknown(project, slug, suffix = '') {
   const known = knownEpicSlugs(project);
   const list = known.length ? known.join(', ') : '(none)';

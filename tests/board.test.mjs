@@ -3682,3 +3682,46 @@ test('readEpic cardLimit caps cards in board order and reports the cut', async (
     assert.equal(all.cards_truncated, false);
   } finally { await cleanup(root); }
 });
+
+// Pins: knownEpicSlugs sorts the combined list — own epics are gathered before
+// member cross epics, so an own slug sorting after a cross slug (own `zeta`,
+// cross `alpha`) must still be listed `alpha, zeta`.
+test('EPIC_UNKNOWN lists own and cross slugs in one code-unit sorted order', async () => {
+  const root = await freshRoot();
+  useProjects(['demo', 'api']);
+  try {
+    await board.createEpic({ project: 'demo', slug: 'zeta', title: 'Z' });
+    await board.createEpic({ projects: ['demo', 'api'], slug: 'alpha', title: 'A' });
+    assert.equal((await board.readEpic({ project: 'demo', slug: 'nope' })).reason,
+      'unknown epic: nope in project demo; known: alpha, zeta');
+  } finally { await cleanup(root); }
+});
+
+// Pins: the card mutators' create_epic hint is withheld exactly when a cross epic
+// has the slug — an absent slug (even one another project owns as a project epic)
+// gets the hint on both fileCard and updateCard; a non-member cross slug gets the
+// bare EPIC_UNKNOWN reason on both.
+test('EPIC_UNKNOWN create_epic hint is withheld for a non-member cross slug only', async () => {
+  const root = await freshRoot();
+  useProjects(['demo', 'api', 'infra']);
+  try {
+    await board.createEpic({ projects: ['api', 'infra'], slug: 'platform', title: 'P' });
+    await board.createEpic({ project: 'api', slug: 'apionly', title: 'A' });
+    const { id } = await board.fileCard({ project: 'demo', title: 't' });
+    const base = (slug) => `unknown epic: ${slug} in project demo; known: (none)`;
+    const calls = {
+      fileCard: (slug) => board.fileCard({ project: 'demo', title: 't', epic: slug }),
+      updateCard: (slug) => board.updateCard({ project: 'demo', id, fields: { epic: slug } }),
+    };
+    for (const [name, call] of Object.entries(calls)) {
+      for (const slug of ['nope', 'apionly']) {
+        const r = await call(slug);
+        assert.equal(r.code, 'EPIC_UNKNOWN', `${name}/${slug}`);
+        assert.equal(r.reason, `${base(slug)}; or create it with create_epic`, `${name}/${slug}`);
+      }
+      const cross = await call('platform');
+      assert.equal(cross.code, 'EPIC_UNKNOWN', name);
+      assert.equal(cross.reason, base('platform'), name);
+    }
+  } finally { await cleanup(root); }
+});

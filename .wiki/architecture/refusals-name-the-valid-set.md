@@ -19,6 +19,11 @@ Gotchas:
   either resolver's scope rule changes, change `knownEpicSlugs` with it — the test
   `EPIC_UNKNOWN lists the known slugs for the scope, identically at every site` resolves every
   listed slug to catch a drift.
+- **The card mutators' `; or create it with create_epic` hint (`createHint`) is withheld when a
+  cross epic has the slug.** Following it would succeed — a project epic may share a non-member
+  cross epic's slug — but that epic shadows the cross one and later makes adding the project to it
+  refuse `EPIC_CONFLICT`. A same-slug epic in another project is project-scoped and never clashes,
+  so it does not suppress the hint.
 - **The manifest is static JSON**, so its copies (`file_card.category.enum`, `read_epic.logTail`
   default) cannot derive; `tests/pluginManifest.test.mjs` pins each to its constant instead.
 - **The GUI** derives move targets from `/api/board/meta` (the same `ALLOWED_TRANSITIONS`), not

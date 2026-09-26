@@ -160,7 +160,7 @@
       },
       {
         "name": "read_epic",
-        "description": "Read an epic (goal + plan link + logbook + computed rollup) and its cards; a cross-project epic aggregates across its member projects. `cards` is capped at 50, done last (`cards_truncated`); `list_cards` with `epic` lists all. Returns plan_path always. Conductor.",
+        "description": "Read an epic (goal + plan link + logbook + rollup) and its cards; a cross-project epic aggregates across its member projects. `cards` is capped at 50, done last (`cards_truncated`); `list_cards` per project with `epic` and `includeDone: true` lists all. Returns plan_path always. Conductor.",
         "inputSchema": {
           "type": "object",
           "properties": {
