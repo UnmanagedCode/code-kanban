@@ -1,9 +1,9 @@
 # Gotcha: `#detail-overlay`'s close button always paints over `.detail-head`
 
-`.overlay-close` (`frontend/index.html:34`) is static markup that sits *before* `#detail-body`
+`.overlay-close` (the close button inside `#detail-overlay` in `frontend/index.html`) is static markup that sits *before* `#detail-body`
 in the DOM, absolutely positioned at `top:10px; right:12px` relative to `.overlay-card`
 (`.overlay-close` in `frontend/styles.css`). Content injected into `#detail-body` — e.g. `.detail-head`
-(`frontend/app.js:274-280`) — is normal static flow, so per CSS stacking rules the positioned
+(built by `openDetailNode` in `frontend/app.js`) — is normal static flow, so per CSS stacking rules the positioned
 close button always paints *above* it regardless of DOM order, even though `.detail-head`
 comes later in the document.
 

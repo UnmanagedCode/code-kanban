@@ -1,13 +1,13 @@
 # Gotcha: the board is a fixed-height flex item and each lane is its own scroller
 
-Before `2026-0037`, `main` was the only scroller and `.board` used `align-items: start` with
-content-sized lanes, so a 200-card `done` lane stretched the whole page — you scrolled past every
-other lane header to reach it. Now `.board` is a fixed-height flex item and each `.column-body`
-scrolls on its own. Four things about that are not re-derivable from reading the CSS.
+`.board` is a fixed-height flex item and each `.column-body` scrolls on its own, so a 200-card
+`done` lane scrolls inside its lane rather than stretching the page. With `main` as the only
+scroller and content-sized lanes (`align-items: start`), that lane would stretch the whole page and
+you would scroll past every other lane header to reach it. Four things about that are not re-derivable from reading the CSS.
 
 ## 1. `renderBoard`'s `replaceChildren()` zeroes every lane's `scrollTop`
 
-`renderBoard` (`frontend/app.js:187`) rebuilds **every** lane on every load, move, edit and filter
+`renderBoard` in `frontend/app.js` rebuilds **every** lane on every load, move, edit and filter
 toggle. That destroyed the lane elements before too, but it was invisible: the *page* scrolled and
 the browser kept `main`'s offset. Once lanes scroll independently, the same rebuild silently yanks a
 deep `done` lane back to the top on every refresh.
