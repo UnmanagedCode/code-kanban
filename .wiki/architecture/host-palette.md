@@ -2,8 +2,7 @@
 
 The host injects no theme into a plugin iframe, so `frontend/styles.css` carries its own copy of
 code-conductor's shell `:root` tokens, font stack and `color-scheme: dark`, taken from the `:root`
-block of the host's `public/styles.css`. Token names are the host's own (`--green`/`--amber`/`--red`,
-not code-live's `--ok`/`--warn`/`--bad`), so the block diffs cleanly against the host's.
+block of the host's `public/styles.css`. Token names are the host's own (`--green`/`--amber`/`--red`), so the block diffs cleanly against the host's.
 
 `tests/frontendStyles.test.mjs` pins both the names (`:root declares exactly the host shell tokens
 plus the categorical lane hues`) and the values (`shell tokens carry code-conductor's :root

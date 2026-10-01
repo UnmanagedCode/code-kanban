@@ -58,6 +58,66 @@ function assertDecls(selector, expected) {
   }
 }
 
+// JS scanning for the primary-button test. frontend/app.js has no regex
+// literals, so skipping strings and comments is enough to match brackets.
+const CLOSERS = { '(': ')', '{': '}', '[': ']' };
+const isQuote = (ch) => ch === "'" || ch === '"' || ch === '`';
+
+// Index just past the string literal opening at `i` (template ${…} included).
+function skipString(src, i) {
+  const q = src[i];
+  for (let j = i + 1; j < src.length; j++) {
+    if (src[j] === '\\') { j++; continue; }
+    if (q === '`' && src.startsWith('${', j)) { j = matchClose(src, j + 1) - 1; continue; }
+    if (src[j] === q) return j + 1;
+  }
+  throw new Error(`unterminated string at ${i}`);
+}
+
+// Index just past the bracket matching the one at `open`.
+function matchClose(src, open) {
+  const stack = [];
+  for (let i = open; i < src.length; i++) {
+    const ch = src[i];
+    if (isQuote(ch)) { i = skipString(src, i) - 1; continue; }
+    if (CLOSERS[ch]) stack.push(CLOSERS[ch]);
+    else if (ch === ')' || ch === '}' || ch === ']') {
+      assert.equal(ch, stack.pop(), `unbalanced ${ch} at ${i}`);
+      if (stack.length === 0) return i + 1;
+    }
+  }
+  throw new Error(`no closer for ${src[open]} at ${open}`);
+}
+
+// `src` with every comment blanked to spaces, so indices are preserved.
+function blankComments(src) {
+  let out = '';
+  for (let i = 0; i < src.length;) {
+    if (isQuote(src[i])) { const j = skipString(src, i); out += src.slice(i, j); i = j; continue; }
+    let stop = -1;
+    if (src.startsWith('//', i)) stop = src.indexOf('\n', i) === -1 ? src.length : src.indexOf('\n', i);
+    else if (src.startsWith('/*', i)) stop = src.indexOf('*/', i) + 2;
+    if (stop === -1) { out += src[i]; i++; continue; }
+    out += src.slice(i, stop).replace(/[^\n]/g, ' ');
+    i = stop;
+  }
+  return out;
+}
+
+// An object literal's own properties as text: nested brackets dropped, strings kept.
+function topLevel(src, open, close) {
+  let out = '';
+  for (let i = open + 1; i < close - 1;) {
+    if (isQuote(src[i])) { const j = skipString(src, i); out += src.slice(i, j); i = j; continue; }
+    if (CLOSERS[src[i]]) { i = matchClose(src, i); out += ' '; continue; }
+    out += src[i]; i++;
+  }
+  return out;
+}
+
+// `primary` as one class among any others in a class string.
+const PRIMARY_CLASS = /class:\s*(['"`])(?:[^'"`]*\s)?primary(?:\s[^'"`]*)?\1/g;
+
 test(':root block exists', () => {
   assert.ok(rootMatch, 'styles.css has no :root block');
 });
@@ -118,11 +178,17 @@ test('the accent-filled primary copies the host submit, including its disabled s
 });
 
 test('only submit buttons carry the primary class', () => {
-  const app = read('../frontend/app.js');
-  const primaries = [...app.matchAll(/el\(\s*'button'\s*,\s*\{([^}]*)\}/g)]
-    .map((m) => m[1])
-    .filter((props) => /class:\s*'primary'/.test(props));
+  const app = blankComments(read('../frontend/app.js'));
+  // The own props of every el('button', {…}) call, brace-balanced.
+  const buttonProps = [...app.matchAll(/\bel\(\s*'button'\s*,\s*\{/g)].map((m) => {
+    const open = m.index + m[0].length - 1;
+    return topLevel(app, open, matchClose(app, open));
+  });
+  const count = (text) => (text.match(PRIMARY_CLASS) ?? []).length;
+  const primaries = buttonProps.filter((props) => count(props) > 0);
   assert.ok(primaries.length > 0, 'app.js renders no primary button');
+  // Every primary class in app.js sits in some button's own props, so none escapes the scan.
+  assert.equal(primaries.reduce((n, props) => n + count(props), 0), count(app), "a primary class outside an el('button') props object");
   for (const props of primaries) assert.match(props, /type:\s*'submit'/, `primary button is not a submit: {${props}}`);
   assert.doesNotMatch(read('../frontend/index.html'), /class="primary"/);
 });

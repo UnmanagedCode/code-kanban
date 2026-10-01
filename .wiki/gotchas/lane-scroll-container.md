@@ -8,9 +8,9 @@ you would scroll past every other lane header to reach it. Four things about tha
 ## 1. `renderBoard`'s `replaceChildren()` zeroes every lane's `scrollTop`
 
 `renderBoard` in `frontend/app.js` rebuilds **every** lane on every load, move, edit and filter
-toggle. That destroyed the lane elements before too, but it was invisible: the *page* scrolled and
-the browser kept `main`'s offset. Once lanes scroll independently, the same rebuild silently yanks a
-deep `done` lane back to the top on every refresh.
+toggle. Each lane is its own scroller, so the rebuild discards every lane's `scrollTop` — the browser
+keeps only `main`'s offset across it — and would silently yank a deep `done` lane back to the top on
+every refresh.
 
 So the offsets are captured into a `Map` **keyed by `data-state`** (not DOM position, so it survives
 a change in lane count or order) before `replaceChildren()`, and restored in a second pass **after**
@@ -30,14 +30,13 @@ it can no longer push the grid's min-content width into horizontal *page* scroll
 ## 3. `flex: 1 1 0` on `.board` is what keeps lane content out of the height calculation
 
 `flex-basis: 0` — not `auto` — is the load-bearing part (`.board` in `frontend/styles.css`). With `auto` the
-lanes' own content feeds back into the board's height and the page stretches again, which is the bug
-being fixed. It needs `min-height: 0` on `main` (the `main` rule in `frontend/styles.css`) to be allowed to size
+lanes' own content feeds back into the board's height and the page stretches. It needs `min-height: 0` on `main` (the `main` rule in `frontend/styles.css`) to be allowed to size
 below content at all, and `min-height: 0` + `flex: 1 1 auto` on `.column-body` for the same reason
 one level down: a flex child will not shrink below its content without it, so the lane just grows
 and nothing scrolls.
 
 `.board`'s `min-height: 260px` is the **short-window floor**: below it the board stops shrinking and
-`main`'s `overflow: auto` scrolls the page again, exactly as it did before per-lane scrolling. That
+`main`'s `overflow: auto` scrolls the page instead. That
 fallback is deliberate, not a leftover — it is what keeps every card reachable on a 420px-tall
 window (`snap-gui.mjs` step 20c).
 
