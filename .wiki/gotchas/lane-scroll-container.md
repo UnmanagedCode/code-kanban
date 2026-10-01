@@ -25,7 +25,7 @@ computes from `visible` to `auto`. Setting just `overflow-y: auto` on `.column-b
 a *horizontal* scrollbar inside every lane. `.column-body` in `frontend/styles.css` pins
 `overflow-x: hidden` explicitly for that reason — and the `.card` rule there carries
 `overflow-wrap: anywhere` so a long unbroken title wraps rather than being clipped by it (and so
-it can no longer push the grid's min-content width into horizontal *page* scroll).
+it cannot push the grid's min-content width into horizontal *page* scroll).
 
 ## 3. `flex: 1 1 0` on `.board` is what keeps lane content out of the height calculation
 

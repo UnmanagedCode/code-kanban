@@ -115,8 +115,11 @@ function topLevel(src, open, close) {
   return out;
 }
 
-// `primary` as one class among any others in a class string.
-const PRIMARY_CLASS = /class:\s*(['"`])(?:[^'"`]*\s)?primary(?:\s[^'"`]*)?\1/g;
+// `primary` as one class token among any others in a quoted class string, in
+// the JS `class: …` prop form and the HTML `class=…` attribute form.
+const PRIMARY_TOKEN = String.raw`(?:[^'"\x60]*\s)?primary(?:\s[^'"\x60]*)?`;
+const PRIMARY_CLASS = new RegExp(String.raw`class:\s*(['"\x60])${PRIMARY_TOKEN}\1`, 'g');
+const PRIMARY_ATTR = new RegExp(String.raw`\bclass\s*=\s*(['"])${PRIMARY_TOKEN}\1`, 'i');
 
 test(':root block exists', () => {
   assert.ok(rootMatch, 'styles.css has no :root block');
@@ -190,7 +193,11 @@ test('only submit buttons carry the primary class', () => {
   // Every primary class in app.js sits in some button's own props, so none escapes the scan.
   assert.equal(primaries.reduce((n, props) => n + count(props), 0), count(app), "a primary class outside an el('button') props object");
   for (const props of primaries) assert.match(props, /type:\s*'submit'/, `primary button is not a submit: {${props}}`);
-  assert.doesNotMatch(read('../frontend/index.html'), /class="primary"/);
+  const htmlButtons = read('../frontend/index.html').match(/<button\b[^>]*>/gi) ?? [];
+  assert.ok(htmlButtons.length > 0, 'index.html has no static button');
+  for (const tag of htmlButtons.filter((b) => PRIMARY_ATTR.test(b))) {
+    assert.match(tag, /\btype\s*=\s*(['"])submit\1/i, `primary button is not a submit: ${tag}`);
+  }
 });
 
 test('quiet buttons are panel-2 with a border, the host hover and a 6px radius', () => {
