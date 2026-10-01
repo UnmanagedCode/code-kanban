@@ -1,28 +1,35 @@
+/* The host injects no theme into the plugin iframe, so the shell tokens, font
+   and color-scheme below are copied from the :root block of code-conductor's
+   shell stylesheet (public/styles.css). */
 :root {
-  --bg: #0f1115;
-  --panel: #181b22;
-  --panel-2: #1f232c;
-  --ink: #e6e8ee;
-  --ink-dim: #9aa3b2;
-  --line: #2a2f3a;
-  --accent: #4f8ff7;
-  --accent-dim: #2c3a55;
-  --warn: #f0b265;
-  --err: #ef6c6c;
-  --ok: #6ecf94;
+  --bg: #0f1117;
+  --panel: #151823;
+  --panel-2: #1d2130;
+  --text: #d8dae6;
+  --muted: #8a90a3;
+  --accent: #6ea8ff;
+  --green: #4ade80;
+  --amber: #f59e0b;
+  --red: #f87171;
+  --border: #232838;
+  /* Categorical lane hues: each names a column, not a status. in-progress and
+     done reuse the host's amber and green. */
   --triage: #b08bd6;
   --backlog: #7a9bf0;
   --todo: #4fb8d6;
-  --progress: #f0b265;
-  --done: #6ecf94;
+  --progress: var(--amber);
+  --done: var(--green);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body {
   background: var(--bg);
-  color: var(--ink);
-  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: var(--text);
+  line-height: 1.45;
   display: flex;
   flex-direction: column;
 }
@@ -33,47 +40,54 @@ body {
   gap: 16px;
   padding: 10px 16px;
   background: var(--panel);
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
 }
 .topbar h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .2px; }
 .topbar-controls { display: flex; align-items: end; gap: 10px; flex-wrap: wrap; }
 
-.field { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--ink-dim); }
-.check { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink-dim); padding-bottom: 6px; }
+.field { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+.check { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); padding-bottom: 6px; }
 .check span { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; }
 .check input[type=checkbox] { accent-color: var(--accent); }
 .field span { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; }
 input, select, textarea {
   background: var(--panel-2);
-  color: var(--ink);
-  border: 1px solid var(--line);
+  color: var(--text);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 6px 8px;
+  padding: 6px 10px;
   font: inherit;
   min-width: 0;
 }
 textarea { resize: vertical; }
-input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-dim); border-color: var(--accent); }
+input:focus, select:focus, textarea:focus,
+button:focus-visible, .card:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
 
 button {
   background: var(--panel-2);
-  color: var(--ink);
-  border: 1px solid var(--line);
+  color: var(--text);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 7px 12px;
+  padding: 6px 10px;
   font: inherit;
   cursor: pointer;
 }
-button:hover:not(:disabled) { border-color: var(--accent); }
-button:disabled { opacity: .45; cursor: not-allowed; }
-button.primary { background: var(--accent-dim); border-color: var(--accent); }
-button.ghost { background: transparent; }
-button.danger { border-color: var(--err); color: var(--err); }
+button:hover:not(:disabled) { background: #262b3d; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+/* The accent fill is reserved for form submits; every other button stays quiet. */
+button.primary { background: var(--accent); color: #0a0c12; border-color: var(--accent); font-weight: 600; }
+button.primary:hover:not(:disabled) { background: #8cb9ff; border-color: #8cb9ff; }
+button.primary:disabled { background: var(--panel-2); color: var(--muted); border-color: var(--border); font-weight: 400; }
+/* The epic row's "open" navigates, so it carries an accent tint. */
+.epic-row button.ghost { background: rgba(110,168,255,.10); color: var(--accent); border-color: var(--accent); }
+.epic-row button.ghost:hover:not(:disabled) { background: rgba(110,168,255,.18); }
+button.danger { background: rgba(248,113,113,.10); color: var(--red); border-color: var(--red); }
+button.danger:hover:not(:disabled) { background: rgba(248,113,113,.18); }
 
-.status { margin: 0; padding: 6px 16px; color: var(--ink-dim); font-size: 12px; min-height: 1.2em; }
-.status.err { color: var(--err); }
-.status.ok { color: var(--ok); }
+.status { margin: 0; padding: 6px 16px; color: var(--muted); font-size: 12px; min-height: 1.2em; }
+.status.err { color: var(--red); }
+.status.ok { color: var(--green); }
 
 main { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px 32px; display: flex; flex-direction: column; gap: 20px; }
 
@@ -93,9 +107,9 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px 32px; display:
 }
 .column {
   background: var(--panel);
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: 10px;
-  border-top: 3px solid var(--line);
+  border-top: 3px solid var(--border);
   display: flex;
   flex-direction: column;
   min-height: 120px;
@@ -116,7 +130,7 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px 32px; display:
      visible while the cards under it scroll. */
   flex: 0 0 auto;
 }
-.column-count { color: var(--ink-dim); font-weight: 400; font-size: 12px; }
+.column-count { color: var(--muted); font-weight: 400; font-size: 12px; }
 .column-body {
   display: flex; flex-direction: column; gap: 8px; padding: 4px 10px 12px;
   /* The per-lane scroller. min-height: 0 is what lets a flex child shrink
@@ -130,11 +144,11 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px 32px; display:
   overflow-y: auto;
   overscroll-behavior-y: contain;
 }
-.column-empty { color: var(--ink-dim); font-size: 12px; padding: 6px 2px; font-style: italic; }
+.column-empty { color: var(--muted); font-size: 12px; padding: 6px 2px; font-style: italic; }
 
 .card {
   background: var(--panel-2);
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 8px 10px;
   cursor: pointer;
@@ -147,7 +161,7 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px 32px; display:
   overflow-wrap: anywhere;
 }
 .card:hover { border-color: var(--accent); }
-.card-id { color: var(--ink-dim); font-size: 11px; font-variant-numeric: tabular-nums; }
+.card-id { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .card-title { font-weight: 500; }
 .card-meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .badge {
@@ -155,22 +169,23 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px 32px; display:
   padding: 1px 6px;
   border-radius: 10px;
   background: var(--bg);
-  border: 1px solid var(--line);
-  color: var(--ink-dim);
+  border: 1px solid var(--border);
+  color: var(--muted);
 }
 .badge.epic { color: var(--triage); border-color: var(--triage); }
 .badge.owner { color: var(--progress); border-color: var(--progress); }
 /* Priority badges are graded by severity, and EVERY judged level has one — a
    card with no prio badge is one nobody has judged yet (app.js). MEDIUM is
    deliberately quieter than HIGH but brighter than LOW, so the four read as a
-   ladder rather than three alerts. */
+   ladder rather than three alerts; CRITICAL and HIGH carry urgency, so they take
+   the host's red and amber. */
 .badge.prio { text-transform: uppercase; letter-spacing: .3px; }
-.badge.prio-critical { color: var(--err); border-color: var(--err); font-weight: 600; }
-.badge.prio-high { color: var(--warn); border-color: var(--warn); }
-.badge.prio-medium { color: var(--ink); border-color: var(--line); }
-.badge.prio-low { color: var(--ink-dim); border-color: var(--line); }
+.badge.prio-critical { color: var(--red); border-color: var(--red); font-weight: 600; }
+.badge.prio-high { color: var(--amber); border-color: var(--amber); }
+.badge.prio-medium { color: var(--text); border-color: var(--border); }
+.badge.prio-low { color: var(--muted); border-color: var(--border); }
 .badge.epic-cross { color: var(--progress); border-color: var(--progress); margin-left: 6px; }
-.badge.plan { color: var(--warn); border-color: var(--warn); }
+.badge.plan { color: var(--amber); border-color: var(--amber); }
 
 .epics {
   display: flex; flex-direction: column; gap: 8px;
@@ -203,26 +218,26 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px 32px; display:
   gap: 10px;
   align-items: center;
   background: var(--panel);
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 6px 10px;
 }
 .epic-sep {
   font-size: 11px; font-variant: small-caps; letter-spacing: .04em;
-  color: var(--ink-dim); border-top: 1px solid var(--line);
+  color: var(--muted); border-top: 1px solid var(--border);
   padding-top: 4px; margin-top: 2px;
 }
 .epic-title { font-weight: 500; }
 .epic-title .badge.plan { margin-left: 6px; }
-.epic-slug { color: var(--ink-dim); font-size: 12px; }
+.epic-slug { color: var(--muted); font-size: 12px; }
 .rollup { display: flex; gap: 4px; flex-wrap: wrap; }
-.rollup-pill { font-size: 11px; padding: 1px 6px; border-radius: 10px; background: var(--bg); color: var(--ink-dim); border: 1px solid var(--line); }
-.rollup-pill b { color: var(--ink); }
+.rollup-pill { font-size: 11px; padding: 1px 6px; border-radius: 10px; background: var(--bg); color: var(--muted); border: 1px solid var(--border); }
+.rollup-pill b { color: var(--text); }
 .rollup-pill[data-zero="true"] { opacity: .4; }
 
 .overlay {
   position: fixed; inset: 0;
-  background: rgba(0,0,0,.55);
+  background: rgba(0,0,0,.5);
   display: flex; align-items: flex-start; justify-content: center;
   padding: 40px 16px;
   overflow: auto;
@@ -230,7 +245,7 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px 32px; display:
 .overlay.hidden { display: none; }
 .overlay-card {
   background: var(--panel);
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 18px 20px;
   width: min(680px, 100%);
@@ -239,25 +254,25 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px 32px; display:
 }
 .overlay-close {
   position: absolute; top: 10px; right: 12px;
-  background: transparent; border: none; font-size: 16px; color: var(--ink-dim);
+  background: transparent; border: none; font-size: 16px; color: var(--muted);
 }
-.overlay-close:hover { color: var(--ink); border: none; }
+.overlay-close:hover:not(:disabled) { background: none; color: var(--text); border: none; }
 
 .detail-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; padding-right: 28px; }
 .detail-head-left { display: flex; align-items: baseline; gap: 10px; }
-.detail-id { color: var(--ink-dim); font-size: 12px; }
-.detail-state { font-size: 12px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--line); text-transform: capitalize; }
+.detail-id { color: var(--muted); font-size: 12px; }
+.detail-state { font-size: 12px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--border); text-transform: capitalize; }
 .detail-title { font-size: 18px; font-weight: 600; margin: 2px 0 12px; }
 .detail-section { margin: 14px 0; }
-.detail-section h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .5px; color: var(--ink-dim); margin: 0 0 6px; }
+.detail-section h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin: 0 0 6px; }
 .detail-section p { margin: 0; white-space: pre-wrap; }
-.detail-section .muted { color: var(--ink-dim); font-style: italic; }
-.detail-section .plan-link { color: var(--warn); font-size: 12px; font-family: ui-monospace, "SF Mono", Menlo, monospace; margin-bottom: 6px; }
+.detail-section .muted { color: var(--muted); font-style: italic; }
+.detail-section .plan-link { color: var(--amber); font-size: 12px; font-family: ui-monospace, "SF Mono", Menlo, monospace; margin-bottom: 6px; }
 .acceptance { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px; }
 .acceptance li { display: flex; gap: 8px; align-items: center; }
 .acceptance input[type=checkbox] { accent-color: var(--accent); }
 .logbook { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 3px; max-height: 200px; overflow: auto; }
-.logbook li { font-size: 12px; color: var(--ink-dim); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.logbook li { font-size: 12px; color: var(--muted); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
 .logbook li .sid { color: var(--accent); }
 
 .move-row { display: flex; gap: 8px; align-items: end; margin: 6px 0 4px; }
@@ -267,9 +282,9 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px 32px; display:
 .form-grid .field { gap: 4px; }
 .form-grid input, .form-grid select, .form-grid textarea { width: 100%; }
 .form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
-.form-error { color: var(--err); font-size: 12px; min-height: 1em; }
+.form-error { color: var(--red); font-size: 12px; min-height: 1em; }
 
-.hint { color: var(--ink-dim); font-size: 12px; }
+.hint { color: var(--muted); font-size: 12px; }
 
 .sync-own-url { display: flex; gap: 8px; align-items: center; }
 .sync-own-url input { flex: 1; }

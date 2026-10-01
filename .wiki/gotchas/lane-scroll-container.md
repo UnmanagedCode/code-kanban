@@ -22,16 +22,16 @@ set an offset, click Refresh, assert it survived.
 
 `overflow-x`/`overflow-y` are not independent: if one is set to a non-`visible` value, the other
 computes from `visible` to `auto`. Setting just `overflow-y: auto` on `.column-body` therefore puts
-a *horizontal* scrollbar inside every lane. `frontend/styles.css:129` pins `overflow-x: hidden`
-explicitly for that reason — and `.card` carries `overflow-wrap: anywhere`
-(`frontend/styles.css:147`) so a long unbroken title wraps rather than being clipped by it (and so
+a *horizontal* scrollbar inside every lane. `.column-body` in `frontend/styles.css` pins
+`overflow-x: hidden` explicitly for that reason — and the `.card` rule there carries
+`overflow-wrap: anywhere` so a long unbroken title wraps rather than being clipped by it (and so
 it can no longer push the grid's min-content width into horizontal *page* scroll).
 
 ## 3. `flex: 1 1 0` on `.board` is what keeps lane content out of the height calculation
 
-`flex-basis: 0` — not `auto` — is the load-bearing part (`frontend/styles.css:91`). With `auto` the
+`flex-basis: 0` — not `auto` — is the load-bearing part (`.board` in `frontend/styles.css`). With `auto` the
 lanes' own content feeds back into the board's height and the page stretches again, which is the bug
-being fixed. It needs `min-height: 0` on `main` (`frontend/styles.css:78`) to be allowed to size
+being fixed. It needs `min-height: 0` on `main` (the `main` rule in `frontend/styles.css`) to be allowed to size
 below content at all, and `min-height: 0` + `flex: 1 1 auto` on `.column-body` for the same reason
 one level down: a flex child will not shrink below its content without it, so the lane just grows
 and nothing scrolls.
@@ -45,7 +45,7 @@ window (`snap-gui.mjs` step 20c).
 
 At `max-width: 980px` the grid reflows to two lanes per row, which means **three grid rows** — a
 viewport-height board would squash each row to a third of the screen. That media query resets
-`flex: 0 0 auto; min-height: 0; align-items: start` (`frontend/styles.css:255`), so narrow layouts
+`flex: 0 0 auto; min-height: 0; align-items: start` (its `.board` rule in `frontend/styles.css`), so narrow layouts
 go back to content height and page scrolling; `.column-body`'s `overflow-y` then never fires,
 because nothing constrains the lane's height. The `max-width: 620px` block inherits the opt-out.
 
