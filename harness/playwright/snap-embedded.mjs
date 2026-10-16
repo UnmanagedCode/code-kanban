@@ -91,8 +91,10 @@ async function main() {
     const before = await page.evaluate(() => history.length);
     await frame.click(sel.tiles);
     await frame.waitForSelector(sel.dialog, { timeout: 10_000 });
+    await frame.waitForSelector(`${sel.dialog} section h3`, { timeout: 10_000 });
+    await settled(frame);
     await page.screenshot({ path: path.join(SHOTS, 'embedded-3-card.png') });
-    await frame.keyboard.press('Escape');
+    await page.keyboard.press('Escape');
     await frame.waitForSelector(sel.dialog, { state: 'detached', timeout: 10_000 });
     if (PROJECT2) {
       await frame.selectOption(sel.project, PROJECT2);
