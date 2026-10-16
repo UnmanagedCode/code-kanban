@@ -1,6 +1,6 @@
 # Decision: epic order is active-first, then last activity (list_epics)
 
-Every GUI epic surface (rollup pane, both epic `<select>`s in `frontend/app.js`) and MCP
+Every GUI epic surface (rollup pane, both epic `<select>`s, from `splitEpics`/`epicOptions` in `frontend/src/lib/board.ts`) and MCP
 `list_epics` read one list, `board.listEpics` — so the order is set once there, by
 `compareEpics` in `src/board.js`. Before this, order was `readdirSync` (hash order on ext4) with
 cross epics appended.

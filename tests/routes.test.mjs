@@ -10,7 +10,7 @@ import * as board from '../src/board.js';
 import { PRIORITIES } from '../src/priority.js';
 import { createServer } from '../server.js';
 import { READ_EPIC_BOUNDS } from '../src/mcp.js';
-import { acceptanceFieldForEdit } from '../frontend/acceptanceEdit.js';
+import { acceptanceFieldForEdit } from '../frontend/src/lib/acceptanceEdit.ts';
 
 // Drive the web GUI's HTTP routes end-to-end through the Express app (the same
 // path the browser uses), asserting the {ok} envelope contract: domain
@@ -240,7 +240,7 @@ test('PATCH {acceptance:null} clears the list over HTTP', async () => {
 // carrying DIFFERENT `done` flags — reachable via {ops:[{op:'add',...}x2,
 // {op:'done',...}]} — where replaceAcceptance's by-text, first-occurrence-wins
 // preservation would otherwise let a title-only edit silently retick the
-// second entry. acceptanceFieldForEdit is the REAL function doEdit calls; this
+// second entry. acceptanceFieldForEdit is the REAL function the GUI's edit form calls; this
 // pins that it decides to omit the field when the textarea is untouched, and
 // that omitting it is what keeps the list byte-identical end to end.
 test('a title-only GUI edit (acceptance textarea untouched) leaves a duplicate-text, mixed-done list byte-identical', async () => {
@@ -260,7 +260,7 @@ test('a title-only GUI edit (acceptance textarea untouched) leaves a duplicate-t
     const before = (await json(`/api/board/demo/cards/${id}`)).body.card.acceptance;
     assert.deepEqual(before, [{ text: 'a', done: true }, { text: 'a', done: false }]);
 
-    // What renderEditForm prefilled the textarea with, and what the user left
+    // What the edit form prefilled the textarea with, and what the user left
     // it as (untouched) for a title-only edit.
     const prefill = before.map((c) => c.text).join('\n'); // 'a\na'
     const acceptanceField = acceptanceFieldForEdit(prefill, prefill);
@@ -670,9 +670,9 @@ test('a bad priority is a 200 domain refusal, not a transport error', async () =
 });
 
 // T-new-5 (card 2026-0028) — the five pre-rename /tasks routes are really gone.
-// A leftover route is invisible from the GUI side (app.js only calls /cards),
+// A leftover route is invisible from the GUI side (it only calls /cards),
 // so nothing else would notice one surviving. Asserted with a RAW fetch, not
-// the json() helper: an unrouted path gets Express's HTML 404 page, and 404 is
+// the json() helper: an unrouted path gets the server's plain-text 404, and 404 is
 // distinct from both this app's 200 {ok:false} domain refusals and its
 // 400/500 {error}s. `demo` is a REAL project here, so a 404 can only mean "no
 // such route" — never PROJECT_UNKNOWN wearing a different hat.

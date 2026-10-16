@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { ROOT, proseFiles } from './_prose.mjs';
 
 // 2026-0028 — every in-repo file path cited by the prose layers must resolve to
 // a file that exists.
@@ -28,16 +28,9 @@ import { fileURLToPath } from 'node:url';
 // a dead pointer. The one-shot shell sweep that caught it during the rename is
 // codified here so the class stays closed.
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-
-// Prose layers that cite code. `harness/` is included deliberately: its mutation
-// README quotes module paths and test titles, and a gate that skips a whole
-// directory is not a gate.
-const PROSE_ROOTS = ['docs', '.wiki', 'conventions', 'harness', 'README.md', 'CONVENTIONS.md'];
-
 // Directory prefixes that name THIS repo's tree. A citation must start with one
 // to be checked at all, which is what keeps bare prose words out.
-const CITATION_RE = /\b(?:src|tests|frontend|harness|docs|conventions)\/[A-Za-z0-9_.\-/]*\.(?:js|mjs|json|md|css|html)\b/g;
+const CITATION_RE = /\b(?:src|tests|frontend|harness|docs|conventions)\/[A-Za-z0-9_.\-/]*\.(?:js|mjs|json|md|css|html|ts|tsx)\b/g;
 
 // Cross-repo citations: paths that live in a SIBLING project, not here. Each
 // entry must say which repo owns it, so an entry can never be a quiet way to
@@ -47,14 +40,13 @@ const CROSS_REPO = new Map([
   // validator as `code-conductor/src/plugins/manifest.js`; the regex above sees
   // it from `src/` onward. Owned by the code-conductor repo, not this one.
   ['src/plugins/manifest.js', 'code-conductor'],
+  // The host's MCP bridge and text-payload builder (docs/protocol.md's raw-text
+  // channel, .wiki/gotchas/result-envelope-vs-ok-shape.md) and its plan-file
+  // store (.wiki/gotchas/plan-link-and-sync-gap.md), cited from `src/` onward.
+  ['src/plugins/mcpBridge.ts', 'code-conductor'],
+  ['src/mcp/content.ts', 'code-conductor'],
+  ['src/planFile.ts', 'code-conductor'],
 ]);
-
-function walk(rel) {
-  const abs = path.join(ROOT, rel);
-  if (!fs.existsSync(abs)) return [];
-  if (fs.statSync(abs).isFile()) return rel.endsWith('.md') ? [rel] : [];
-  return fs.readdirSync(abs).flatMap((n) => walk(path.join(rel, n)));
-}
 
 // Liveness floor: the MINIMUM number of citations that must actually reach the
 // existence check below. Without it this sweep has a silent do-nothing mode — a
@@ -68,34 +60,49 @@ function walk(rel) {
 // SURVIVES a forced `continue`, because the CROSS_REPO skip runs after
 // extraction. Here, every deadening shape yields exactly 0.
 //
-// The floor is 40 against a measured 125 (126 extracted, 1 allowlisted). Sized
-// for ordinary doc churn, not as a tripwire on the real count: the five
-// heaviest-citing files together hold 69 citations, so losing all five at once
-// still leaves 56 and stays green, while any do-nothing mutation reads 0. A
-// floor near 125 would fail every time a doc legitimately shrinks; a floor of 0
-// is the defect this constant exists to close.
+// The floor sits far under the real count of checked citations. Sized for
+// ordinary doc churn, not as a tripwire on the real count: losing the
+// heaviest-citing files at once must still stay green, while any do-nothing
+// mutation reads 0. A floor near the real count would fail every time a doc
+// legitimately shrinks; a floor of 0 is the defect this constant exists to close.
 const MIN_CITATIONS_CHECKED = 40;
 
-test('every in-repo file path cited in the docs/wiki/conventions prose exists', () => {
-  const files = PROSE_ROOTS.flatMap(walk);
-  assert.ok(files.length > 10, `expected to scan a real doc set, scanned ${files.length}`);
-
+/** Every citation the sweep checks (`rel -> cite`, CROSS_REPO excluded), and the dangling ones. */
+function sweep() {
+  const checked = [];
   const dangling = [];
-  let checked = 0;
-  for (const rel of files) {
+  for (const rel of proseFiles()) {
     const text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
     for (const cite of text.match(CITATION_RE) ?? []) {
       if (CROSS_REPO.has(cite)) continue;
-      checked += 1;
+      checked.push(cite);
       if (!fs.existsSync(path.join(ROOT, cite))) dangling.push(`${rel} -> ${cite}`);
     }
   }
+  return { checked, dangling };
+}
+
+test('every in-repo file path cited in the docs/wiki/conventions prose exists', () => {
+  const files = proseFiles();
+  assert.ok(files.length > 10, `expected to scan a real doc set, scanned ${files.length}`);
+  const { checked, dangling } = sweep();
   assert.ok(
-    checked >= MIN_CITATIONS_CHECKED,
-    `the sweep checked only ${checked} citations (floor ${MIN_CITATIONS_CHECKED}) — `
+    checked.length >= MIN_CITATIONS_CHECKED,
+    `the sweep checked only ${checked.length} citations (floor ${MIN_CITATIONS_CHECKED}) — `
     + 'it is not reaching the corpus, so its empty result proves nothing',
   );
   assert.deepEqual(dangling, []);
+});
+
+// The UI's sources are TypeScript, so the floor above cannot tell whether .ts/.tsx
+// cites are checked at all: the corpus has far more .js/.md cites than the floor.
+// Pinned directly, on a fixture string and on real cites the sweep must reach.
+test('.ts and .tsx citations are extracted, and real ones reach the existence check', () => {
+  const fixture = 'see `frontend/src/lib/board.ts`, `frontend/src/App.tsx` and `tests/x.test.mjs`';
+  assert.deepEqual(fixture.match(CITATION_RE), ['frontend/src/lib/board.ts', 'frontend/src/App.tsx', 'tests/x.test.mjs']);
+  const { checked } = sweep();
+  assert.ok(checked.includes('frontend/src/lib/board.ts'), 'a real .ts citation is checked');
+  assert.ok(checked.includes('frontend/src/components/ui/dialog.tsx'), 'a real .tsx citation is checked');
 });
 
 // Guards the allowlist itself: an entry that starts resolving in-repo is no
@@ -108,4 +115,17 @@ test('no cross-repo citation allowlist entry resolves inside this repo', () => {
       `${cite} is allowlisted as owned by ${repo} but now exists here — drop the entry`,
     );
   }
+});
+
+// frontend/dist is build output (gitignored): it is absent from a fresh checkout,
+// a mutation copy, and any tree before `npm install`, so a citation into it would
+// make the sweep above fail exactly there. Docs name the built files in prose
+// ("the built `index.html` in `frontend/dist`") instead. Checked here on its own,
+// so it holds whether or not the build happens to exist.
+test('no prose cites a file inside the gitignored frontend/dist build', () => {
+  const intoDist = proseFiles().flatMap((rel) =>
+    (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(CITATION_RE) ?? [])
+      .filter((cite) => cite.startsWith('frontend/dist/'))
+      .map((cite) => `${rel} -> ${cite}`));
+  assert.deepEqual(intoDist, []);
 });

@@ -69,7 +69,7 @@ dep drops.
   dev / the visual harness (both instances run on 127.0.0.1).
 
 ## The pull summary is GUI-facing — display ids only
-`syncPull` returns a `summary` that `routes.js` passes to `app.js`. It must carry **no `uid`/`node`**
+`syncPull` returns a `summary` that `routes.js` passes to the GUI's Sync dialog (`syncSummaryText` in `frontend/src/lib/forms.ts`). It must carry **no `uid`/`node`**
 (same invariant as reads). So `reassigned` uses `{from,to}` display ids, `droppedDeps` reports the
 dependent card by its remote **display** id, and malformed peer cards (missing/non-string `id` or an
 unknown column) are skipped into `skippedCards` by display id. Epic-merge adds `epicsAdded`/

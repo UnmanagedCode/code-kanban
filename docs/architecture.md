@@ -23,7 +23,9 @@ Env this plugin reads: `PORT`, `HOST` (`server.js`), `PROJECTS_ROOT` (`src/paths
 | `src/mutex.js` | Per-project async mutex — the one serialized write path. |
 | `src/mcp.js` | Thin tool dispatch → `board.js`; MCP envelope. Also owns two MCP-only presentation defaults: hiding `done` from `list_cards` and rendering listings/prose as raw text blocks (`src/listRender.js`) — neither reaches the GUI. |
 | `src/listRender.js` | Pure text renderers for `list_cards`/`list_epics`'s raw-text blocks. No imports beyond `STATES`; never sorts (renders `board.js`'s pre-sorted order as-is). |
-| `src/routes.js` / `server.js` | Express `/api/health` + `/api/mcp` + the GUI's `/api/projects`, `/api/board/*` routes; `express.static(frontend/)` serves the GUI at `/`. Listen wiring. |
+| `src/routes.js` | Express router: `/api/health` + `/api/mcp` + the GUI's `/api/projects`, `/api/board/*`, `/api/epics*`, `/api/sync/*` routes. |
+| `server.js` | The app: CSP + `nosniff` on every response, the API router, the built UI from `frontend/dist` (503 while unbuilt), plain-text 404 and error handlers; `createServer({distDir})`, `start()`, listen wiring. |
+| `frontend/` | The web GUI: React + Vite + Tailwind v4 + Radix components, built to `frontend/dist` on `npm install`. See GUI integration seam. |
 
 Thin surfaces (`mcp.js`, the GUI routes) call `board.js`; they never duplicate logic or call each
 other. The GUI's additions to `board.js`/`projects.js` are **export-only** — `ALLOWED_TRANSITIONS`
@@ -161,34 +163,128 @@ losing side's entries are lost, not merged**, exactly as for a card's logbook. D
 
 ## GUI integration seam
 
-The web GUI runs **in this process**. `server.js` mounts the API router at `/api` first, then
-`express.static(frontend/)` to serve the zero-build vanilla-ESM GUI at the manifest's
-`frontend.path` (`/`) — API first so `/api/*` is never shadowed by a static file. The GUI's
-`/api/board/*` routes (in `src/routes.js`) are a thin 1:1 delegate to `board.js`: each calls the
-matching function and passes its `{ok}` envelope through as the HTTP body, so GUI requests and
-MCP-tool calls serialize on the **same** in-process mutex — one writer. `board.js`'s function
-interface (the `{ok}` / `{ok:false,code,reason}` return contract) remains the documented seam.
-
-`renderBoard` (`frontend/app.js`) rebuilds every lane with `replaceChildren()` on each load, move,
-edit and filter toggle, which zeroes each `.column-body`'s `scrollTop`. Since the lanes became
-independent scrollers, it captures every lane's offset **keyed by `data-state`** before the rebuild
-and restores it after `append` (a `scrollTop` write on a detached element is a silent no-op) —
-without that pass, any refresh would yank a deep `done` lane back to the top. See
-[.wiki/gotchas/lane-scroll-container.md](../.wiki/gotchas/lane-scroll-container.md).
+The web GUI runs **in this process**. `server.js` mounts the API router at `/api` first, so `/api/*`
+is never shadowed by a static file, then serves the built UI from `frontend/dist` at the manifest's
+`frontend.path` (`/`). The GUI's routes (in `src/routes.js`) are a thin 1:1 delegate to `board.js`:
+each calls the matching function and passes its `{ok}` envelope through as the HTTP body, so GUI
+requests and MCP-tool calls serialize on the **same** in-process mutex — one writer. `board.js`'s
+function interface (the `{ok}` / `{ok:false,code,reason}` return contract) remains the documented
+seam. Route map and harness hooks: [.wiki/architecture/gui-seam-contract.md](../.wiki/architecture/gui-seam-contract.md).
 
 GUI mutations are attributed to the constant `GUI_ACTOR = 'gui'` (`src/routes.js`) — the GUI has
 no human identity, so `'gui'` is the honest logbook actor. `board.js` clears `owner` on any
 non-`in-progress` move regardless, so passing `GUI_ACTOR` on every move only stamps the move's
 log line (and in-progress ownership); it never leaves a stuck owner.
 
-**Serving scope.** The harness verifies the GUI at the plugin root (`/`). The host-mounted case
-— the conductor serving the plugin under a sub-path — is reasoned correct (the GUI uses
-relative `api/...` URLs and the manifest's `frontend.path`, and `express.static` is path-agnostic)
-but is **not** harness-verified; if the host mounts under a prefix, confirm the static + API
-prefixes line up before relying on it.
+### Build and serving
+
+- `npm install` runs `prepare` = `vite build --config frontend/vite.config.ts`, writing
+  `frontend/dist/` (gitignored): `index.html`, `theme-init.js`, `assets/*`. `npm run dev` serves the
+  source with the API proxied to `PLUGIN_BACKEND` (default `http://127.0.0.1:7100`);
+  `npm run typecheck` is `tsc -p frontend`.
+- `createServer({distDir})` (`server.js`), in middleware order:
+  1. `Content-Security-Policy: CSP` and `X-Content-Type-Options: nosniff` on every response;
+  2. `/api` → `buildRoutes()`;
+  3. any path whose decoded form ends `.map`, case-insensitively → 404 (`express.static` decodes
+     before its lookup, so `%2Emap` is a `.map` too; a malformed escape cannot be decoded and falls through to the terminal 404);
+  4. `express.static(distDir)` when `distDir/index.html` exists; otherwise one
+     `UI not built: <entry> is missing — run npm install` log line and a `text/plain` 503 for every
+     non-`/api` request;
+  5. terminal `text/plain` 404 `Not found` — no SPA fallback, so `/pluginBridge.js` and
+     `/pluginTheme.css` 404 standalone;
+  6. error handler: `text/plain`, client statuses kept, 500 → `Internal error`, logged.
+- `distDir` defaults to `frontend/dist`; tests pass a fixture.
+- Asset URLs are relative (`base: './'`), so the page works at `/` standalone and under
+  `/plugins/code-kanban/` in code-conductor; `harness/playwright/snap-embedded.mjs` drives the latter.
+
+### `frontend/src` layout
+
+| Path | Holds |
+|---|---|
+| `lib/board.ts`, `lib/forms.ts`, `lib/api.ts`, `lib/persist.ts`, `lib/acceptanceEdit.ts` | Every UI decision as pure data: lane filtering, rollup pills, select options, request bodies, URL builders, the sync summary, the one `fetch` (`api`), the one `localStorage` user (`persist`). No DOM/React imports, erasable TS, `.ts`-suffixed relative imports — `node:test` imports them directly |
+| `lib/utils.ts`, `lib/modalFocus.ts`, `lib/textEntry.ts`, `components/ui/*` | Copied from code-conductor's `web/src`, one file per component used |
+| `hooks/useBoard.ts`, `hooks/useStatus.ts`, `hooks/useLatest.ts` | Board lists per project (stale responses dropped by a request sequence), the status line (`ok` clears after 2.5 s), a closing dialog's last payload |
+| `components/*.tsx`, `App.tsx` | Toolbar, status line, board/lanes/tiles, epics pane, the five dialogs |
+| `index.css`, `cc-theme-fallback.css`, `public/theme-init.js` | Tailwind + cc's `@theme inline`, the standalone token snapshot, OS-theme follow ([.wiki/architecture/host-theme.md](../.wiki/architecture/host-theme.md)) |
+
+Lane scroll offsets survive every reload because lanes are keyed by state and stay mounted; only a
+project switch shows placeholders ([.wiki/gotchas/lane-scroll-container.md](../.wiki/gotchas/lane-scroll-container.md)).
+
+### CSP
+
+`CSP` (exported by `server.js`): `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'`.
+`'unsafe-inline'` styles exist only for the Radix Dialog's injected scroll-lock `<style>`; content
+never reaches a `style` attribute or element. Directive reasons: [protocol.md](protocol.md) → UI
+serving and response headers.
+
+### Divergences from code-conductor's plugin-UI reference setup
+
+| | Here | Why |
+|---|---|---|
+| D1 | `engines.node >=22.18` (reference: `>=22.12`) | `node:test` imports the pure `lib/*.ts` through Node's built-in type stripping, unflagged from 22.18 |
+| D2 | No vitest / happy-dom / testing-library | The repo's built-in-runner rule; component behaviour is proven by the Playwright harness |
+| D3 | No sonner | The status line stays an inline `role="status"` live region; its strings are part of the harness contract |
+| D4 | Express kept; 404 is `text/plain` | The backend already is Express; matches the reference's Express snippet |
+
+### Verifying embedded
+
+The harness boots its own servers for standalone runs. For the embedded case, against a scratch
+code-conductor (never your own):
+1. In a cc checkout: `PORT=<port> CC_ISOLATED_ROOT=$(mktemp -d) scripts/run-isolated.sh`.
+2. `git clone` this branch to a scratch dir and `npm install` there; adopt **that clone**
+   (`POST /api/projects/external {"name","path"}`) — adopting lets cc rewrite the checkout's
+   `CONVENTIONS.md`.
+3. `POST /api/plugins/rescan`, `POST /api/plugins/code-kanban/enable`, `POST /api/plugins/code-kanban/start`.
+4. Seed through `http://127.0.0.1:<port>/plugins/code-kanban/api/board/<project>/…`.
+5. `CC_URL=http://127.0.0.1:<port> PROJECT=<project> [PROJECT2=<other>] node harness/playwright/snap-embedded.mjs`.
+6. `POST /api/plugins/code-kanban/stop` before stopping cc (plugin backends outlive it).
 
 ## Test patterns
 
 `node:test` via `tests/run.mjs` (`npm test`). Each test isolates state in a fresh
 `mkdtemp` set as `PROJECTS_ROOT` (`tests/_helpers.mjs`) and injects the live-project list via
 `projects._setProjectFetcher` — no network, deterministic, order-independent.
+
+Repo-wide gates read the prose and the code as text. Each pairs a liveness floor on what it read
+with known-bad samples its own predicate must flag (and negative controls it must not), so a check
+that is removed or inverted fails even though the clean tree still passes:
+- `tests/docCitations.test.mjs` — every in-repo path the prose layers (`tests/_prose.mjs`) cite
+  exists; `.ts`/`.tsx` cites included, code-conductor's own paths allowlisted, and nothing cited
+  inside the gitignored `frontend/dist`.
+- `tests/docFormat.test.mjs` — every markdown heading in the prose layers, outside fenced code, has
+  a blank line or the file's start above it (`crowdedHeadings`).
+- `tests/codeFormat.test.mjs` — no code file (`server.js`, `src/`, `tests/`, `harness/`, the
+  frontend sources and config) holds two blank lines in a row (`doubledLines`).
+
+Parsers of untrusted lines carry two suites ([.wiki/gotchas/linear-line-parsers.md](../.wiki/gotchas/linear-line-parsers.md)):
+- `tests/lineParsers.test.mjs` — **differential**: each index-scanning helper against the regex it
+  replaced, kept verbatim in the test as the oracle, over every short string of the branching
+  alphabet behind shape prefixes plus a seeded sample.
+- `tests/parserTiming.test.mjs` — **timing**: each pathological shape at 200 000 characters through
+  a public entry point, run in a worker (`tests/_parserTimingWorker.mjs`) that is terminated at a
+  2 s deadline, so a super-linear regression fails in about 2 s instead of hanging the file.
+
+The UI has no DOM in `npm test`; its claims split three ways:
+- **Pure decisions** — `tests/frontendLogic.test.mjs`, `tests/persist.test.mjs`,
+  `tests/acceptanceEdit.test.mjs` import `frontend/src/lib/*.ts` directly (type stripping), with a
+  stubbed `globalThis.fetch` for `api()`.
+- **Source-scan guards** — `tests/frontendTheme.test.mjs` (host URL order, fallback coverage,
+  token-only colours, no own theme toggle, the button-role rule) and
+  `tests/frontendSafety.test.mjs` (no raw-HTML, eval, attribute-write, navigation, cookie or cross-frame sink, no expression `href`/`src`, no style by any
+  route and in any letter case — attribute, `<style>`, any `style` key, bare or quoted (a type's
+  included), a `.style` access —, no `/api` literal, one
+  `fetch` site, one `localStorage` site, no JSX spread props in feature code) read the source as text through
+  `tests/_sourceScan.mjs`'s brace- and string-aware JSX tag scanner. They read every script type
+  Vite bundles (`UI_CODE_EXTS`: `.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs`, `.cjs`)
+  plus CSS. A scan whose
+  expected result is "no offenders" proves it can still detect, three ways: a liveness floor on
+  what it read; known-bad samples, at least one per alternative of every pattern, each of which
+  the scan's own check must flag (counted at the check); and a temp fixture tree that breaks every
+  rule from a different script type, so a rule, an alternative or a file type the scan stops
+  covering fails.
+- **Serving** — `tests/server.test.mjs` against a fixture build (`createServer({distDir})`);
+  `tests/dist.test.mjs` against the real `frontend/dist`, skipped when it is not built.
+- **Everything rendered** (wiring, layout, focus, theme, console) — the Playwright harness:
+  `harness/playwright/snap-gui.mjs`, `snap-sync.mjs`, `snap-theme.mjs` (each boots its own scratch
+  server and sandbox root) and `snap-embedded.mjs` (a scratch code-conductor; see "Verifying
+  embedded").

@@ -1,14 +1,14 @@
-# Gotcha: `#detail-overlay`'s close button always paints over `.detail-head`
+# Gotcha: the dialog's close ✕ paints over the header's right edge
 
-`.overlay-close` (the close button inside `#detail-overlay` in `frontend/index.html`) is static markup that sits *before* `#detail-body`
-in the DOM, absolutely positioned at `top:10px; right:12px` relative to `.overlay-card`
-(`.overlay-close` in `frontend/styles.css`). Content injected into `#detail-body` — e.g. `.detail-head`
-(built by `openDetailNode` in `frontend/app.js`) — is normal static flow, so per CSS stacking rules the positioned
-close button always paints *above* it regardless of DOM order, even though `.detail-head`
-comes later in the document.
+`DialogContent` (`frontend/src/components/ui/dialog.tsx`) appends its close button after the
+children, absolutely positioned `top-4 right-4`. Header content is normal flow, so the positioned ✕
+paints above anything placed at the header's right edge, and takes its clicks.
 
-Consequence: any button placed at the right edge of `.detail-head` (e.g. the card-detail Edit
-button) will visually collide with, and have its clicks intercepted by, the close button unless
-`.detail-head` reserves clearance. Fixed via `padding-right: 28px` on `.detail-head`
-(`.detail-head` in `frontend/styles.css`) — keep that clearance (or increase it) if `.detail-head`'s content
-grows.
+The card detail's Edit button sits there, so `CardDetailDialog`'s `DialogHeader` carries `pr-8`;
+every other dialog header carries it too, so a long title wraps before the ✕. Keep that clearance
+(or widen it) for any control added to the right of a dialog header.
+
+While a dialog is still loading, the ✕ is its only focusable control, so Radix's opening focus lands
+on it and its `focus:ring` shows; that is cc's component behaviour, not a bug here.
+
+Related: [[../architecture/host-theme]].

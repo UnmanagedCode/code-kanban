@@ -105,24 +105,86 @@ export function parse(text, { state } = {}) {
   let current = null;
   for (; i < lines.length; i++) {
     const line = lines[i];
-    const m = /^##\s+(.+?)\s*$/.exec(line);
-    if (m) { current = m[1].toLowerCase(); sections[current] = []; continue; }
+    const name = parseSectionHeader(line);
+    if (name !== null) { current = name.toLowerCase(); sections[current] = []; continue; }
     if (current) sections[current].push(line);
   }
 
   task.goal = (sections.goal ?? []).join('\n').trim();
 
   for (const line of sections.acceptance ?? []) {
-    const m = /^-\s+\[( |x|X)\]\s+(.*)$/.exec(line.trim());
-    if (m) task.acceptance.push({ text: m[2], done: m[1].toLowerCase() === 'x' });
+    const item = parseAcceptanceLine(line.trim());
+    if (item) task.acceptance.push(item);
   }
 
   for (const line of sections.logbook ?? []) {
-    const m = /^-\s+(.*)$/.exec(line.trim());
-    if (m) task.logbook.push(m[1]);
+    const entry = parseLogbookLine(line.trim());
+    if (entry !== null) task.logbook.push(entry);
   }
 
   return task;
+}
+
+// ---- line parsers ----
+// Card and epic files arrive from HTTP bodies, MCP args and sync peers, and are
+// parsed synchronously on the thread that answers /api/health. Lines are split on
+// `\n` only, so `\r`, U+2028 and U+2029 stay inside a line: `\s` matches them and
+// `.` does not. The regexes these helpers stand in for (a `\s+` followed by
+// `(.*)$` or `(.+?)\s*$`) backtrack through every split of a whitespace run
+// before failing on such a character, which is quadratic or worse. Each helper
+// scans by index instead and returns exactly what its regex captured, which
+// tests/lineParsers.test.mjs pins against the regex itself. See
+// .wiki/gotchas/linear-line-parsers.md.
+
+const isSpace = (ch) => /\s/.test(ch);
+// The characters `.` refuses: a capture that must be `.`-only cannot hold one.
+const LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
+
+// Index of the first non-`\s` character at or after `from`.
+function skipSpace(line, from) {
+  let i = from;
+  while (i < line.length && isSpace(line[i])) i++;
+  return i;
+}
+
+// `/^##\s+(.+?)\s*$/` → the section name, or null when the line is no header.
+export function parseSectionHeader(line) {
+  if (!line.startsWith('##')) return null;
+  const run = skipSpace(line, 2);
+  if (run === 2) return null;
+  if (run === line.length) {
+    // All whitespace after `##`: the name is the last character `.` accepts,
+    // with at least one whitespace character left before it.
+    for (let p = line.length - 1; p > 2; p--) if (!LINE_TERMINATOR.test(line[p])) return line[p];
+    return null;
+  }
+  let end = line.length;
+  while (isSpace(line[end - 1])) end--;
+  const name = line.slice(run, end);
+  return LINE_TERMINATOR.test(name) ? null : name;
+}
+
+// `/^-\s+\[( |x|X)\]\s+(.*)$/` → {text, done}, or null when the line is no item.
+export function parseAcceptanceLine(line) {
+  if (line[0] !== '-') return null;
+  const open = skipSpace(line, 1);
+  if (open === 1 || line[open] !== '[') return null;
+  const mark = line[open + 1];
+  if ((mark !== ' ' && mark !== 'x' && mark !== 'X') || line[open + 2] !== ']') return null;
+  const textAt = skipSpace(line, open + 3);
+  if (textAt === open + 3) return null;
+  const text = line.slice(textAt);
+  return LINE_TERMINATOR.test(text) ? null : { text, done: mark.toLowerCase() === 'x' };
+}
+
+// `/^-\s+(.*)$/` → the entry, or null when the line is no item. Card and epic
+// logbooks share it.
+export function parseLogbookLine(line) {
+  if (line[0] !== '-') return null;
+  const at = skipSpace(line, 1);
+  if (at === 1) return null;
+  const entry = line.slice(at);
+  return LINE_TERMINATOR.test(entry) ? null : entry;
 }
 
 // Logbook entry format: "<ISO> · <sid8> · <entry>". sessionId is truncated to 8

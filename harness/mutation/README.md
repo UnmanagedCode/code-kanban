@@ -96,13 +96,37 @@ Named mutants that must die:
 | spread `projects` unconditionally into `readEpic`'s response (holding `undefined` on a project-scoped epic) | `epics: create, file under, rollup counts on read` — **not** the `read_epic returns plan_path…` envelope test. JSON drops an undefined value and the GUI never branches on presence, so only an explicit `'projects' in epic === false` sees it |
 | `slice(length - logTail)` without the `Math.max(0, …)` clamp | the `logTail` tests in `read_epic`/`read_card` both assert `logTail` > length returns the WHOLE log |
 
+## The UI, the server and the line parsers: gradeable vs harness-only
+
+`npm test` never renders React, and no test needs `frontend/dist` (`tests/server.test.mjs` serves a
+fixture build; `tests/dist.test.mjs` skips when unbuilt), so a copy without the build is green.
+Node's type stripping imports the `.ts` modules directly; no extra `preserve` entry is needed.
+
+**Gradeable — a mutant here must die:**
+
+| Site | Suite |
+|---|---|
+| every branch of `frontend/src/lib/{board,forms,api,persist,acceptanceEdit}.ts` (e.g. drop `api`'s root-relative throw; return instead of throw on non-2xx; send `project` for `scope:'all'`; drop one `syncSummaryText` clause; let one member through `epicCreateRequest`; flip `laneCards`' plan filter; recompute `completed`; send `acceptance` untouched) | `frontendLogic`, `persist`, `acceptanceEdit` |
+| `server.js`: drop or move the CSP middleware after the router; edit the `CSP` constant itself (drop `style-src 'unsafe-inline'`, widen a source); judge the `.map` guard on the raw path or case-sensitively; send `err.message` for a 500; drop `nosniff`; serve `index.html` as a fallback; drop the `.map` guard; drop the 503 branch, its log line, or its `/api` pass-through; HTML 404; bind `0.0.0.0` by default | `server` |
+| a source-scan subject: `dangerouslySetInnerHTML`/`innerHTML`, `location.href = …` / `location.assign(…)`, `document.cookie`, `parent.postMessage`, `setAttributeNS`, `insertAdjacentElement`, a `style={…}` / `{ style: … }` / `{ 'style': … }` / `createElement('STYLE')` / `el.style.x = …`, an expression `href`, a `'/api…'` literal, a second `fetch`/`localStorage` site, a `{...props}` spread in a feature component | `frontendSafety` |
+| reorder or `defer` the bridge tag; a literal colour or `bg-red-500` in feature code; a `classList.toggle('dark')`; drop `type="submit"` from a default `Button`; a fallback token missing | `frontendTheme` |
+| deaden any scanner (an empty glob, a regex that never matches, a dropped regex alternative); drop a script type from `UI_CODE_EXTS` or from a guard's file list | the scanner's liveness floor, its known-bad-samples test (one sample per alternative), and the guard's fixture-tree test |
+| deaden a repo-wide format gate: remove or invert `doubledLines`' or `crowdedHeadings`' check, drop its fence handling, or drop `ts\|tsx` from `docCitations`' `CITATION_RE` | `the blank-line rule flags a doubled blank line, and only that` (`codeFormat`), `the heading rule flags a crowded heading, and only that` (`docFormat`), `.ts and .tsx citations are extracted, and real ones reach the existence check` (`docCitations`) |
+| revert a line-parser helper (`src/cardfile.js`, `src/board.js`) to its regex | `parserTiming` (the 2 s worker deadline) |
+| off-by-one / wrong terminator set inside a helper | `lineParsers` (differential against the original regex) |
+| `parseEpicFile` reimplements the logbook rule instead of importing `parseLogbookLine` | `parserTiming`'s `store.readEpic` case |
+
+**Ungradeable — mark ungraded; the Playwright harness (`harness/playwright/`) covers them:**
+anything in `frontend/src/**/*.tsx` and `frontend/src/hooks/`, CSS/Tailwind classes, Radix wiring,
+focus behaviour, layout breakpoints, and the theme following live.
+
 ## Ungradeable mutant shapes (pick a different mutation)
 
 - **Reverting a LIVE HTTP route path** (e.g. `/board/:project/cards` back to `/tasks` in
   `src/routes.js`). Ungradeable here, and it looks like a build break rather than a survivor: the
   positive-path route tests call a `json()` helper that does `res.json()` on every response, so an
-  unrouted path returns Express's HTML 404 page and the helper throws
-  `SyntaxError: Unexpected token '<'`. The adapter's compile-error heuristic reads that as a broken
+  unrouted path returns the server's plain-text `Not found` 404 and the helper throws a JSON
+  `SyntaxError`. The adapter's compile-error heuristic reads that as a broken
   build, not as a killed mutant. Mutate by **adding an alias route** for the old path instead — it
   grades cleanly, and it is the realistic regression anyway (a back-compat alias quietly re-added,
   which is exactly what `tests/routes.test.mjs`'s 404 guard exists to catch).
@@ -146,15 +170,18 @@ no-verdict (5).
 **Why `--jobs N` is safe here specifically.** `jobs=N` runs `node tests/run.mjs` N times
 concurrently, in N copies. That is unsafe for a suite that binds a fixed TCP port, writes a fixed
 temp or data directory, shares a database or an on-disk fixture it mutates in place, writes a shared
-build/package cache, or depends on the checkout's absolute path. None applies: `routes.test.mjs` is
-the only file that binds a port, and it does so via `server.listen(0, '127.0.0.1', ...)` — port `0`,
-so the OS assigns an ephemeral port per copy and concurrent runs can't collide. The six test files
-that touch disk (`nodeId`, `mcp`, `store`, `routes`, `sync`, `board`) each open their own
-`fs.mkdtemp(os.tmpdir())` board root via `tests/_helpers.mjs::freshRoot`; the remaining four
-(`persist`, `cardfile`, `pluginManifest`, `priority`) are pure-function tests with no filesystem
-access at all. The only `preserve` entry is `node_modules`, which the suite only reads. That last
-point is the one to re-check if `preserve` ever grows: **`preserve` entries are symlinked into every
-copy**, so a preserved path is shared writable state across all workers *and* this checkout.
+build/package cache, or depends on the checkout's absolute path. None applies:
+- Every file that binds a port (`routes`, `server`, `dist`) listens on port `0`, so the OS assigns
+  an ephemeral port per copy.
+- Every file that writes disk opens its own `fs.mkdtemp(os.tmpdir())` root (`tests/_helpers.mjs`'s
+  `freshRoot`, or a local `mkdtemp` for `server.test.mjs`'s fixture build).
+  `parserTiming.test.mjs` also starts worker threads, which share only that per-test root.
+- The source scanners (`frontendTheme`, `frontendSafety`, `docCitations`, `pluginManifest`) and the
+  pure-function files only read. `dist.test.mjs` only reads `frontend/dist`, and skips when it is
+  absent.
+- The only `preserve` entry is `node_modules`, which the suite only reads. That last point is the
+  one to re-check if `preserve` ever grows: **`preserve` entries are symlinked into every copy**, so
+  a preserved path is shared writable state across all workers *and* this checkout.
 
 Re-verify before trusting a parallel verdict: a `--jobs N` run whose findings a `--jobs 1` re-run
 contradicts is a code-mutant bug, not a coverage finding, and should be reported upward.
