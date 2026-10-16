@@ -69,26 +69,42 @@ const CROSS_REPO = new Map([
 // legitimately shrinks; a floor of 0 is the defect this constant exists to close.
 const MIN_CITATIONS_CHECKED = 40;
 
-test('every in-repo file path cited in the docs/wiki/conventions prose exists', () => {
-  const files = proseFiles();
-  assert.ok(files.length > 10, `expected to scan a real doc set, scanned ${files.length}`);
-
+/** Every citation the sweep checks (`rel -> cite`, CROSS_REPO excluded), and the dangling ones. */
+function sweep() {
+  const checked = [];
   const dangling = [];
-  let checked = 0;
-  for (const rel of files) {
+  for (const rel of proseFiles()) {
     const text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
     for (const cite of text.match(CITATION_RE) ?? []) {
       if (CROSS_REPO.has(cite)) continue;
-      checked += 1;
+      checked.push(cite);
       if (!fs.existsSync(path.join(ROOT, cite))) dangling.push(`${rel} -> ${cite}`);
     }
   }
+  return { checked, dangling };
+}
+
+test('every in-repo file path cited in the docs/wiki/conventions prose exists', () => {
+  const files = proseFiles();
+  assert.ok(files.length > 10, `expected to scan a real doc set, scanned ${files.length}`);
+  const { checked, dangling } = sweep();
   assert.ok(
-    checked >= MIN_CITATIONS_CHECKED,
-    `the sweep checked only ${checked} citations (floor ${MIN_CITATIONS_CHECKED}) — `
+    checked.length >= MIN_CITATIONS_CHECKED,
+    `the sweep checked only ${checked.length} citations (floor ${MIN_CITATIONS_CHECKED}) — `
     + 'it is not reaching the corpus, so its empty result proves nothing',
   );
   assert.deepEqual(dangling, []);
+});
+
+// The UI's sources are TypeScript, so the floor above cannot tell whether .ts/.tsx
+// cites are checked at all: the corpus has far more .js/.md cites than the floor.
+// Pinned directly, on a fixture string and on real cites the sweep must reach.
+test('.ts and .tsx citations are extracted, and real ones reach the existence check', () => {
+  const fixture = 'see `frontend/src/lib/board.ts`, `frontend/src/App.tsx` and `tests/x.test.mjs`';
+  assert.deepEqual(fixture.match(CITATION_RE), ['frontend/src/lib/board.ts', 'frontend/src/App.tsx', 'tests/x.test.mjs']);
+  const { checked } = sweep();
+  assert.ok(checked.includes('frontend/src/lib/board.ts'), 'a real .ts citation is checked');
+  assert.ok(checked.includes('frontend/src/components/ui/dialog.tsx'), 'a real .tsx citation is checked');
 });
 
 // Guards the allowlist itself: an entry that starts resolving in-repo is no
