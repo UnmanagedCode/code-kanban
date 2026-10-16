@@ -1,10 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { acceptanceFieldForEdit } from '../frontend/acceptanceEdit.js';
+import { acceptanceFieldForEdit } from '../frontend/src/lib/acceptanceEdit.ts';
 
-// The web GUI has no frontend test framework of its own, so doEdit's
-// acceptance-field decision lives in a pure module (frontend/acceptanceEdit.js)
-// node:test can import directly — same pattern as persist.js.
+// The card edit form's acceptance-field decision lives in a pure module
+// (frontend/src/lib/acceptanceEdit.ts) node:test imports directly.
 
 test('an unchanged textarea (current === prefill) omits the field entirely', () => {
   assert.equal(acceptanceFieldForEdit('a\nb', 'a\nb'), undefined);

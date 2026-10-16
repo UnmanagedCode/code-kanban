@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { SELECTED_PROJECT_KEY, readSelectedProject, writeSelectedProject, resolveInitialProject } from '../frontend/persist.js';
+import { SELECTED_PROJECT_KEY, readSelectedProject, writeSelectedProject, resolveInitialProject } from '../frontend/src/lib/persist.ts';
 
-// The web GUI has no frontend test framework of its own, so the persistence
-// helpers live in a pure module (frontend/persist.js) node:test can import.
+// The persistence helpers live in a pure module (frontend/src/lib/persist.ts)
+// node:test imports directly through Node's type stripping.
 // This suite pins the storage key namespace, the read/write behavior, and the
 // stale-saved-project fallback.
 

@@ -10,7 +10,7 @@ import * as board from '../src/board.js';
 import { PRIORITIES } from '../src/priority.js';
 import { createServer } from '../server.js';
 import { READ_EPIC_BOUNDS } from '../src/mcp.js';
-import { acceptanceFieldForEdit } from '../frontend/acceptanceEdit.js';
+import { acceptanceFieldForEdit } from '../frontend/src/lib/acceptanceEdit.ts';
 
 // Drive the web GUI's HTTP routes end-to-end through the Express app (the same
 // path the browser uses), asserting the {ok} envelope contract: domain
