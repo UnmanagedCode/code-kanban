@@ -206,6 +206,14 @@ test('api: a JSON body is stringified with a JSON content type; a GET sends none
   });
 });
 
+test('api: a falsy body (0, \'\', false, null) is still sent, JSON-encoded with the JSON content type', async () => {
+  await withFetch(() => json(200, { ok: true }), async (calls) => {
+    for (const body of [0, '', false, null]) await api('api/x', { method: 'POST', body });
+    assert.deepEqual(calls.map((c) => c.init.body), ['0', '""', 'false', 'null']);
+    for (const c of calls) assert.equal(c.init.headers?.['content-type'], 'application/json', String(c.init.body));
+  });
+});
+
 test('api: non-2xx throws ApiError with the body error and code, else "HTTP <status>"', async () => {
   await withFetch(() => json(500, { error: 'boom', code: 'C' }), async () => {
     const e = await api('api/x').catch((err) => err);
