@@ -1471,13 +1471,19 @@ test('create_epic with a plan outside both roots -> PLAN_SOURCE_DENIED, no epic 
   } finally { out.cleanup(); await cleanup(root); }
 });
 
+// A FIFO test's release valve: a writer process that joins `fifo` only after FIFO_WRITER_DELAY_MS.
+// The ingest opens non-blocking, so a correct build never waits for it; a build whose open blocks
+// is released when it joins, and then fails its test's elapsed bound — within seconds, instead of
+// blocking the whole file forever (a synchronous open is beyond any test timeout's reach).
+const FIFO_WRITER_DELAY_MS = 2_000;
+function delayedFifoWriter(fifo) {
+  return spawn('sh', ['-c', `sleep ${FIFO_WRITER_DELAY_MS / 1000}; printf LEAK > "$0"`, fifo], { stdio: 'ignore' });
+}
+
 // Pins: a FIFO named .md is refused as not a regular file, and promptly — the source is opened
-// non-blocking, so the open never waits for a writer. A writer process joins the FIFO only after
-// WRITER_DELAY_MS: a blocking open would wait for it and blow the elapsed bound, and a build that
-// skipped the regular-file check would ingest the FIFO's (empty) contents — either fails here
-// rather than hanging the file.
+// non-blocking, so the open never waits for a writer (delayedFifoWriter bounds a build whose open
+// does). A build that skipped the regular-file check would ingest the FIFO's (empty) contents.
 test('ingest: a FIFO in the plans dir -> PLAN_UNKNOWN (not a regular file), without blocking', async (t) => {
-  const WRITER_DELAY_MS = 2_000;
   const root = await freshRoot();
   useProjects(['demo']);
   let writer;
@@ -1486,10 +1492,10 @@ test('ingest: a FIFO in the plans dir -> PLAN_UNKNOWN (not a regular file), with
     fs.mkdirSync(claudePlansDir(), { recursive: true });
     const fifo = path.join(claudePlansDir(), 'pipe.md');
     try { execFileSync('mkfifo', [fifo]); } catch { return t.skip('mkfifo unavailable'); }
-    writer = spawn('sh', ['-c', `sleep ${WRITER_DELAY_MS / 1000}; printf LEAK > "$0"`, fifo], { stdio: 'ignore' });
+    writer = delayedFifoWriter(fifo);
     const t0 = performance.now();
     const r = await board.updateCard({ project: 'demo', id, fields: { plan: fifo } });
-    assert.ok(performance.now() - t0 < WRITER_DELAY_MS / 2, 'the open did not wait for a writer');
+    assert.ok(performance.now() - t0 < FIFO_WRITER_DELAY_MS / 2, 'the open did not wait for a writer');
     assert.equal(r.code, 'PLAN_UNKNOWN');
     assert.match(r.reason, /not a regular file/);
     assert.equal(fs.existsSync(ingestDest('demo', id)), false);
@@ -1561,9 +1567,11 @@ test('ingest: a symlink swapped in at the checked path before the open is refuse
 
 // Pins: the regular-file check judges the OPEN file, not the path. A FIFO named .md is opened, then
 // a regular file is renamed over its path: the fd is still the FIFO, so the source is refused.
+// delayedFifoWriter bounds a build whose open blocks, so this fails in seconds rather than hanging.
 test('ingest: the regular-file check reads the open file, not a file renamed over its path', async (t) => {
   const root = await freshRoot();
   useProjects(['demo']);
+  let writer;
   try {
     const { id } = await board.fileCard({ project: 'demo', title: 't' });
     fs.mkdirSync(claudePlansDir(), { recursive: true });
@@ -1571,12 +1579,15 @@ test('ingest: the regular-file check reads the open file, not a file renamed ove
     try { execFileSync('mkfifo', [fifo]); } catch { return t.skip('mkfifo unavailable'); }
     const regular = writeClaudePlan('regular.md', '# a regular file');
     const real = fs.realpathSync(fifo);
+    writer = delayedFifoWriter(fifo);
+    const t0 = performance.now();
     const u = await withFsHook('openSync', ([p]) => p === real, () => fs.renameSync(regular, real),
       () => board.updateCard({ project: 'demo', id, fields: { plan: fifo } }));
+    assert.ok(performance.now() - t0 < FIFO_WRITER_DELAY_MS / 2, 'the open did not wait for a writer');
     assert.equal(u.code, 'PLAN_UNKNOWN');
     assert.match(u.reason, /not a regular file/);
     assert.equal(fs.existsSync(ingestDest('demo', id)), false);
-  } finally { await cleanup(root); }
+  } finally { writer?.kill(); await cleanup(root); }
 });
 
 // Pins: an oversized source is refused from its fstat, before a single byte of it is read.
