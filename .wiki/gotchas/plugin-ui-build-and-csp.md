@@ -41,6 +41,10 @@ those, along with `document.cookie`, `parent.postMessage` (cc's frame is same-or
 `setAttributeNS` and `insertAdjacentElement` next to the raw-HTML and `eval` family. A bare
 `Function(` is deliberately not matched (too many false hits); `new Function` is.
 
+Every guard reads each script extension Vite bundles — `UI_CODE_EXTS` in `tests/_sourceScan.mjs`,
+`.mts`/`.cts`/`.cjs` included — so moving code into an unusual extension never takes it out of the
+scan; the fixture tree in `tests/frontendSafety.test.mjs` holds one file per extension.
+
 ## Pure `lib/*.ts` must stay importable by `node:test`
 
 The tests import `frontend/src/lib/{board,forms,api,persist,acceptanceEdit}.ts` through Node's

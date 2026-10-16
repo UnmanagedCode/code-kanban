@@ -21,7 +21,7 @@ export function listFiles(rel, exts, root = ROOT) {
 }
 
 /** Every script extension Vite bundles or copies: what the UI guards must read. */
-export const UI_CODE_EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs'];
+export const UI_CODE_EXTS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
 
 /** The UI script files under `rel` (every `UI_CODE_EXTS` extension). */
 export const listUiCode = (rel, root = ROOT) => listFiles(rel, UI_CODE_EXTS, root);

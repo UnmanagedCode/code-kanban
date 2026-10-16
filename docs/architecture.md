@@ -275,7 +275,8 @@ The UI has no DOM in `npm test`; its claims split three ways:
   included), a `.style` access —, no `/api` literal, one
   `fetch` site, one `localStorage` site, no JSX spread props in feature code) read the source as text through
   `tests/_sourceScan.mjs`'s brace- and string-aware JSX tag scanner. They read every script type
-  Vite bundles (`UI_CODE_EXTS`: `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`) plus CSS. A scan whose
+  Vite bundles (`UI_CODE_EXTS`: `.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs`, `.cjs`)
+  plus CSS. A scan whose
   expected result is "no offenders" proves it can still detect, three ways: a liveness floor on
   what it read; known-bad samples, at least one per alternative of every pattern, each of which
   the scan's own check must flag (counted at the check); and a temp fixture tree that breaks every
