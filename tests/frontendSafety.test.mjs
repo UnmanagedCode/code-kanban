@@ -20,13 +20,19 @@ import { listFiles, listUiCode, read, blankComments, openingTags, hasSpread } fr
 // tree, which is meant to be clean, still reads as clean.
 const RULES = [
   {
+    // Raw markup, script evaluation, attribute writes that bypass React, navigation
+    // (not governed by the CSP), cookies, and messages to or scripting of cc's frame.
     name: 'raw-HTML, eval or cross-frame sink',
-    re: /\binnerHTML\b|\bouterHTML\b|\binsertAdjacentHTML\b|document\.write|dangerouslySetInnerHTML|\beval\s*\(|new\s+Function\b|\bDOMParser\b|createContextualFragment|\bsetAttribute\s*\(|location\.hash\s*=|\bpushState\b|window\.parent\b|code-conductor:/,
+    re: /\binnerHTML\b|\bouterHTML\b|\binsertAdjacentHTML\b|document\.write|dangerouslySetInnerHTML|\beval\s*\(|new\s+Function\b|\bDOMParser\b|createContextualFragment|\bsetAttribute\s*\(|location\.hash\s*=|\bpushState\b|window\.parent\b|code-conductor:|location\s*\.\s*(?:href|assign|replace)\s*=|location\s*\.\s*(?:assign|replace)\s*\(|document\s*\.\s*cookie|\bparent\s*\.\s*postMessage|\bsetAttributeNS\s*\(|\binsertAdjacentElement\s*\(/,
     bad: [
       'el.innerHTML = html', 'el.outerHTML = html', "el.insertAdjacentHTML('beforeend', h)", 'document.write(h)',
       '<div dangerouslySetInnerHTML={{ __html: h }} />', 'eval(code)', "new Function('return 1')", 'new DOMParser()',
       'range.createContextualFragment(h)', "el.setAttribute('href', u)", "location.hash = '#x'", "history.pushState(null, '', u)",
       'window.parent.postMessage(m)', "localStorage.getItem('code-conductor:theme')",
+      // Navigation is not governed by the CSP: a content-built URL there is a javascript: link.
+      'location.href = u', 'window.location . assign = f', 'location.replace = f', 'location.assign(u)', 'window.location.replace (u)',
+      'const c = document.cookie', 'parent.postMessage(m, origin)', "el.setAttributeNS(null, 'href', u)",
+      "el.insertAdjacentElement('afterend', node)",
     ],
   },
   {

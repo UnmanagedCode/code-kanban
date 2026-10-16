@@ -32,6 +32,15 @@ key), any `.style` / `['style']` access on an element — in `frontend/src` (the
 `dangerouslySetInnerHTML` or an `href` past every attribute rule. Pass props by name; only the
 copied `components/ui/` spread.
 
+## Sinks the CSP does not cover
+
+`script-src 'self'` stops an injected inline script, but not navigation: a content-built URL
+assigned to `location.href` or passed to `location.assign` / `location.replace` runs a
+`javascript:` link regardless. `tests/frontendSafety.test.mjs`'s sink rule therefore also forbids
+those, along with `document.cookie`, `parent.postMessage` (cc's frame is same-origin),
+`setAttributeNS` and `insertAdjacentElement` next to the raw-HTML and `eval` family. A bare
+`Function(` is deliberately not matched (too many false hits); `new Function` is.
+
 ## Pure `lib/*.ts` must stay importable by `node:test`
 
 The tests import `frontend/src/lib/{board,forms,api,persist,acceptanceEdit}.ts` through Node's

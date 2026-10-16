@@ -270,7 +270,7 @@ The UI has no DOM in `npm test`; its claims split three ways:
   stubbed `globalThis.fetch` for `api()`.
 - **Source-scan guards** — `tests/frontendTheme.test.mjs` (host URL order, fallback coverage,
   token-only colours, no own theme toggle, the button-role rule) and
-  `tests/frontendSafety.test.mjs` (no raw-HTML sink, no expression `href`/`src`, no style by any
+  `tests/frontendSafety.test.mjs` (no raw-HTML, eval, attribute-write, navigation, cookie or cross-frame sink, no expression `href`/`src`, no style by any
   route and in any letter case — attribute, `<style>`, any `style` key, bare or quoted (a type's
   included), a `.style` access —, no `/api` literal, one
   `fetch` site, one `localStorage` site, no JSX spread props in feature code) read the source as text through
