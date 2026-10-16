@@ -99,11 +99,31 @@ Two sharp edges of the copy:
   named `…AT the destination…` / `…SYMLINK to the destination…` in `tests/board.test.mjs` pin the
   observable outcome (no-op success, link stored, content intact) and are **not** coverage of the
   guard — do not read them as such.
-- **Arbitrary-source read, accepted.** `file_card` is worker-callable, so ingest lets any caller have
-  the server copy any readable absolute path into the board and read it back via
-  `read_card({includePlan:true})`. Previously the server only read under `plansDir` (realpath-guarded)
-  or `projectRepoDir`. Accepted deliberately — workers already have full local fs access and the
-  plugin runs as the same user. **No ACL**; do not add one without a new decision.
+- **The ingest source is allowlisted (owner's decision, 2026-10-16).** Ingest copies a file into
+  the board, and `includePlan` reads it back to any caller — every surface is unauthenticated,
+  `/api/mcp` included. So the source must be a regular `.md` file of at most 1 MiB
+  (`PLAN_INGEST_MAX_BYTES`) whose **realpath** is under the Claude plans dir
+  (`paths.claudePlansDir`: `$CLAUDE_CONFIG_DIR/plans`, else `~/.claude/plans`) or `PROJECTS_ROOT`;
+  anything else is `PLAN_SOURCE_DENIED`. Those two roots are exactly where the absolute paths
+  actually handed over live: a plan wake's file, and a worktree's or checkout's plan. The
+  plans-dir rule is code-conductor's own config-dir rule, and the host spawns this plugin with
+  its environment, so both resolve the same directory with no new setting.
+
+  The check order in `ingestPlanFile` carries the reasons:
+  1. **Lexical containment, no fs access.** A path outside the roots is denied whether or not it
+     exists, so the refusal is no existence oracle for the rest of the disk.
+  2. **Realpath.** Fails → `PLAN_UNKNOWN`: a missing source or dangling link *inside* a root.
+  3. **Realpath containment** — closes a symlink out of a root.
+  4. **`.md` on the realpath**, lowercase — so a `plan.md` link naming a `.env` is refused.
+  5. **`isFile`** — before anything opens the source; a FIFO would block the open forever.
+  6. **Size cap.**
+
+  The copy then reads the realpath, so the file checked is the file copied. All denials share one
+  reason string, naming the valid set. HTTP and MCP apply the identical rule: a stricter HTTP rule
+  would close nothing while `/api/mcp` is open.
+
+  **Residual risk, accepted:** any `.md` file of at most 1 MiB under either root is readable by
+  any caller — every project's tracked docs, worktrees, and the board's own card files.
 
 ## Frontmatter is one verbatim line, and plans/ is worker-writable
 

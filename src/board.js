@@ -13,7 +13,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import { STATES } from './paths.js';
+import { STATES, claudePlansDir, projectsRoot } from './paths.js';
 import { resolvePlanLink, classifyPlanInput, planBaseDir, isContained } from './planLink.js';
 import { validateProject, listProjects } from './projects.js';
 import { withLock } from './mutex.js';
@@ -68,6 +68,9 @@ function sanitizeCommit(commit) {
 // tighter than project_read's 256 KiB — plan prose lands in an agent's context.
 // A constant, not a parameter: nothing needs to tune it.
 const PLAN_MAX_BYTES = 65536;
+// Hard cap on an ingest SOURCE (ingestPlanFile). A plan is prose; a larger file
+// is not one, and copying it in would only make it readable back.
+const PLAN_INGEST_MAX_BYTES = 1 << 20;
 
 // The absolute path of a resolved link IF it is a regular file that really sits
 // inside its base dir, else null. The realpath re-check closes the symlink hole:
@@ -84,6 +87,24 @@ function safePlanFile(project, resolved) {
   }
 }
 
+// The dirs an ingest source must sit under: the Claude plans dir (a plan wake's
+// ~/.claude/plans/<slug>.md) and PROJECTS_ROOT (a worktree's or a checkout's
+// plan). `lexical` holds each as given and realpath'd, so a caller may name the
+// source through either spelling; `real` holds the realpath'd forms only, which
+// are what the source's own realpath is judged against. A root that does not
+// exist is skipped — nothing under it exists either.
+function ingestRoots() {
+  const lexical = [];
+  const real = [];
+  for (const root of [claudePlansDir(), projectsRoot()]) {
+    let resolved;
+    try { resolved = fs.realpathSync(root); } catch { continue; }
+    lexical.push(path.resolve(root), resolved);
+    real.push(resolved);
+  }
+  return { lexical, real };
+}
+
 // Ingest: copy an absolute source INTO the board as the owning record's plan
 // file and return the stored `board:<destName>` link. `destDir`/`destName` are
 // supplied by the caller (a card's plans/<id>.md, an epic's plans/epic-<slug>.md,
@@ -92,12 +113,36 @@ function safePlanFile(project, resolved) {
 // plan wake's ~/.claude/plans/<slug>.md, typically) is never touched or
 // modified. An existing destination is overwritten: last write wins, no
 // versioning, so re-attaching a revised plan simply replaces the board's copy.
-// -> {link} | a fail('PLAN_UNKNOWN', …)
+//
+// The source must be a regular `.md` file of at most PLAN_INGEST_MAX_BYTES whose
+// REAL path is under an ingestRoots() dir; anything else is PLAN_SOURCE_DENIED —
+// the copy is readable back through includePlan, so without this any caller
+// could read any file the server can. The order is load-bearing:
+//   1. lexical containment, with NO fs access, so a path outside the roots
+//      answers the same whether or not it exists (no existence oracle);
+//   2. realpath — a missing source or dangling link inside a root is PLAN_UNKNOWN;
+//   3. realpath containment, closing a symlink out of a root;
+//   4. the `.md` suffix, on the realpath, so a `.md` NAME for a `.env` is refused;
+//   5. isFile, before anything opens the source (a FIFO would block the open);
+//   6. the size cap.
+// The copy then reads the realpath, so the file checked is the file copied.
+// Every denial shares one reason, naming the valid set.
+// -> {link} | a fail('PLAN_UNKNOWN' | 'PLAN_SOURCE_DENIED', …)
 function ingestPlanFile(destDir, destName, source) {
+  const roots = ingestRoots();
+  const denied = () => fail('PLAN_SOURCE_DENIED',
+    `plan source must be a regular .md file of at most 1 MiB whose real path is under ${claudePlansDir()} or ${projectsRoot()}: ${source}`);
+  if (!roots.lexical.some((root) => isContained(root, source))) return denied();
+  let real;
+  try { real = fs.realpathSync(source); }
+  catch (e) { return fail('PLAN_UNKNOWN', `cannot read plan file at ${source}: ${e.message}`); }
+  if (!roots.real.some((root) => isContained(root, real))) return denied();
+  if (!real.toLowerCase().endsWith('.md')) return denied();
   let stat;
-  try { stat = fs.statSync(source); } // follows symlinks
+  try { stat = fs.statSync(real); }
   catch (e) { return fail('PLAN_UNKNOWN', `cannot read plan file at ${source}: ${e.message}`); }
   if (!stat.isFile()) return fail('PLAN_UNKNOWN', `plan source is not a regular file: ${source}`);
+  if (stat.size > PLAN_INGEST_MAX_BYTES) return denied();
 
   const dest = path.join(destDir, destName);
   const link = `board:${destName}`;
@@ -118,14 +163,14 @@ function ingestPlanFile(destDir, destName, source) {
   // Linux/libuv, so that mutant is a WAIVED expected survivor (owner's decision
   // — see .wiki/gotchas/plan-link-and-sync-gap.md and harness/mutation/README.md).
   try {
-    if (fs.existsSync(dest) && fs.realpathSync(source) === fs.realpathSync(dest)) return { link };
-  } catch { /* either side unresolvable -> not the same file; fall through */ }
+    if (fs.existsSync(dest) && real === fs.realpathSync(dest)) return { link };
+  } catch { /* the destination is unresolvable -> not the same file; fall through */ }
 
   try {
     // store.ensureProjectDirs creates plans/, but updateCard never calls it —
     // a project dir predating that function has none.
     fs.mkdirSync(destDir, { recursive: true });
-    fs.copyFileSync(source, dest);
+    fs.copyFileSync(real, dest);
   } catch (e) {
     return fail('PLAN_UNKNOWN', `could not copy plan file from ${source}: ${e.message}`);
   }

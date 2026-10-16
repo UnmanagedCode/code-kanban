@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,7 +9,7 @@ import * as board from '../src/board.js';
 import * as store from '../src/store.js';
 import { _setProjectFetcher } from '../src/projects.js';
 import { _setInstanceFetcher } from '../src/ownerWorktree.js';
-import { stateDir, plansDir, boardPlansDir, epicsDir, projectRepoDir } from '../src/paths.js';
+import { stateDir, plansDir, boardPlansDir, epicsDir, projectRepoDir, claudePlansDir } from '../src/paths.js';
 import { localNodeId } from '../src/nodeId.js';
 
 // Creates a real git repo at <root>/<name> with one commit and returns its
@@ -900,11 +900,12 @@ function writeRepoPlan(project, rel, body) {
   return file;
 }
 
-// A source dir OUTSIDE PROJECTS_ROOT (its own mkdtemp — freshRoot's dir is a
-// tmpdir too, so "outside" has to be a sibling), mirroring the ~/.claude/plans/
-// location that ingest exists for. Cleaned up by the caller.
+// A source dir OUTSIDE PROJECTS_ROOT, inside the Claude plans dir — the
+// ~/.claude/plans/ location ingest exists for (freshRoot points CLAUDE_CONFIG_DIR at
+// a sibling of the root). Cleaned up by the caller.
 function outsideSources() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'code-kanban-src-'));
+  fs.mkdirSync(claudePlansDir(), { recursive: true });
+  const dir = fs.mkdtempSync(path.join(claudePlansDir(), 'src-'));
   return {
     dir,
     write(name, body) {
@@ -1272,7 +1273,8 @@ test('update_card plan: a DIRECTORY as the absolute source -> PLAN_UNKNOWN, refu
   const src = outsideSources();
   try {
     const { id } = await board.fileCard({ project: 'demo', title: 't' });
-    const dir = path.join(src.dir, 'adir');
+    // Named `.md`, so the allowlist's suffix rule admits it and the isFile() check is what speaks.
+    const dir = path.join(src.dir, 'adir.md');
     fs.mkdirSync(dir, { recursive: true });
     const r = await board.updateCard({ project: 'demo', id, fields: { plan: dir } });
     assert.equal(r.code, 'PLAN_UNKNOWN');
@@ -1283,17 +1285,16 @@ test('update_card plan: a DIRECTORY as the absolute source -> PLAN_UNKNOWN, refu
   } finally { src.cleanup(); await cleanup(root); }
 });
 
-// The case the isFile() check is really load-bearing for: a source copyFileSync
-// would happily accept, silently ingesting a bogus plan (an empty one, here).
-test('update_card plan: a NON-REGULAR absolute source (character device) -> PLAN_UNKNOWN', async (t) => {
+// A character device outside both ingest roots is refused by the allowlist before
+// anything stats it; the FIFO test below carries the "not a regular file" claim.
+test('update_card plan: a NON-REGULAR absolute source (character device) -> PLAN_SOURCE_DENIED', async (t) => {
   if (!fs.existsSync('/dev/null')) return t.skip('no /dev/null on this platform');
   const root = await freshRoot();
   useProjects(['demo']);
   try {
     const { id } = await board.fileCard({ project: 'demo', title: 't' });
     const r = await board.updateCard({ project: 'demo', id, fields: { plan: '/dev/null' } });
-    assert.equal(r.code, 'PLAN_UNKNOWN');
-    assert.match(r.reason, /not a regular file/);
+    assert.equal(r.code, 'PLAN_SOURCE_DENIED');
     assert.equal(fs.existsSync(ingestDest('demo', id)), false);
     assert.equal((await board.readCard({ project: 'demo', id })).card.plan, null);
   } finally { await cleanup(root); }
@@ -1311,6 +1312,202 @@ test('update_card plan: a DANGLING SYMLINK as the absolute source -> PLAN_UNKNOW
     assert.equal(r.code, 'PLAN_UNKNOWN');
     assert.equal(fs.existsSync(ingestDest('demo', id)), false);
   } finally { src.cleanup(); await cleanup(root); }
+});
+
+// ---- the ingest allowlist: a regular .md file of at most 1 MiB under the Claude plans dir or PROJECTS_ROOT ----
+
+// A temp dir outside BOTH ingest roots (os.tmpdir() holds the root and the config dir as
+// siblings, so a third mkdtemp is inside neither). Cleaned up by the caller.
+function outsideBothRoots() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'code-kanban-outside-'));
+  return {
+    dir,
+    write(name, body) {
+      const file = path.join(dir, name);
+      fs.writeFileSync(file, body);
+      return file;
+    },
+    cleanup() { fs.rmSync(dir, { recursive: true, force: true }); },
+  };
+}
+
+// A file in the Claude plans dir (the plans-dir ingest root).
+function writeClaudePlan(name, body) {
+  fs.mkdirSync(claudePlansDir(), { recursive: true });
+  const file = path.join(claudePlansDir(), name);
+  fs.writeFileSync(file, body);
+  return file;
+}
+
+// A card already linked to a board: plan, so "unchanged" is observable as that link standing.
+async function linkedCard() {
+  const { id } = await board.fileCard({ project: 'demo', title: 't' });
+  writeBoardPlan('demo', 'earlier.md', 'the earlier plan');
+  assert.equal((await board.updateCard({ project: 'demo', id, fields: { plan: 'board:earlier.md' } })).ok, true);
+  return id;
+}
+
+async function assertDenied(id, source, what) {
+  const r = await board.updateCard({ project: 'demo', id, fields: { plan: source } });
+  assert.equal(r.code, 'PLAN_SOURCE_DENIED', what);
+  assert.match(r.reason, /regular \.md file of at most 1 MiB/, what);
+  assert.equal((await board.readCard({ project: 'demo', id })).card.plan, 'board:earlier.md', `${what}: link unchanged`);
+  assert.equal(fs.existsSync(ingestDest('demo', id)), false, `${what}: nothing ingested`);
+}
+
+// Pins: an absolute source outside both ingest roots is refused, the card keeps its link, and no
+// copy is written — the arbitrary-file read closed.
+test('ingest: a .md file outside both roots -> PLAN_SOURCE_DENIED, card unchanged', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  const out = outsideBothRoots();
+  try {
+    const id = await linkedCard();
+    await assertDenied(id, out.write('secret.md', '# not yours'), 'outside .md');
+  } finally { out.cleanup(); await cleanup(root); }
+});
+
+// Pins: inside a root, only a .md source is ingestible — a project's .env is refused.
+test('ingest: a non-.md file under PROJECTS_ROOT -> PLAN_SOURCE_DENIED', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const id = await linkedCard();
+    await assertDenied(id, writeRepoPlan('demo', '.env', 'TOKEN=hunter2'), 'a .env');
+  } finally { await cleanup(root); }
+});
+
+// Pins: the roots are judged on the REALPATH — a .md symlink inside the plans dir whose target is
+// outside both roots is refused.
+test('ingest: a plans-dir symlink to a file outside both roots -> PLAN_SOURCE_DENIED', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  const out = outsideBothRoots();
+  try {
+    const id = await linkedCard();
+    fs.mkdirSync(claudePlansDir(), { recursive: true });
+    const link = path.join(claudePlansDir(), 'innocent.md');
+    fs.symlinkSync(out.write('secret.md', '# not yours'), link);
+    await assertDenied(id, link, 'escaping symlink');
+  } finally { out.cleanup(); await cleanup(root); }
+});
+
+// Pins: the .md suffix is judged on the REALPATH too — a `.md` name linking to a project's .env is
+// refused although both ends sit inside the roots.
+test('ingest: a plans-dir .md symlink to a non-.md file under PROJECTS_ROOT -> PLAN_SOURCE_DENIED', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const id = await linkedCard();
+    fs.mkdirSync(claudePlansDir(), { recursive: true });
+    const link = path.join(claudePlansDir(), 'plan.md');
+    fs.symlinkSync(writeRepoPlan('demo', '.env', 'TOKEN=hunter2'), link);
+    await assertDenied(id, link, 'a .md name for a .env');
+  } finally { await cleanup(root); }
+});
+
+// Pins: the size cap is exclusive — one byte over 1 MiB is refused.
+test('ingest: a plans-dir source of 1 MiB + 1 byte -> PLAN_SOURCE_DENIED', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const id = await linkedCard();
+    await assertDenied(id, writeClaudePlan('big.md', 'x'.repeat((1 << 20) + 1)), '1 MiB + 1');
+  } finally { await cleanup(root); }
+});
+
+// Pins: exactly 1 MiB is still ingested, and the suffix is compared case-insensitively (`.MD`).
+// (Passes on the unfixed tree by design.)
+test('ingest: a plans-dir source of exactly 1 MiB, named .MD, is ingested', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileCard({ project: 'demo', title: 't' });
+    const body = 'y'.repeat(1 << 20);
+    const u = await board.updateCard({ project: 'demo', id, fields: { plan: writeClaudePlan('PLAN.MD', body) } });
+    assert.deepEqual(u, { ok: true, plan: `board:${id}.md` });
+    assert.equal(fs.readFileSync(ingestDest('demo', id), 'utf8'), body);
+  } finally { await cleanup(root); }
+});
+
+// Pins: a source outside the roots is refused by the LEXICAL check, before anything touches the
+// filesystem — so a missing file outside reads the same as an existing one (no existence oracle).
+test('ingest: a MISSING path outside both roots -> PLAN_SOURCE_DENIED, not PLAN_UNKNOWN', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  const out = outsideBothRoots();
+  try {
+    const id = await linkedCard();
+    await assertDenied(id, path.join(out.dir, 'nope.md'), 'missing outside');
+  } finally { out.cleanup(); await cleanup(root); }
+});
+
+// Pins: the file_card call site — refused before the card is written, so no card and no id burned.
+test('file_card with a plan outside both roots -> PLAN_SOURCE_DENIED: no card, no id burned', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  const out = outsideBothRoots();
+  try {
+    const r = await board.fileCard({ project: 'demo', title: 't', plan: out.write('secret.md', '# not yours') });
+    assert.equal(r.code, 'PLAN_SOURCE_DENIED');
+    assert.deepEqual((await board.listCards({ project: 'demo' })).cards, []);
+    assert.equal((await board.fileCard({ project: 'demo', title: 'after' })).id, `${new Date().getFullYear()}-0001`);
+  } finally { out.cleanup(); await cleanup(root); }
+});
+
+// Pins: the epic call site — a project epic and a cross epic both refuse, and neither is written.
+test('create_epic with a plan outside both roots -> PLAN_SOURCE_DENIED, no epic written', async () => {
+  const root = await freshRoot();
+  useProjects(['demo', 'api']);
+  const out = outsideBothRoots();
+  try {
+    const source = out.write('secret.md', '# not yours');
+    const p = await board.createEpic({ project: 'demo', slug: 'ep', title: 'E', plan: source });
+    assert.equal(p.code, 'PLAN_SOURCE_DENIED');
+    assert.equal(store.epicExists('demo', 'ep'), false);
+    const x = await board.createEpic({ projects: ['demo', 'api'], slug: 'xp', title: 'X', plan: source });
+    assert.equal(x.code, 'PLAN_SOURCE_DENIED');
+    assert.equal(store.crossEpicExists('xp'), false);
+  } finally { out.cleanup(); await cleanup(root); }
+});
+
+// Pins: the isFile() check is load-bearing inside the roots — a FIFO named .md is refused without
+// being opened. A writer process waits on the other end, so a build that skipped the check would
+// open it, meet the writer and report success — failing this test rather than blocking forever.
+test('ingest: a FIFO in the plans dir -> PLAN_UNKNOWN (not a regular file), without blocking', async (t) => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  let writer;
+  try {
+    const { id } = await board.fileCard({ project: 'demo', title: 't' });
+    fs.mkdirSync(claudePlansDir(), { recursive: true });
+    const fifo = path.join(claudePlansDir(), 'pipe.md');
+    try { execFileSync('mkfifo', [fifo]); } catch { return t.skip('mkfifo unavailable'); }
+    writer = spawn('sh', ['-c', 'printf LEAK > "$0"', fifo], { stdio: 'ignore' });
+    const r = await board.updateCard({ project: 'demo', id, fields: { plan: fifo } });
+    assert.equal(r.code, 'PLAN_UNKNOWN');
+    assert.match(r.reason, /not a regular file/);
+    assert.equal(fs.existsSync(ingestDest('demo', id)), false);
+  } finally { writer?.kill(); await cleanup(root); }
+});
+
+// Pins: the file copied is the file checked — the copy reads the source's REALPATH, not the
+// caller's path, so a link swapped after the checks cannot redirect it.
+test('ingest copies from the realpath the allowlist checked', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  const realCopy = fs.copyFileSync;
+  const sources = [];
+  try {
+    const { id } = await board.fileCard({ project: 'demo', title: 't' });
+    const target = writeRepoPlan('demo', 'docs/p.md', '# the target');
+    fs.mkdirSync(claudePlansDir(), { recursive: true });
+    const link = path.join(claudePlansDir(), 'alias.md');
+    fs.symlinkSync(target, link);
+    fs.copyFileSync = (src, ...rest) => { sources.push(src); return realCopy(src, ...rest); };
+    assert.equal((await board.updateCard({ project: 'demo', id, fields: { plan: link } })).ok, true);
+    assert.deepEqual(sources, [fs.realpathSync(target)]);
+  } finally { fs.copyFileSync = realCopy; await cleanup(root); }
 });
 
 // ---- file_card's plan param (same three input forms, same validator) ----
@@ -1335,7 +1532,8 @@ test('file_card with an unreadable absolute plan -> PLAN_UNKNOWN: no card, no id
   const root = await freshRoot();
   useProjects(['demo']);
   try {
-    const r = await board.fileCard({ project: 'demo', title: 't', plan: '/nope/definitely-not-here.md' });
+    fs.mkdirSync(claudePlansDir(), { recursive: true }); // missing INSIDE an ingest root
+    const r = await board.fileCard({ project: 'demo', title: 't', plan: path.join(claudePlansDir(), 'definitely-not-here.md') });
     assert.equal(r.ok, false);
     assert.equal(r.code, 'PLAN_UNKNOWN');
     assert.equal(r.id, undefined);

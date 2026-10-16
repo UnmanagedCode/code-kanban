@@ -6,8 +6,9 @@ An out-of-process HTTP server the conductor spawns via `npm start` (`server.js`)
 the injected `PORT`. It reaches the host only through injected env vars and the per-call MCP
 envelope — it **never imports host modules** (they run in a different process).
 
-Env this plugin reads: `PORT`, `HOST` (`server.js`), `PROJECTS_ROOT` (`src/paths.js`),
-`CONDUCTOR_URL` (project validation, `src/projects.js`). The host also injects
+Env this plugin reads: `PORT`, `HOST` (`server.js`), `PROJECTS_ROOT` and `CLAUDE_CONFIG_DIR` (the
+Claude plans dir, an ingest root — `src/paths.js`), `CONDUCTOR_URL` (project validation,
+`src/projects.js`). The host also injects
 `CONDUCTOR_PROJECT_DIR` and `CONDUCTOR_PLUGIN_ID`, which this plugin does not currently use.
 
 ## Components
@@ -160,6 +161,24 @@ losing side's entries are lost, not merged**, exactly as for a card's logbook. D
 - **Trust**: no auth — possession of the code-hub URL is the capability (the whole board API is
   already exposed by forwarding). The pull runs backend-to-backend to dodge browser CORS; the
   dialog shows THIS board's URL from `window.location` (the backend can't know its forwarded URL).
+
+## Trust: what an unauthenticated caller can read through plans
+
+Every route and tool is unauthenticated (`/api/mcp` included), so a plan read is bounded by what
+the server will copy in or point at, not by who asks. `read_card` / `read_epic` with
+`includePlan` return a plan body only from a file that passed one of these:
+- **Ingest** (an absolute `plan`, `ingestPlanFile`): a regular `.md` file of at most 1 MiB whose
+  realpath is under the Claude plans dir (`paths.claudePlansDir`) or `PROJECTS_ROOT` — copied into
+  the board, then read from the copy. Anything else is `PLAN_SOURCE_DENIED`, and a path outside
+  both roots is denied before any fs access, so the refusal reveals nothing about it.
+- **Pointer** (`board:` / `repo:`, `safePlanFile`): a regular file whose realpath stays inside its
+  own base — the record's `plans/` dir, or the project's base checkout — on set and again on
+  every read.
+
+**Readable:** any `.md` file of at most 1 MiB under either ingest root — the conductor's plans,
+any worktree or checkout, and the board's own files. **Not readable:** anything outside both
+roots, a symlink resolving out of them, a non-`.md` file (`.env`, keys), a FIFO or device, and
+anything over the cap. See `.wiki/gotchas/plan-link-and-sync-gap.md` for the decision.
 
 ## GUI integration seam
 

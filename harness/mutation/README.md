@@ -115,6 +115,15 @@ sites, the row says which ones to mutate separately.
 | make `recordFile` (behind `cardPath`/`epicPath`/`crossEpicPath`) join without the throw | `writeCard, writeEpic and writeCrossEpic throw on a traversing name and write nothing outside the board` (`tests/store.test.mjs`) |
 | loosen `RECORD_NAME_RE` (admit `/`, `\`, a space) or drop the `.`/`..` exclusion | `isRecordName: one plain filename segment, nothing else` (`tests/store.test.mjs`) |
 | replace `mergeCrossEpics`' `store.isRecordName(p)` member test with a non-empty-string check | `a peer cross epic with a traversing member stores only record-name members` (`tests/sync.test.mjs`) |
+| `ingestPlanFile`: drop the lexical root check | `ingest: a MISSING path outside both roots -> PLAN_SOURCE_DENIED, not PLAN_UNKNOWN` |
+| `ingestPlanFile`: drop the realpath containment | `ingest: a plans-dir symlink to a file outside both roots -> PLAN_SOURCE_DENIED` |
+| `ingestPlanFile`: judge `.md` on the given path rather than the realpath | `ingest: a plans-dir .md symlink to a non-.md file under PROJECTS_ROOT -> PLAN_SOURCE_DENIED` |
+| `ingestPlanFile`: drop the `.md` check, or compare it case-sensitively | `ingest: a non-.md file under PROJECTS_ROOT -> PLAN_SOURCE_DENIED` / `ingest: a plans-dir source of exactly 1 MiB, named .MD, is ingested` |
+| `ingestPlanFile`: drop the size cap, or use `>=` | `ingest: a plans-dir source of 1 MiB + 1 byte -> PLAN_SOURCE_DENIED` / `ingest: a plans-dir source of exactly 1 MiB, named .MD, is ingested` |
+| `ingestPlanFile`: copy from `source` rather than `real` | `ingest copies from the realpath the allowlist checked` (spies `fs.copyFileSync`'s source argument: the bytes are the same unless the link is swapped mid-call) |
+| `ingestPlanFile`: drop `isFile` | `ingest: a FIFO in the plans dir -> PLAN_UNKNOWN (not a regular file), without blocking` — the test's writer process completes the FIFO open, so the mutant reports success rather than hanging |
+| `ingestRoots`: drop or swap a root (the plans dir, or `PROJECTS_ROOT`) | `the conductor attaches a host plan by absolute path over MCP` (`tests/mcp.test.mjs`; the plans dir is outside `PROJECTS_ROOT`) / `update_card plan: an absolute path inside a WORKTREE is copied in` (`PROJECTS_ROOT`) |
+| `resolvePlanForSet`'s ingest at each call site: route around the allowlist in `updateCard` / `fileCard` / the epic upsert | `ingest: a .md file outside both roots -> PLAN_SOURCE_DENIED, card unchanged` (and `PATCH with an absolute plan outside both ingest roots…`, `tests/routes.test.mjs`) / `file_card with a plan outside both roots -> PLAN_SOURCE_DENIED: no card, no id burned` / `create_epic with a plan outside both roots -> PLAN_SOURCE_DENIED, no epic written` |
 
 ## The UI, the server and the line parsers: gradeable vs harness-only
 
