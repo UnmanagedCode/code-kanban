@@ -22,10 +22,12 @@ first, never by truthiness and never with `in`. Sites today:
 | `handlers` | `src/mcp.js` | the MCP envelope's `tool` |
 | `RAW_TEXT` | `src/mcp.js` | the same `tool` |
 | `BASE_DIR` | `src/planLink.js` | a plan link's scheme, from a caller's `plan` or a stored (possibly synced) link |
+| `sections` (in `parse`) | `src/cardfile.js` | a card file's `## <heading>`, from caller or sync-peer text — built with `Object.create(null)` rather than guarded, since it is written as well as read |
 
-`Map` and `Set` lookups (`.has`/`.get`) are already own-key only and need nothing. A
-`Object.create(null)` map would also be safe, but nothing here uses one; keep the `hasOwn` guard as
-the one idiom.
+`Map` and `Set` lookups (`.has`/`.get`) are already own-key only and need nothing. A map that is
+only **read** with request keys keeps the `hasOwn` guard; a map that is also **written** with them
+(`sections`) is an `Object.create(null)` object, so a `__proto__` key is an ordinary own key rather
+than a prototype assignment.
 
 **Backstop:** `src/routes.js`'s `/mcp` route catches a throw from the response write and answers
 `500 {error}` while headers are unsent. With own-key dispatch in place no input reaches it (every

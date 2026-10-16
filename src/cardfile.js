@@ -101,7 +101,9 @@ export function parse(text, { state } = {}) {
   }
 
   // Body: collect lines per `## Section`.
-  const sections = {};
+  // Keyed by a heading from the file (caller or sync-peer text): no prototype, so
+  // `## __proto__` or `## constructor` is just another unknown section.
+  const sections = Object.create(null);
   let current = null;
   for (; i < lines.length; i++) {
     const line = lines[i];
