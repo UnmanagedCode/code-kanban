@@ -18,8 +18,13 @@
 
 `CSP` in `server.js` allows inline styles only because the Radix Dialog's scroll lock injects a
 `<style>` element. With it allowed, content must never reach a `style` attribute or element:
-injected CSS is live. `tests/frontendSafety.test.mjs` forbids any `style=` / `<style` in
-`frontend/src` (the copied `components/ui/` included) and `index.html`.
+injected CSS is live. `tests/frontendSafety.test.mjs` forbids every route a style takes — a
+`style=` attribute, a `<style>` element, a `style:` props key (`React.createElement`, an object
+spread), any `.style` / `['style']` access on an element — in `frontend/src` (the copied
+`components/ui/` included), `public/` and `index.html`. It also forbids JSX spread props
+(`{...x}`) in the plugin's own components: a spread object can carry `style`,
+`dangerouslySetInnerHTML` or an `href` past every attribute rule. Pass props by name; only the
+copied `components/ui/` spread.
 
 ## Pure `lib/*.ts` must stay importable by `node:test`
 

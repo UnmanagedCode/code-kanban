@@ -30,13 +30,13 @@ interface CardDetailDialogProps {
   onChanged: () => void;
 }
 
-export function CardDetailDialog({ project, cardId, ...rest }: CardDetailDialogProps) {
+export function CardDetailDialog({ project, cardId, meta, epics, setStatus, onClose, onChanged }: CardDetailDialogProps) {
   const shownId = useLatest(cardId);
   const shownProject = useLatest(project);
   return (
-    <Dialog open={!!cardId} onOpenChange={(open) => { if (!open) rest.onClose(); }}>
+    <Dialog open={!!cardId} onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent className="max-w-[calc(100%-1rem)] p-4 sm:max-w-2xl sm:p-6">
-        {shownId && shownProject && <CardDetail key={`${shownProject}/${shownId}`} project={shownProject} id={shownId} {...rest} />}
+        {shownId && shownProject && <CardDetail key={`${shownProject}/${shownId}`} project={shownProject} id={shownId} meta={meta} epics={epics} setStatus={setStatus} onClose={onClose} onChanged={onChanged} />}
       </DialogContent>
     </Dialog>
   );

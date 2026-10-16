@@ -24,15 +24,15 @@ interface NewEpicDialogProps {
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-export function NewEpicDialog({ open, ...rest }: NewEpicDialogProps) {
+export function NewEpicDialog({ open, project, projects, setStatus, onClose, onChanged }: NewEpicDialogProps) {
   return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o) rest.onClose(); }}>
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent className="max-w-[calc(100%-1rem)] p-4 sm:max-w-xl sm:p-6">
         <DialogHeader>
           <DialogTitle>New epic</DialogTitle>
           <DialogDescription>Create an epic, or refresh an existing slug’s title and goal.</DialogDescription>
         </DialogHeader>
-        {open && <NewEpicForm {...rest} />}
+        {open && <NewEpicForm project={project} projects={projects} setStatus={setStatus} onClose={onClose} onChanged={onChanged} />}
       </DialogContent>
     </Dialog>
   );

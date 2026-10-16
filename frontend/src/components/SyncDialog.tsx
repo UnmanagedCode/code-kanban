@@ -22,15 +22,15 @@ interface SyncDialogProps {
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-export function SyncDialog({ open, ...rest }: SyncDialogProps) {
+export function SyncDialog({ open, project, setStatus, onClose, onChanged }: SyncDialogProps) {
   return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o) rest.onClose(); }}>
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent className="max-w-[calc(100%-1rem)] p-4 sm:max-w-xl sm:p-6">
         <DialogHeader>
           <DialogTitle>Sync board</DialogTitle>
           <DialogDescription>Pull another instance’s board and merge it into this one.</DialogDescription>
         </DialogHeader>
-        {open && <SyncForm {...rest} />}
+        {open && <SyncForm project={project} setStatus={setStatus} onClose={onClose} onChanged={onChanged} />}
       </DialogContent>
     </Dialog>
   );

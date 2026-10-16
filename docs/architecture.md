@@ -258,8 +258,9 @@ The UI has no DOM in `npm test`; its claims split three ways:
   stubbed `globalThis.fetch` for `api()`.
 - **Source-scan guards** — `tests/frontendTheme.test.mjs` (host URL order, fallback coverage,
   token-only colours, no own theme toggle, the button-role rule) and
-  `tests/frontendSafety.test.mjs` (no raw-HTML sink, no expression `href`/`src`, no `style`, no
-  `/api` literal, one `fetch` site, one `localStorage` site) read the source as text through
+  `tests/frontendSafety.test.mjs` (no raw-HTML sink, no expression `href`/`src`, no style by any
+  route — attribute, `<style>`, a `style:` props key, a `.style` write —, no `/api` literal, one
+  `fetch` site, one `localStorage` site, no JSX spread props in feature code) read the source as text through
   `tests/_sourceScan.mjs`'s brace- and string-aware JSX tag scanner. They read every script type
   Vite bundles (`UI_CODE_EXTS`: `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`) plus CSS. Each has a
   liveness floor, and each also runs over a temp fixture tree that breaks every rule from a

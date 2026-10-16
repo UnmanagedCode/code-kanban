@@ -108,7 +108,7 @@ Node's type stripping imports the `.ts` modules directly; no extra `preserve` en
 |---|---|
 | every branch of `frontend/src/lib/{board,forms,api,persist,acceptanceEdit}.ts` (e.g. drop `api`'s root-relative throw; return instead of throw on non-2xx; send `project` for `scope:'all'`; drop one `syncSummaryText` clause; let one member through `epicCreateRequest`; flip `laneCards`' plan filter; recompute `completed`; send `acceptance` untouched) | `frontendLogic`, `persist`, `acceptanceEdit` |
 | `server.js`: drop or move the CSP middleware after the router; drop `nosniff`; serve `index.html` as a fallback; drop the `.map` guard; drop the 503 branch, its log line, or its `/api` pass-through; HTML 404; bind `0.0.0.0` by default | `server` |
-| a source-scan subject: `dangerouslySetInnerHTML`/`innerHTML`, a `style={…}`, an expression `href`, a `'/api…'` literal, a second `fetch`/`localStorage` site | `frontendSafety` |
+| a source-scan subject: `dangerouslySetInnerHTML`/`innerHTML`, a `style={…}` / `{ style: … }` / `el.style.x = …`, an expression `href`, a `'/api…'` literal, a second `fetch`/`localStorage` site, a `{...props}` spread in a feature component | `frontendSafety` |
 | reorder or `defer` the bridge tag; a literal colour or `bg-red-500` in feature code; a `classList.toggle('dark')`; drop `type="submit"` from a default `Button`; a fallback token missing | `frontendTheme` |
 | deaden any scanner (an empty glob, a regex that never matches); drop a script type from `UI_CODE_EXTS` or from a guard's file list | the scanner's liveness floor, and the guard's fixture-tree test |
 | revert a line-parser helper (`src/cardfile.js`, `src/board.js`) to its regex | `parserTiming` (the 2 s worker deadline) |

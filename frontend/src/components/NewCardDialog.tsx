@@ -21,15 +21,15 @@ interface NewCardDialogProps {
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-export function NewCardDialog({ open, ...rest }: NewCardDialogProps) {
+export function NewCardDialog({ open, project, epics, priorities, setStatus, onClose, onChanged }: NewCardDialogProps) {
   return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o) rest.onClose(); }}>
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent className="max-w-[calc(100%-1rem)] p-4 sm:max-w-xl sm:p-6">
         <DialogHeader>
           <DialogTitle>New card</DialogTitle>
-          <DialogDescription>Filed into triage{rest.project ? ` in ${rest.project}` : ''}.</DialogDescription>
+          <DialogDescription>Filed into triage{project ? ` in ${project}` : ''}.</DialogDescription>
         </DialogHeader>
-        {open && <NewCardForm {...rest} />}
+        {open && <NewCardForm project={project} epics={epics} priorities={priorities} setStatus={setStatus} onClose={onClose} onChanged={onChanged} />}
       </DialogContent>
     </Dialog>
   );

@@ -79,12 +79,14 @@ export function blankComments(src) {
 }
 
 /**
- * Every JSX opening tag named one of `names` (`<Button …>`, `<button …/>`), with its
- * attribute text, brace- and string-aware.
+ * Every JSX opening tag named one of `names` (`<Button …>`, `<button …/>`), or every
+ * tag when `names` is omitted, with its attribute text, brace- and string-aware. A
+ * TypeScript generic (`useState<string>`) reads as a tag with no attributes, which no
+ * attribute rule can trip on.
  */
 export function openingTags(src, names) {
   const tags = [];
-  const re = new RegExp(`<(${names.join('|')})(?=[\\s/>])`, 'g');
+  const re = new RegExp(`<(${names ? names.join('|') : '[A-Za-z][\\w.]*'})(?=[\\s/>])`, 'g');
   for (const m of src.matchAll(re)) {
     let i = m.index + m[0].length;
     for (; i < src.length; i++) {
@@ -122,4 +124,16 @@ export function attrValue(attrs, name) {
     i = end;
   }
   return undefined;
+}
+
+/** Whether a tag's attribute text holds a spread (`{...props}`) at its top level. */
+export function hasSpread(attrs) {
+  for (let i = 0; i < attrs.length; i++) {
+    const ch = attrs[i];
+    if (isQuote(ch)) { i = skipString(attrs, i) - 1; continue; }
+    if (ch !== '{') continue;
+    if (/^\{\s*\.\.\./.test(attrs.slice(i))) return true;
+    i = matchClose(attrs, i) - 1;
+  }
+  return false;
 }
