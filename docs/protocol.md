@@ -372,7 +372,8 @@ Notes:
   `list_epics`). A slug that is a project epic on one side and cross-project on the other is skipped +
   reported in `epicConflicts` (never merged/deleted — grow-only); malformed epics (bad slug / cross
   epic with <2 members) go to `skippedEpics`. A cross epic's `projects` list is filtered to
-  non-empty **strings** first, so junk members are dropped *before* that <2 check — an epic left
+  **record names** first (strings passing `store.isRecordName` — one plain segment, so a blank or
+  traversing member such as `../../x` is dropped), so junk members are dropped *before* that <2 check — an epic left
   too short by the filter is skipped, not half-written. Beyond skip and conflict there is a **third
   outcome**: a well-formed epic whose BODY fields are malformed (`goal` not a string, `plan` a
   non-string or newline-bearing value, `logbook` not an array of strings) is neither skipped nor

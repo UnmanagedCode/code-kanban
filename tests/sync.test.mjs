@@ -994,6 +994,30 @@ test('a cross epic with non-string members is filtered, not fatal — and the le
   });
 });
 
+// Pins: a peer cross epic's members are filtered to record names before they are stored. A member
+// is joined into a project path by every read of the epic, so a traversing one made read_epic list
+// cards from any directory shaped like a project — here a sentinel card outside the board.
+test('a peer cross epic with a traversing member stores only record-name members', async () => {
+  await withRoot(async () => {
+    const root = process.env.PROJECTS_ROOT;
+    // <root>/.conduct/kanban/projects/ is three levels below <root>.
+    const evil = '../../../evil';
+    fs.mkdirSync(path.join(root, 'evil', 'triage'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, 'evil', 'triage', '2026-0001.md'),
+      cardfile.serialize(card({ id: '2026-0001', uid: 'u-s', title: 'SENTINEL-CARD', epic: 'plat' })),
+    );
+    serveFull({ crossEpics: [xEpic({ slug: 'plat', projects: ['alpha', 'gamma', evil] })] });
+    const r = await board.syncPull({ peerUrl: 'https://peer.example', scope: 'all' });
+    assert.equal(r.ok, true);
+    assert.deepEqual(store.readCrossEpic('plat').projects, ['alpha', 'gamma']);
+    const re = await board.readEpic({ slug: 'plat' });
+    assert.equal(re.ok, true);
+    assert.deepEqual(re.epic.projects, ['alpha', 'gamma']);
+    assert.equal(re.cards.some((c) => c.title === 'SENTINEL-CARD'), false);
+  });
+});
+
 // Pins: epic order follows the synced `updated` stamp, not file mtime — a peer
 // epic just written by the pull, but carrying an OLDER stamp, sorts below a
 // locally newer epic.

@@ -117,7 +117,9 @@ addressable identity that cards reference via `epic:`. Consequences:
 - **Malformed body fields are DROPPED, not repaired, and never reported** (the third guard,
   alongside the slug/members skip and the kind conflict). `normalizeRemoteEpic` coerces an incoming
   epic's `goal`/`plan`/`logbook` to safe values before the write, and `mergeCrossEpics` filters
-  `projects` to non-empty strings before its <2 check. Dropping rather than repairing is the
+  `projects` to record names (`store.isRecordName`) before its <2 check — every read of the epic
+  joins a member into a project path, so a traversing member would list cards from wherever it
+  points. Dropping rather than repairing is the
   choice: a dead or absent plan link degrades to `plan_missing`, which every read already handles,
   whereas a guessed value would be indistinguishable from a real one. **The ordering is why this is
   a guard and not a nicety:** these fields reach hand-rolled serializers that call `.trim()`/`.map()`

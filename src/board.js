@@ -1324,15 +1324,17 @@ function mergeCrossEpics(remoteCross, localProjects, summary) {
     }
     // Members must be usable project NAMES before anything indexes a path with
     // them: a non-string throws in path.join, inside withLock(CROSS_LOCK) and so
-    // before the per-project card loop — killing the whole pull. An empty string
-    // is dropped too, since writeCrossEpic's `[a, b]` list is re-read with
-    // .filter(Boolean) and would silently lose it on the next parse anyway.
+    // before the per-project card loop — killing the whole pull. A member must
+    // also be one plain segment (store.isRecordName): every read of the epic
+    // joins it into a project path, so `../../x` would list cards from wherever
+    // it points. That drops an empty or blank string too, which writeCrossEpic's
+    // `[a, b]` list could not round-trip (it is re-read with .filter(Boolean)).
     // This runs BEFORE the length check on purpose, so a list that is short only
     // once the junk is gone is skipped-and-reported rather than half-written.
     // NB a member naming a project absent from THIS machine is legitimate and
     // kept — a cross epic may span projects only the peer has.
     const members = Array.isArray(re.projects)
-      ? [...new Set(re.projects.filter((p) => typeof p === 'string' && p.trim() !== ''))]
+      ? [...new Set(re.projects.filter((p) => typeof p === 'string' && store.isRecordName(p)))]
       : [];
     if (members.length < 2) { summary.skippedEpics.push({ slug: re.slug, kind: 'cross' }); continue; }
     if (!members.some((p) => localProjects.has(p))) continue; // covers no local project — irrelevant
