@@ -23,7 +23,9 @@ Env this plugin reads: `PORT`, `HOST` (`server.js`), `PROJECTS_ROOT` (`src/paths
 | `src/mutex.js` | Per-project async mutex — the one serialized write path. |
 | `src/mcp.js` | Thin tool dispatch → `board.js`; MCP envelope. Also owns two MCP-only presentation defaults: hiding `done` from `list_cards` and rendering listings/prose as raw text blocks (`src/listRender.js`) — neither reaches the GUI. |
 | `src/listRender.js` | Pure text renderers for `list_cards`/`list_epics`'s raw-text blocks. No imports beyond `STATES`; never sorts (renders `board.js`'s pre-sorted order as-is). |
-| `src/routes.js` / `server.js` | Express `/api/health` + `/api/mcp` + the GUI's `/api/projects`, `/api/board/*` routes; `express.static(frontend/)` serves the GUI at `/`. Listen wiring. |
+| `src/routes.js` | Express router: `/api/health` + `/api/mcp` + the GUI's `/api/projects`, `/api/board/*`, `/api/epics*`, `/api/sync/*` routes. |
+| `server.js` | The app: CSP + `nosniff` on every response, the API router, the built UI from `frontend/dist` (503 while unbuilt), plain-text 404 and error handlers; `createServer({distDir})`, `start()`, listen wiring. |
+| `frontend/` | The web GUI: React + Vite + Tailwind v4 + Radix components, built to `frontend/dist` on `npm install`. See GUI integration seam. |
 
 Thin surfaces (`mcp.js`, the GUI routes) call `board.js`; they never duplicate logic or call each
 other. The GUI's additions to `board.js`/`projects.js` are **export-only** — `ALLOWED_TRANSITIONS`
@@ -161,31 +163,80 @@ losing side's entries are lost, not merged**, exactly as for a card's logbook. D
 
 ## GUI integration seam
 
-The web GUI runs **in this process**. `server.js` mounts the API router at `/api` first, then
-`express.static(frontend/)` to serve the zero-build vanilla-ESM GUI at the manifest's
-`frontend.path` (`/`) — API first so `/api/*` is never shadowed by a static file. The GUI's
-`/api/board/*` routes (in `src/routes.js`) are a thin 1:1 delegate to `board.js`: each calls the
-matching function and passes its `{ok}` envelope through as the HTTP body, so GUI requests and
-MCP-tool calls serialize on the **same** in-process mutex — one writer. `board.js`'s function
-interface (the `{ok}` / `{ok:false,code,reason}` return contract) remains the documented seam.
-
-`renderBoard` (`frontend/app.js`) rebuilds every lane with `replaceChildren()` on each load, move,
-edit and filter toggle, which zeroes each `.column-body`'s `scrollTop`. Since the lanes became
-independent scrollers, it captures every lane's offset **keyed by `data-state`** before the rebuild
-and restores it after `append` (a `scrollTop` write on a detached element is a silent no-op) —
-without that pass, any refresh would yank a deep `done` lane back to the top. See
-[.wiki/gotchas/lane-scroll-container.md](../.wiki/gotchas/lane-scroll-container.md).
+The web GUI runs **in this process**. `server.js` mounts the API router at `/api` first, so `/api/*`
+is never shadowed by a static file, then serves the built UI from `frontend/dist` at the manifest's
+`frontend.path` (`/`). The GUI's routes (in `src/routes.js`) are a thin 1:1 delegate to `board.js`:
+each calls the matching function and passes its `{ok}` envelope through as the HTTP body, so GUI
+requests and MCP-tool calls serialize on the **same** in-process mutex — one writer. `board.js`'s
+function interface (the `{ok}` / `{ok:false,code,reason}` return contract) remains the documented
+seam. Route map and harness hooks: [.wiki/architecture/gui-seam-contract.md](../.wiki/architecture/gui-seam-contract.md).
 
 GUI mutations are attributed to the constant `GUI_ACTOR = 'gui'` (`src/routes.js`) — the GUI has
 no human identity, so `'gui'` is the honest logbook actor. `board.js` clears `owner` on any
 non-`in-progress` move regardless, so passing `GUI_ACTOR` on every move only stamps the move's
 log line (and in-progress ownership); it never leaves a stuck owner.
 
-**Serving scope.** The harness verifies the GUI at the plugin root (`/`). The host-mounted case
-— the conductor serving the plugin under a sub-path — is reasoned correct (the GUI uses
-relative `api/...` URLs and the manifest's `frontend.path`, and `express.static` is path-agnostic)
-but is **not** harness-verified; if the host mounts under a prefix, confirm the static + API
-prefixes line up before relying on it.
+### Build and serving
+
+- `npm install` runs `prepare` = `vite build --config frontend/vite.config.ts`, writing
+  `frontend/dist/` (gitignored): `index.html`, `theme-init.js`, `assets/*`. `npm run dev` serves the
+  source with the API proxied to `PLUGIN_BACKEND` (default `http://127.0.0.1:7100`);
+  `npm run typecheck` is `tsc -p frontend`.
+- `createServer({distDir})` (`server.js`), in middleware order:
+  1. `Content-Security-Policy: CSP` and `X-Content-Type-Options: nosniff` on every response;
+  2. `/api` → `buildRoutes()`;
+  3. any path ending `.map` → 404;
+  4. `express.static(distDir)` when `distDir/index.html` exists; otherwise one
+     `UI not built: <entry> is missing — run npm install` log line and a `text/plain` 503 for every
+     non-`/api` request;
+  5. terminal `text/plain` 404 `Not found` — no SPA fallback, so `/pluginBridge.js` and
+     `/pluginTheme.css` 404 standalone;
+  6. error handler: `text/plain`, client statuses kept, 500 → `Internal error`, logged.
+- `distDir` defaults to `frontend/dist`; tests pass a fixture.
+- Asset URLs are relative (`base: './'`), so the page works at `/` standalone and under
+  `/plugins/code-kanban/` in code-conductor.
+
+### `frontend/src` layout
+
+| Path | Holds |
+|---|---|
+| `lib/board.ts`, `lib/forms.ts`, `lib/api.ts`, `lib/persist.ts`, `lib/acceptanceEdit.ts` | Every UI decision as pure data: lane filtering, rollup pills, select options, request bodies, URL builders, the sync summary, the one `fetch` (`api`), the one `localStorage` user (`persist`). No DOM/React imports, erasable TS, `.ts`-suffixed relative imports — `node:test` imports them directly |
+| `lib/utils.ts`, `lib/modalFocus.ts`, `lib/textEntry.ts`, `components/ui/*` | Copied from code-conductor's `web/src`, one file per component used |
+| `hooks/useBoard.ts`, `hooks/useStatus.ts`, `hooks/useLatest.ts` | Board lists per project (stale responses dropped by a request sequence), the status line (`ok` clears after 2.5 s), a closing dialog's last payload |
+| `components/*.tsx`, `App.tsx` | Toolbar, status line, board/lanes/tiles, epics pane, the five dialogs |
+| `index.css`, `cc-theme-fallback.css`, `public/theme-init.js` | Tailwind + cc's `@theme inline`, the standalone token snapshot, OS-theme follow ([.wiki/architecture/host-theme.md](../.wiki/architecture/host-theme.md)) |
+
+Lane scroll offsets survive every reload because lanes are keyed by state and stay mounted; only a
+project switch shows placeholders ([.wiki/gotchas/lane-scroll-container.md](../.wiki/gotchas/lane-scroll-container.md)).
+
+### CSP
+
+`CSP` (exported by `server.js`): `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'`.
+`'unsafe-inline'` styles exist only for the Radix Dialog's injected scroll-lock `<style>`; content
+never reaches a `style` attribute or element. Directive reasons: [protocol.md](protocol.md) → UI
+serving and response headers.
+
+### Divergences from code-conductor's plugin-UI reference setup
+
+| | Here | Why |
+|---|---|---|
+| D1 | `engines.node >=22.18` (reference: `>=22.12`) | `node:test` imports the pure `lib/*.ts` through Node's built-in type stripping, unflagged from 22.18 |
+| D2 | No vitest / happy-dom / testing-library | The repo's built-in-runner rule; component behaviour is proven by the Playwright harness |
+| D3 | No sonner | The status line stays an inline `role="status"` live region; its strings are part of the harness contract |
+| D4 | Express kept; 404 is `text/plain` | The backend already is Express; matches the reference's Express snippet |
+
+### Verifying embedded
+
+The harness boots its own servers for standalone runs. For the embedded case, against a scratch
+code-conductor (never your own):
+1. In a cc checkout: `PORT=<port> CC_ISOLATED_ROOT=$(mktemp -d) scripts/run-isolated.sh`.
+2. `git clone` this branch to a scratch dir and `npm install` there; adopt **that clone**
+   (`POST /api/projects/external {"name","path"}`) — adopting lets cc rewrite the checkout's
+   `CONVENTIONS.md`.
+3. `POST /api/plugins/rescan`, `POST /api/plugins/code-kanban/enable`, `POST /api/plugins/code-kanban/start`.
+4. Seed through `http://127.0.0.1:<port>/plugins/code-kanban/api/board/<project>/…`.
+5. Open `http://127.0.0.1:<port>/#plugin/code-kanban/`.
+6. `POST /api/plugins/code-kanban/stop` before stopping cc (plugin backends outlive it).
 
 ## Test patterns
 

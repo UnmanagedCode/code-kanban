@@ -1,6 +1,6 @@
 # The web GUI seam contract
 
-The in-process web GUI (`frontend/`, served at `/` by `express.static` in `server.js`) talks to
+The in-process web GUI (`frontend/`, built to `frontend/dist` and served at `/` by `server.js`) talks to
 `board.js` over thin HTTP routes in `src/routes.js`. This page is the 1:1 map and the rules the
 GUI relies on — the things a reader can't quickly re-derive by skimming the route file.
 
@@ -9,14 +9,14 @@ GUI relies on — the things a reader can't quickly re-derive by skimming the ro
 | Route | `board.js` / helper | Notes |
 |---|---|---|
 | `GET /api/projects` | `projects.listProjects` | Catalog for the selector; same source `validateProject` uses. Not board state — does **not** take the project mutex. |
-| `GET /api/board/meta` | `STATES` + `ALLOWED_TRANSITIONS` | Returns `{states, transitions:["from>to"]}`. The GUI's single source for legal move targets. |
+| `GET /api/board/meta` | `STATES` + `ALLOWED_TRANSITIONS` + `PRIORITIES` | Returns `{states, transitions:["from>to"], priorities}`. The GUI's single source for lanes, legal move targets and priority options. |
 | `GET /api/board/:project/cards` | `listCards` | `?state`/`?epic` filters. |
 | `GET /api/board/:project/cards/:id` | `readCard` | Full card: goal, acceptance, logbook. `?includePlan=1\|true` (`wantsPlan`) adds the plan body. |
 | `POST /api/board/:project/cards` | `fileCard` | `sessionId: GUI_ACTOR`. Lands in `triage`. |
 | `PATCH /api/board/:project/cards/:id` | `updateCard` | Body **is** the `fields` object. |
 | `POST /api/board/:project/cards/:id/move` | `moveCard` | `owner: owner || GUI_ACTOR`; `commit` passed through as-is. |
 | `GET /api/board/:project/epics` | `listEpics` | With rollups; each row carries its raw `plan` link for the row badge. |
-| `GET /api/board/:project/epics/:slug` | `readEpic` | Epic + its cards. `?includePlan` as for a card (also on `GET /api/epics/:slug`); the GUI renders it with the card's `planSection`. Passes no `logTail`/`cardLimit`, so it is **unbounded** — MCP's `READ_EPIC_BOUNDS` never apply here. |
+| `GET /api/board/:project/epics/:slug` | `readEpic` | Epic + its cards. `?includePlan` as for a card (also on `GET /api/epics/:slug`); the GUI renders it with the card's `PlanSection`. Passes no `logTail`/`cardLimit`, so it is **unbounded** — MCP's `READ_EPIC_BOUNDS` never apply here. |
 | `POST /api/board/:project/epics` | `createEpic` | **Upsert** — see below. |
 
 ## Envelope pass-through
@@ -29,8 +29,9 @@ unwrapping, no remapping. So the `{ok}` domain convention travels literally as t
 - malformed JSON → 400 `{error:"invalid request body"}`; unexpected throw → 500 `{error}`
 
 This mirrors the MCP bridge's envelope rule — see [[result-envelope-vs-ok-shape]]. The GUI client
-(`frontend/app.js`) reads `data.ok === false` as a refusal and surfaces `data.reason` in the
-status line rather than treating it as a thrown error.
+reads `data.ok === false` as a refusal (`refusalReason` in `frontend/src/lib/board.ts`) and
+surfaces `data.reason` in the status line or the form, never as a thrown error; `api()` in
+`frontend/src/lib/api.ts` throws only for a non-2xx status or a non-JSON body.
 
 ## `GUI_ACTOR` and the owner rule
 
@@ -72,8 +73,27 @@ refusal. The tool name `create_epic` is a slight misnomer. The GUI's new-epic fo
 
 ## `meta` is the single source for legal moves
 
-The GUI does not hardcode the transition table. `renderBoard`/`openDetail` call
-`transitionsFrom(state)` over `state.meta.transitions` (from `/api/board/meta`), so a legal move
+The GUI does not hardcode the transition table. The card detail's Move form calls
+`transitionsFrom(meta, state)` (`frontend/src/lib/board.ts`) over `meta.transitions` (from `/api/board/meta`), so a legal move
 target list is always derived from `ALLOWED_TRANSITIONS` — the same Set `board.js` enforces. If
 the transition table changes, the GUI's offered targets change with it; an `INVALID_STATE`
 refusal can still surface on a race (card moved between meta-load and the move POST).
+## Harness hooks
+
+The Playwright harness (`harness/playwright/`) selects by role and accessible name plus these
+`data-*` attributes, which are part of this contract — rename one and update the harness's
+selectors:
+
+| Hook | On |
+|---|---|
+| `data-lane="<state>"`, `data-lane-head`, `data-lane-body` | a lane, its header, its scroller |
+| `data-empty` | a lane's empty placeholder |
+| `data-card-id="<id>"` | a card tile (a `<button>`) |
+| `data-badge="epic\|priority\|owner\|plan\|cross"` | a tile or epic-row badge |
+| `data-epic-slug="<slug>"` | an epics-pane row |
+| `data-rollup="<state>"`, `data-zero="true\|false"` | a rollup pill |
+| `data-plan-link` | the Plan section's link text |
+| `data-skeleton` | a loading placeholder |
+| `aria-busy` / `data-loading` on `section[aria-label="Board"]` | lists pending (project switch) / any load in flight |
+
+`#project-select` and `#plan-filter` are the toolbar's select and checkbox ids.

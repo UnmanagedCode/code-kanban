@@ -25,6 +25,17 @@ test('manifest identity + version matches package.json', () => {
   assert.equal(manifest.version, pkg.version);
 });
 
+// The host's Library hook runs `npm install`, which runs `prepare`: that is what
+// builds frontend/dist. The UI's packages are bundled at build time, so they stay
+// dev-only and the runtime dependency set is the backend's alone.
+test('package.json builds the UI on install, and only the backend is a runtime dependency', () => {
+  assert.equal(pkg.scripts.prepare, 'vite build --config frontend/vite.config.ts');
+  assert.deepEqual(Object.keys(pkg.dependencies), ['express']);
+  for (const dep of ['vite', 'react', 'react-dom', 'tailwindcss', 'radix-ui', 'typescript']) {
+    assert.ok(pkg.devDependencies?.[dep], `${dep} is a devDependency`);
+  }
+});
+
 test('mcp block shape: endpoint + non-empty tools', () => {
   assert.ok(manifest.mcp.endpoint.startsWith('/'));
   assert.ok(Array.isArray(manifest.mcp.tools) && manifest.mcp.tools.length > 0);

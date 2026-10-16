@@ -1,0 +1,46 @@
+# Gotcha: the built UI, its CSP, and what the unit suite can and cannot see
+
+## Built on install, never needed by the tests
+
+- `npm install` runs `prepare` (`vite build --config frontend/vite.config.ts`), which writes
+  `frontend/dist/` (gitignored). The host's Library hook is `npm install`, so Install builds and
+  Update rebuilds.
+- No unit test needs the build. `tests/server.test.mjs` serves a fixture dist from `mkdtemp`
+  (`createServer({distDir})`); `tests/dist.test.mjs` checks the real build and **skips** when it is
+  absent (a fresh checkout before install, a mutation-harness copy). A fresh clone plus
+  `npm install` must run it, not skip it.
+- Unbuilt, the server still starts: one `UI not built: … — run npm install` log line at
+  `createServer`, then every non-`/api` request is a `text/plain` 503. An install under
+  `NODE_ENV=production` / `npm_config_omit=dev` skips the devDependencies, so `prepare` fails and
+  the page stays 503 until rebuilt.
+
+## `style-src 'unsafe-inline'` and the rule it creates
+
+`CSP` in `server.js` allows inline styles only because the Radix Dialog's scroll lock injects a
+`<style>` element. With it allowed, content must never reach a `style` attribute or element:
+injected CSS is live. `tests/frontendSafety.test.mjs` forbids any `style=` / `<style` in
+`frontend/src` (the copied `components/ui/` included) and `index.html`.
+
+## Pure `lib/*.ts` must stay importable by `node:test`
+
+The tests import `frontend/src/lib/{board,forms,api,persist,acceptanceEdit}.ts` through Node's
+built-in type stripping (unflagged from Node 22.18, hence `engines.node`). So those modules:
+- use erasable TypeScript only (no enums, namespaces, parameter properties: `erasableSyntaxOnly`
+  in `frontend/tsconfig.json` enforces it at typecheck);
+- import each other by relative path with the `.ts` suffix, never the `@/` alias (Vite resolves it,
+  Node does not);
+- import no DOM or React. Components import them as `@/lib/…`.
+
+## Radix needs a title and a description
+
+Every `DialogContent` renders a `DialogTitle` and a `DialogDescription`, loading and error states
+included; without them Radix warns on the console and the harness's console check fails.
+
+## Worktree and scratch-cc traps
+
+- A worktree's `node_modules` may be a symlink into another checkout; `npm install` through it
+  writes there. Remove the link (`test -L node_modules && rm node_modules`) before installing.
+- Adopting a checkout into a scratch cc lets cc rewrite its `CONVENTIONS.md` / `CLAUDE.md`, which
+  dirties the tree. Adopt a scratch `git clone` of the branch, not your working tree.
+
+Related: [[../architecture/host-theme]], [[lane-scroll-container]].

@@ -1,60 +1,48 @@
 # Gotcha: the board is a fixed-height flex item and each lane is its own scroller
 
-`.board` is a fixed-height flex item and each `.column-body` scrolls on its own, so a 200-card
-`done` lane scrolls inside its lane rather than stretching the page. With `main` as the only
-scroller and content-sized lanes (`align-items: start`), that lane would stretch the whole page and
-you would scroll past every other lane header to reach it. Four things about that are not re-derivable from reading the CSS.
+At `lg` and up the board (`Board` in `frontend/src/components/Board.tsx`) takes the height left
+after the epics pane and each lane body scrolls on its own, so a 200-card `done` lane scrolls inside
+its lane instead of stretching the page. Four things about that are not re-derivable from the
+class lists.
 
-## 1. `renderBoard`'s `replaceChildren()` zeroes every lane's `scrollTop`
+## 1. Offsets survive a reload because the lanes stay mounted
 
-`renderBoard` in `frontend/app.js` rebuilds **every** lane on every load, move, edit and filter
-toggle. Each lane is its own scroller, so the rebuild discards every lane's `scrollTop` — the browser
-keeps only `main`'s offset across it — and would silently yank a deep `done` lane back to the top on
-every refresh.
-
-So the offsets are captured into a `Map` **keyed by `data-state`** (not DOM position, so it survives
-a change in lane count or order) before `replaceChildren()`, and restored in a second pass **after**
-`board.append(col)` — a `scrollTop` write on a detached element is a silent no-op, so restoring
-inside the build loop does nothing at all. `harness/playwright/snap-gui.mjs` step 18 is the proof:
-set an offset, click Refresh, assert it survived.
+Each lane body is its own scroller, so anything that unmounts or replaces a lane on a reload zeroes
+its `scrollTop` and yanks a deep lane back to the top. The lanes are keyed by state and stay mounted
+across every refresh, move, edit and filter toggle: `useBoard`'s `reload()` keeps the current lists
+on screen while it fetches, and only a project **switch** shows placeholder tiles (inside the
+mounted lanes, `pending`). Swapping a lane for a skeleton, keying lanes by index, or clearing the
+lists on reload breaks it. `harness/playwright/snap-gui.mjs` step 18 is the proof: set an offset,
+Refresh, assert it survived.
 
 ## 2. Setting only `overflow-y: auto` gives you a horizontal scrollbar too
 
-`overflow-x`/`overflow-y` are not independent: if one is set to a non-`visible` value, the other
-computes from `visible` to `auto`. Setting just `overflow-y: auto` on `.column-body` therefore puts
-a *horizontal* scrollbar inside every lane. `.column-body` in `frontend/styles.css` pins
-`overflow-x: hidden` explicitly for that reason — and the `.card` rule there carries
-`overflow-wrap: anywhere` so a long unbroken title wraps rather than being clipped by it (and so
-it cannot push the grid's min-content width into horizontal *page* scroll).
+`overflow-x`/`overflow-y` are not independent: when one is non-`visible`, the other computes from
+`visible` to `auto`. The lane body (`[data-lane-body]` in `Lane`) therefore carries
+`overflow-x-hidden` next to `overflow-y-auto`, and `CardTile` carries `[overflow-wrap:anywhere]`, so
+a long unbroken title wraps rather than being clipped (or pushing the grid into horizontal page
+scroll).
 
-## 3. `flex: 1 1 0` on `.board` is what keeps lane content out of the height calculation
+## 3. `lg:flex-1 lg:basis-0` keeps lane content out of the height calculation
 
-`flex-basis: 0` — not `auto` — is the load-bearing part (`.board` in `frontend/styles.css`). With `auto` the
-lanes' own content feeds back into the board's height and the page stretches. It needs `min-height: 0` on `main` (the `main` rule in `frontend/styles.css`) to be allowed to size
-below content at all, and `min-height: 0` + `flex: 1 1 auto` on `.column-body` for the same reason
-one level down: a flex child will not shrink below its content without it, so the lane just grows
-and nothing scrolls.
+A zero basis, not `auto`, is the load-bearing part: with `auto` the lanes' content feeds back into
+the board's height and the page stretches. `main` needs `min-h-0` to size below its content at all,
+and the lane body needs `min-h-0 flex-1` for the same reason one level down. `lg:min-h-[260px]` is
+the short-window floor: below it the board stops shrinking and `main` scrolls the page (step 20c).
 
-`.board`'s `min-height: 260px` is the **short-window floor**: below it the board stops shrinking and
-`main`'s `overflow: auto` scrolls the page instead. That
-fallback is deliberate, not a leftover — it is what keeps every card reachable on a 420px-tall
-window (`snap-gui.mjs` step 20c).
+## 4. Below `lg` the fixed-height board is off
 
-## 4. The fixed-height board is opted OUT below 980px
-
-At `max-width: 980px` the grid reflows to two lanes per row, which means **three grid rows** — a
-viewport-height board would squash each row to a third of the screen. That media query resets
-`flex: 0 0 auto; min-height: 0; align-items: start` (its `.board` rule in `frontend/styles.css`), so narrow layouts
-go back to content height and page scrolling; `.column-body`'s `overflow-y` then never fires,
-because nothing constrains the lane's height. The `max-width: 620px` block inherits the opt-out.
+Below `lg` (1024px) the grid has two lanes per row (one below `sm`), which is three rows: a
+viewport-height board would squash each to a third of the screen. The `lg:` prefixes are what switch
+the fixed height on, so narrow layouts are content height and the page scrolls (step 20b). On a
+phone each lane header is `sticky top-0` within `main`, which pins it at `main`'s content edge
+(inside its padding), not its border.
 
 ## Where the proof lives
 
-`npm test` has **no DOM environment** (no jsdom, no playwright in `package.json`), so none of the
-above is covered by the unit suite. `harness/playwright/snap-gui.mjs` steps 16–20 assert it and
-throw: the page fits while the lane overflows, the lane header's `getBoundingClientRect().top` is
-unchanged after scrolling its body, the other lanes stay at offset 0, the offset survives Refresh,
-and neither the narrow nor the short window scrolls horizontally. Run:
-`node harness/playwright/snap-gui.mjs`.
+`npm test` never renders React, so none of this is in the unit suite. `snap-gui.mjs` steps 16–20
+and 24 assert it: the page fits while the lane overflows, the header's top is unchanged after its
+body scrolls, the other lanes stay at offset 0, the offset survives Refresh, the narrow and short
+windows scroll the page with no horizontal scroll, and the phone header sticks.
 
 Related: [[../architecture/gui-seam-contract]], [[detail-overlay-close-button-stacking]].

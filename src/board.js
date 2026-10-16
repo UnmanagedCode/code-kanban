@@ -1450,7 +1450,7 @@ export async function syncPull({ peerUrl, scope, project } = {}) {
   }
 
   const localProjects = new Set(await listProjects());
-  // NB: this summary reaches the GUI (routes.js -> app.js), so it must carry NO
+  // NB: this summary reaches the GUI (routes.js -> the Sync dialog), so it must carry NO
   // hidden uid/node — only display ids, slugs, project names, and counts. See
   // stripHidden's invariant.
   const summary = {

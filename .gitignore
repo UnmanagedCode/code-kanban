@@ -3,3 +3,4 @@ node_modules
 harness/playwright/screenshots/
 .mutation/
 package-lock.json
+frontend/dist/
