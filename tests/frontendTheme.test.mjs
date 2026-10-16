@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { listFiles, read, blankComments, openingTags, attrValue } from './_sourceScan.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { listFiles, listUiCode, read, blankComments, openingTags, attrValue } from './_sourceScan.mjs';
 
 // Host-theme guards: the page loads code-conductor's bridge and theme sheet in the
 // order the host contract needs, keeps a standalone fallback that covers every
@@ -13,18 +16,23 @@ const indexCss = read('frontend/src/index.css');
 const fallback = read('frontend/src/cc-theme-fallback.css');
 const themeInit = read('frontend/public/theme-init.js');
 
-const SRC = listFiles('frontend/src', ['.ts', '.tsx', '.css']);
-const FEATURE_TSX = listFiles('frontend/src', ['.tsx']).filter((f) => !f.startsWith('frontend/src/components/ui/'));
+const isOwn = (f) => !f.startsWith('frontend/src/components/ui/');
+/** Every script and stylesheet under frontend/src (relative to `root`). */
+const srcFiles = (root) => [...listUiCode('frontend/src', root), ...listFiles('frontend/src', ['.css'], root)];
+/** The plugin's own scripts: frontend/src outside the copied components/ui/. */
+const featureCode = (root) => listUiCode('frontend/src', root).filter(isOwn);
+const SRC = srcFiles();
+const FEATURE_CODE = featureCode();
 
 // Liveness floors: a scanner that reads nothing passes everything. Sized well under
 // the real counts so ordinary churn never trips them.
 const MIN_SRC_FILES = 20;
-const MIN_FEATURE_TSX = 12;
+const MIN_FEATURE_CODE = 12;
 const MIN_BUTTONS = 8;
 
 test('the scanners read the source tree', () => {
   assert.ok(SRC.length >= MIN_SRC_FILES, `read ${SRC.length} source files`);
-  assert.ok(FEATURE_TSX.length >= MIN_FEATURE_TSX, `read ${FEATURE_TSX.length} feature .tsx files`);
+  assert.ok(FEATURE_CODE.length >= MIN_FEATURE_CODE, `read ${FEATURE_CODE.length} feature script files`);
 });
 
 test('<head> opens with the blocking bridge, then the theme sheet, then theme-init.js', () => {
@@ -92,41 +100,89 @@ test('index.css imports Tailwind, tw-animate-css and the fallback, and keys dark
 const COLOUR_LITERAL = /#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?|oklch|oklab|lab|lch|hwb|color)\(/;
 const PALETTE_UTILITY = /\b(?:bg|text|border|ring|outline|fill|stroke|shadow|from|to|via|decoration|divide|accent|caret)-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|black|white)\b/;
 
-test('no literal colour in the plugin’s own frontend code: colours come from the host tokens', () => {
-  const own = SRC.filter((f) => !f.startsWith('frontend/src/components/ui/') && f !== 'frontend/src/cc-theme-fallback.css');
-  assert.ok(own.length >= MIN_FEATURE_TSX, `scanned ${own.length}`);
+/** `file:line: what` for every literal colour in the plugin's own code under `root`. */
+function colourOffences(root) {
+  const out = [];
+  const own = srcFiles(root).filter((f) => isOwn(f) && f !== 'frontend/src/cc-theme-fallback.css');
   for (const f of own) {
-    const text = f.endsWith('.css') ? read(f).replace(/\/\*[\s\S]*?\*\//g, '') : blankComments(read(f));
+    const text = f.endsWith('.css') ? read(f, root).replace(/\/\*[\s\S]*?\*\//g, '') : blankComments(read(f, root));
     text.split('\n').forEach((line, i) => {
-      assert.doesNotMatch(line, COLOUR_LITERAL, `${f}:${i + 1}: literal colour`);
-      assert.doesNotMatch(line, PALETTE_UTILITY, `${f}:${i + 1}: palette utility`);
+      if (COLOUR_LITERAL.test(line)) out.push(`${f}:${i + 1}: literal colour`);
+      if (PALETTE_UTILITY.test(line)) out.push(`${f}:${i + 1}: palette utility`);
     });
   }
-});
+  return { scanned: own.length, out };
+}
 
-test('nothing but theme-init.js writes the dark class or data-cc-theme: no theme toggle of our own', () => {
-  const files = [...listFiles('frontend/src', ['.ts', '.tsx']), 'frontend/index.html'];
-  for (const f of files) {
-    const code = f.endsWith('.html') ? read(f) : blankComments(read(f));
-    assert.doesNotMatch(code, /classList\s*\.\s*\w+\(\s*['"`]dark['"`]/, `${f} writes the dark class`);
-    assert.doesNotMatch(code, /setAttribute\(\s*['"`]data-cc-theme/, `${f} writes data-cc-theme`);
-    assert.doesNotMatch(code, /className\s*=\s*['"`][^'"`]*\bdark\b/, `${f} sets the dark class`);
+/** `file: what` for every write of the dark class or data-cc-theme outside theme-init.js. */
+function toggleOffences(root) {
+  const out = [];
+  for (const f of [...listUiCode('frontend/src', root), ...listFiles('frontend/index.html', ['.html'], root)]) {
+    const code = f.endsWith('.html') ? read(f, root) : blankComments(read(f, root));
+    if (/classList\s*\.\s*\w+\(\s*['"`]dark['"`]/.test(code)) out.push(`${f}: writes the dark class`);
+    if (/setAttribute\(\s*['"`]data-cc-theme/.test(code)) out.push(`${f}: writes data-cc-theme`);
+    if (/className\s*=\s*['"`][^'"`]*\bdark\b/.test(code)) out.push(`${f}: sets the dark class`);
   }
-});
+  return out;
+}
 
-test('every button in feature code states its type, and a default-variant Button is a form submit', () => {
+/** Buttons in feature code with no explicit type, or a default-variant Button that is not a submit. */
+function buttonOffences(root) {
+  const out = [];
   let buttons = 0;
-  for (const f of FEATURE_TSX) {
-    for (const tag of openingTags(blankComments(read(f)), ['Button', 'button'])) {
+  for (const f of featureCode(root)) {
+    for (const tag of openingTags(blankComments(read(f, root)), ['Button', 'button'])) {
       buttons++;
       const type = attrValue(tag.attrs, 'type');
-      assert.ok(typeof type === 'string' && type !== '', `${f}: <${tag.name}${tag.attrs}> has no explicit type`);
+      if (typeof type !== 'string' || type === '') { out.push(`${f}: <${tag.name}> has no explicit type`); continue; }
       if (tag.name !== 'Button') continue;
       const variant = attrValue(tag.attrs, 'variant');
-      if (variant === undefined || variant === 'default' || variant === 'destructive') {
-        assert.equal(type, 'submit', `${f}: a ${variant ?? 'default'}-variant Button is the form's commit, so type="submit": <Button${tag.attrs}>`);
+      if ((variant === undefined || variant === 'default' || variant === 'destructive') && type !== 'submit') {
+        out.push(`${f}: a ${variant ?? 'default'}-variant Button is the form's commit, so type="submit"`);
       }
     }
   }
+  return { buttons, out };
+}
+
+test('no literal colour in the plugin’s own frontend code: colours come from the host tokens', () => {
+  const { scanned, out } = colourOffences();
+  assert.ok(scanned >= MIN_FEATURE_CODE, `scanned ${scanned}`);
+  assert.deepEqual(out, []);
+});
+
+test('nothing but theme-init.js writes the dark class or data-cc-theme: no theme toggle of our own', () => {
+  assert.deepEqual(toggleOffences(), []);
+});
+
+test('every button in feature code states its type, and a default-variant Button is a form submit', () => {
+  const { buttons, out } = buttonOffences();
+  assert.deepEqual(out, []);
   assert.ok(buttons >= MIN_BUTTONS, `found only ${buttons} buttons`);
+});
+
+// A fixture tree breaking each rule from a script type other than .ts/.tsx, so a scan
+// that stops reading .js, .jsx or .mjs fails here.
+const FIXTURE = {
+  'frontend/index.html': '<!doctype html>',
+  'frontend/src/lib/palette.js': "export const red = '#ff0000';",
+  'frontend/src/Tile.jsx': 'export const T = () => <p className="bg-red-500">x</p>;',
+  'frontend/src/theme.mjs': "document.documentElement.classList.toggle('dark');",
+  'frontend/src/Save.jsx': 'export const S = () => <Button>Save</Button>;',
+  'frontend/src/components/ui/button.tsx': "export const ink = '#000000';",
+};
+
+test('the theme guards read every script type the bundle can contain', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'code-kanban-theme-'));
+  try {
+    for (const [rel, text] of Object.entries(FIXTURE)) {
+      fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+      fs.writeFileSync(path.join(root, rel), text);
+    }
+    assert.deepEqual(colourOffences(root).out, ['frontend/src/Tile.jsx:1: palette utility', 'frontend/src/lib/palette.js:1: literal colour']);
+    assert.deepEqual(toggleOffences(root), ['frontend/src/theme.mjs: writes the dark class']);
+    assert.deepEqual(buttonOffences(root).out, ['frontend/src/Save.jsx: <Button> has no explicit type']);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

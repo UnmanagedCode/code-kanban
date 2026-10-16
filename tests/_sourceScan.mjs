@@ -9,15 +9,24 @@ import { fileURLToPath } from 'node:url';
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const FRONTEND = path.join(ROOT, 'frontend');
 
-/** Repo-relative paths of the files under `rel` whose name ends with one of `exts`. */
-export function listFiles(rel, exts) {
-  const abs = path.join(ROOT, rel);
+/**
+ * Paths, relative to `root` (the repo by default), of the files under `rel` whose
+ * name ends with one of `exts`.
+ */
+export function listFiles(rel, exts, root = ROOT) {
+  const abs = path.join(root, rel);
   if (!fs.existsSync(abs)) return [];
   if (fs.statSync(abs).isFile()) return exts.some((e) => rel.endsWith(e)) ? [rel] : [];
-  return fs.readdirSync(abs).sort().flatMap((n) => listFiles(path.join(rel, n), exts));
+  return fs.readdirSync(abs).sort().flatMap((n) => listFiles(path.join(rel, n), exts, root));
 }
 
-export const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
+/** Every script extension Vite bundles or copies: what the UI guards must read. */
+export const UI_CODE_EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs'];
+
+/** The UI script files under `rel` (every `UI_CODE_EXTS` extension). */
+export const listUiCode = (rel, root = ROOT) => listFiles(rel, UI_CODE_EXTS, root);
+
+export const read = (rel, root = ROOT) => fs.readFileSync(path.join(root, rel), 'utf8');
 
 const CLOSERS = { '(': ')', '{': '}', '[': ']' };
 const isQuote = (ch) => ch === "'" || ch === '"' || ch === '`';

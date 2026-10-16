@@ -260,7 +260,10 @@ The UI has no DOM in `npm test`; its claims split three ways:
   token-only colours, no own theme toggle, the button-role rule) and
   `tests/frontendSafety.test.mjs` (no raw-HTML sink, no expression `href`/`src`, no `style`, no
   `/api` literal, one `fetch` site, one `localStorage` site) read the source as text through
-  `tests/_sourceScan.mjs`'s brace- and string-aware JSX tag scanner. Each has a liveness floor.
+  `tests/_sourceScan.mjs`'s brace- and string-aware JSX tag scanner. They read every script type
+  Vite bundles (`UI_CODE_EXTS`: `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`) plus CSS. Each has a
+  liveness floor, and each also runs over a temp fixture tree that breaks every rule from a
+  different script type, so a rule or a file type the scan stops covering fails.
 - **Serving** — `tests/server.test.mjs` against a fixture build (`createServer({distDir})`);
   `tests/dist.test.mjs` against the real `frontend/dist`, skipped when it is not built.
 - **Everything rendered** (wiring, layout, focus, theme, console) — the Playwright harness:

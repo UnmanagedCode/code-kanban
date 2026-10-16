@@ -46,7 +46,9 @@ Every `<button>`/`<Button>` in feature code states its `type`.
 `tests/frontendTheme.test.mjs`: host URL order in `index.html`; `theme-init.js`'s early return and
 live `matchMedia`; the fallback is one `@layer base` block covering every token `index.css` maps (and
 every colour token in `.dark`); no literal colour or Tailwind palette utility in feature code; no own
-theme toggle; the button-role rule above, over JSX opening tags read by `tests/_sourceScan.mjs`. Each
-scanner has a liveness floor, so a scan that reads nothing fails.
+theme toggle; the button-role rule above, over JSX opening tags read by `tests/_sourceScan.mjs`. They
+read every script type Vite bundles (`UI_CODE_EXTS`), not only `.ts`/`.tsx`: a `.js` file is bundled
+just the same. Each scanner has a liveness floor, and a fixture-tree test that breaks each rule from
+a `.js`, `.jsx` or `.mjs` file, so a scan that reads nothing or skips a file type fails.
 
 Related: [[gui-seam-contract]], [[../gotchas/plugin-ui-build-and-csp]], [[../gotchas/detail-overlay-close-button-stacking]].

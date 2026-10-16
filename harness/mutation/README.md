@@ -110,7 +110,7 @@ Node's type stripping imports the `.ts` modules directly; no extra `preserve` en
 | `server.js`: drop or move the CSP middleware after the router; drop `nosniff`; serve `index.html` as a fallback; drop the `.map` guard; drop the 503 branch, its log line, or its `/api` pass-through; HTML 404; bind `0.0.0.0` by default | `server` |
 | a source-scan subject: `dangerouslySetInnerHTML`/`innerHTML`, a `style={…}`, an expression `href`, a `'/api…'` literal, a second `fetch`/`localStorage` site | `frontendSafety` |
 | reorder or `defer` the bridge tag; a literal colour or `bg-red-500` in feature code; a `classList.toggle('dark')`; drop `type="submit"` from a default `Button`; a fallback token missing | `frontendTheme` |
-| deaden any scanner (an empty glob, a regex that never matches) | the scanner's liveness floor |
+| deaden any scanner (an empty glob, a regex that never matches); drop a script type from `UI_CODE_EXTS` or from a guard's file list | the scanner's liveness floor, and the guard's fixture-tree test |
 | revert a line-parser helper (`src/cardfile.js`, `src/board.js`) to its regex | `parserTiming` (the 2 s worker deadline) |
 | off-by-one / wrong terminator set inside a helper | `lineParsers` (differential against the original regex) |
 | `parseEpicFile` reimplements the logbook rule instead of importing `parseLogbookLine` | `parserTiming`'s `store.readEpic` case |
