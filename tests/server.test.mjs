@@ -180,9 +180,16 @@ test('without a build: the UI answers a plain-text 503 naming npm install, the A
     const health = await fetch(`${base}/api/health`);
     assert.equal(health.status, 200);
     assert.deepEqual(await health.json(), { ok: true });
-    const unknownApi = await fetch(`${base}/api/x`);
-    assert.equal(unknownApi.status, 404, 'an unknown API route is a 404, not the UI 503');
-    assert.ok(isPlain(unknownApi));
+    // The API's namespace is never the UI's: an unrouted /api path is a 404, the bare
+    // /api included, not the UI 503.
+    for (const p of ['/api/x', '/api', '/api/']) {
+      const unknownApi = await fetch(base + p);
+      assert.equal(unknownApi.status, 404, `${p}: an unrouted API path is a 404, not the UI 503`);
+      assert.ok(isPlain(unknownApi), p);
+      assert.equal(await unknownApi.text(), 'Not found', p);
+    }
+    // A path that merely starts with "api" is a UI path.
+    assert.equal((await fetch(`${base}/apix`)).status, 503);
   }));
   assert.equal(errors.length, 1);
   assert.match(String(errors[0][0]), new RegExp(`${path.join(missing, 'index.html').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
