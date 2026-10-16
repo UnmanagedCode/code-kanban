@@ -271,7 +271,8 @@ The UI has no DOM in `npm test`; its claims split three ways:
 - **Source-scan guards** — `tests/frontendTheme.test.mjs` (host URL order, fallback coverage,
   token-only colours, no own theme toggle, the button-role rule) and
   `tests/frontendSafety.test.mjs` (no raw-HTML sink, no expression `href`/`src`, no style by any
-  route — attribute, `<style>`, any `style` key (a type's included), a `.style` access —, no `/api` literal, one
+  route and in any letter case — attribute, `<style>`, any `style` key, bare or quoted (a type's
+  included), a `.style` access —, no `/api` literal, one
   `fetch` site, one `localStorage` site, no JSX spread props in feature code) read the source as text through
   `tests/_sourceScan.mjs`'s brace- and string-aware JSX tag scanner. They read every script type
   Vite bundles (`UI_CODE_EXTS`: `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`) plus CSS. A scan whose

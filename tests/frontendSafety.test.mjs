@@ -35,20 +35,24 @@ const RULES = [
     bad: ['<a href={u}>', '<img src={u} />', '<img srcSet={u} />', '<form action={u}>', '<button formAction={u}>', '<use xlinkHref={u} />'],
   },
   {
-    // UI source never styles an element from code, by any route: the JSX/HTML
+    // UI source never styles an element from code, by any route, in any letter case: the JSX/HTML
     // attribute, a <style> element, a `style` key anywhere (a React.createElement
     // props object, an object spread — and, deliberately, a type such as
-    // `{ style?: string }`: no UI type names a style key either, which keeps the key
+    // `{ style?: string }`: no UI type names a style key either, quoted or bare, which keeps the key
     // rule free of the type-vs-value guesswork a stricter anchor would need), and any
     // `.style` / `['style']` access on an element (`.style = …`, `.style.x = …`,
     // `.style.setProperty`).
     name: 'a style by any route (attribute, <style>, a style key, .style access)',
-    re: /\bstyle\s*=\s*[{"'`]|<style\b|createElement\(\s*['"`]style['"`]|(?<![\w$-])style\s*\??\s*:|\.style\b|\[\s*['"`]style['"`]\s*\]/,
+    // Case-insensitive: `createElement('STYLE')` still yields an HTMLStyleElement,
+    // and HTML tag names fold case. The lookbehind keeps CSS's `font-style:` exempt.
+    re: /\bstyle\s*=\s*[{"'`]|<style\b|createElement\(\s*['"`]style['"`]|(?<![\w$-])style\s*\??\s*:|['"`]style['"`]\s*:|\.style\b|\[\s*['"`]style['"`]\s*\]/i,
     bad: [
       '<p style={{ color: c }} />', '<p style="color:red">', "<p style='color:red'>", '<p style=`x`>', '<style>p{}</style>',
       "document.createElement('style')", "React.createElement('div', { style: v.css })", 'const p = { style: v }',
       'el.style = v', 'el.style.color = v', "el.style.setProperty('color', v)", "el['style'] = v",
       'type P = { style?: string }', 'interface Q { style: CSSProperties }',
+      "React.createElement('div', { 'style': v.css })", 'React.createElement("div", { "style": v.css })',
+      "document.createElement('STYLE')", "document.createElement('Style')", '<STYLE>p{}</STYLE>', '<p STYLE="color:red">',
     ],
   },
   {
@@ -151,7 +155,7 @@ const FIXTURE = {
   'frontend/src/lib/tint.ts': 'export const tint = (el: HTMLElement, v: string) => { el.style.color = v; };',
   'frontend/src/Spread.tsx': 'export const P = (p: object) => <div className="x" {...p} />;',
   'frontend/src/components/ui/slot.tsx': 'export const Slot = (p: object) => <span {...p} />;',
-  'frontend/src/styles.css': '.x { font-style: italic; }',
+  'frontend/src/styles.css': '.x { font-style: italic; }\n.y { FONT-STYLE: normal; }',
 };
 
 test('each rule fires on every script type the bundle can contain', () => {
