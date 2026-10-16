@@ -135,6 +135,9 @@ Two guards exist for that, both worth keeping:
   (`safePlanFile` in `src/board.js`). Grammar-level containment alone is not enough: a worker can
   drop a symlink into `plans/`, and `includePlan` would then read straight out of it.
 - The realpath must also end in `.md` (lowercase compare), the same suffix rule ingest applies.
+  It is an addition to containment, never a stand-in: a symlink at another project's `.md` plan
+  passes the suffix and only the realpath containment refuses it — a test that wants to pin
+  containment must target a `.md` file outside the base.
   `repo:`'s base is a whole checkout, so without it `repo:.env` is a contained, regular file that
   sets fine and reads back through `includePlan`. `safePlanFile` serves the set path
   (`resolvePlanForSet` → `PLAN_UNKNOWN`) **and** the read path (`planFields`), so a stored

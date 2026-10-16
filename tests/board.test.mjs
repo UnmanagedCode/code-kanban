@@ -1512,6 +1512,36 @@ test('ingest copies from the realpath the allowlist checked', async () => {
 
 // ---- a pointer, set or stored, names a regular .md file inside its own base ----
 
+// Pins: a pointer's REALPATH must stay inside its own base even when it names a `.md` file — the
+// suffix rule cannot stand in for containment. A board: symlink at another project's plan and a
+// repo: symlink at a `.md` outside the checkout are refused on set and read back plan_missing.
+test('a board: or repo: link whose realpath is a .md file outside its base is refused on set and missing on read', async () => {
+  const root = await freshRoot();
+  useProjects(['demo', 'other']);
+  const out = outsideBothRoots();
+  try {
+    const { id } = await board.fileCard({ project: 'demo', title: 't' });
+    const cases = [
+      // board: — a link in demo's plans/ at OTHER's plan file (a .md inside PROJECTS_ROOT).
+      ['board:peek.md', path.join(plansDir('demo'), 'peek.md'), writeBoardPlan('other', 'secret-plan.md', '# other project')],
+      // repo: — a link in demo's checkout at a .md outside every root.
+      ['repo:docs/peek.md', path.join(projectRepoDir('demo'), 'docs', 'peek.md'), out.write('outside.md', '# outside')],
+    ];
+    for (const [link, at, target] of cases) {
+      fs.mkdirSync(path.dirname(at), { recursive: true });
+      fs.symlinkSync(target, at);
+      const u = await board.updateCard({ project: 'demo', id, fields: { plan: link } });
+      assert.equal(u.code, 'PLAN_UNKNOWN', `${link}: refused on set`);
+      assert.equal((await board.readCard({ project: 'demo', id })).card.plan, null, `${link}: nothing stored`);
+      storePlanLink('demo', id, link);
+      const r = await board.readCard({ project: 'demo', id, includePlan: true });
+      assert.equal(r.plan_body, null, `${link}: no body on read`);
+      assert.equal(r.plan_missing, true, `${link}: missing on read`);
+      storePlanLink('demo', id, null);
+    }
+  } finally { out.cleanup(); await cleanup(root); }
+});
+
 // Pins (already true): a STORED repo: link escaping its base with ../ is ungrammatical on read —
 // plan_path null, plan_missing, nothing read — even though the file it names exists.
 test('a stored repo: link with a ../ escape reads as plan_path null, plan_missing', async () => {
