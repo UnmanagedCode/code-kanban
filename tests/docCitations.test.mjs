@@ -28,7 +28,6 @@ import { ROOT, proseFiles } from './_prose.mjs';
 // a dead pointer. The one-shot shell sweep that caught it during the rename is
 // codified here so the class stays closed.
 
-
 // Directory prefixes that name THIS repo's tree. A citation must start with one
 // to be checked at all, which is what keeps bare prose words out.
 const CITATION_RE = /\b(?:src|tests|frontend|harness|docs|conventions)\/[A-Za-z0-9_.\-/]*\.(?:js|mjs|json|md|css|html|ts|tsx)\b/g;
@@ -48,7 +47,6 @@ const CROSS_REPO = new Map([
   ['src/mcp/content.ts', 'code-conductor'],
   ['src/planFile.ts', 'code-conductor'],
 ]);
-
 
 // Liveness floor: the MINIMUM number of citations that must actually reach the
 // existence check below. Without it this sweep has a silent do-nothing mode — a
