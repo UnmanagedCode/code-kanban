@@ -17,6 +17,10 @@ function fixtureDist() {
   fs.writeFileSync(path.join(dir, 'theme-init.js'), '// theme');
   fs.writeFileSync(path.join(dir, 'assets', 'app-AbC_1.js'), 'export {};');
   fs.writeFileSync(path.join(dir, 'assets', 'app-AbC_1.js.map'), '{}');
+  // An upper-case-named map too: on a case-sensitive filesystem static would 404 a
+  // `.MAP` request for want of the file, so only this one makes the guard's
+  // case-folding observable.
+  fs.writeFileSync(path.join(dir, 'assets', 'app-AbC_1.js.MAP'), '{}');
   return dir;
 }
 
