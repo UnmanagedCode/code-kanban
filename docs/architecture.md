@@ -69,6 +69,9 @@ Board DATA lives in the conductor's tree, not this repo:
   Per-card history lives in the Logbook; git snapshotting of `.conduct` is the conductor's job.
 - **IDs**: `${year}-${NNNN}`, where `NNNN` is a project-wide monotonic sequence
   (`max existing + 1`, does **not** reset on year rollover). Assigned inside the project mutex.
+  Sequence numbers are **BigInt** end to end (`store.idFloor`/`nextId`/`formatId`,
+  `board.trailingIdNumber`, `mergeProject`'s allocator): past 2^53 a float `+ 1` returns the same
+  number, which re-mints an existing id and never terminates the sync allocator.
 - **Priority: legacy tolerance instead of a migration.** `priority` moved from an integer ladder
   to `src/priority.js`'s `CRITICAL|HIGH|MEDIUM|LOW` plus a first-class unset state, and no migration
   script was written.

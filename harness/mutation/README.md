@@ -125,6 +125,9 @@ sites, the row says which ones to mutate separately.
 | `ingestRoots`: drop or swap a root (the plans dir, or `PROJECTS_ROOT`) | `the conductor attaches a host plan by absolute path over MCP` (`tests/mcp.test.mjs`; the plans dir is outside `PROJECTS_ROOT`) / `update_card plan: an absolute path inside a WORKTREE is copied in` (`PROJECTS_ROOT`) |
 | `safePlanFile`: drop the `.md` check, or judge it on `resolved.path` instead of the realpath | set path: `a repo: pointer to a non-.md file -> PLAN_UNKNOWN at update_card, file_card and create_epic`; realpath: `a repo: link to a .md symlink naming a non-.md file is refused on set and missing on read` |
 | `planFields`' read at each of its 2 call sites (`readCard`, `readEpic`): skip `safePlanFile` | `a stored repo: link to a .env reads as plan_missing with no body` (`readCard`) / `read_epic: a stored board: link to a non-.md file reads as plan_missing` (`readEpic`) |
+| `Number` instead of BigInt in `mergeProject`'s allocator (`maxNum` seed, `trailingIdNumber`, `++maxNum`) | `reassigning an id above 2^53 terminates and takes the exact next integer` (`tests/sync.test.mjs`, a 5 s worker deadline via `tests/_syncAllocWorker.mjs`) |
+| `Number` instead of BigInt in `store.nextId` (the scan, or `max + 1`) | `file_card past a card numbered 2^53 mints a new id and leaves that card intact` (`tests/board.test.mjs`) |
+| `trailingIdNumber` back to `Number.parseInt` | `slashes and id numbers: the named shapes` and the `idNumber` differential (`tests/lineParsers.test.mjs`, whose oracle is `BigInt(match)`) |
 | `resolvePlanForSet`'s ingest at each call site: route around the allowlist in `updateCard` / `fileCard` / the epic upsert | `ingest: a .md file outside both roots -> PLAN_SOURCE_DENIED, card unchanged` (and `PATCH with an absolute plan outside both ingest roots…`, `tests/routes.test.mjs`) / `file_card with a plan outside both roots -> PLAN_SOURCE_DENIED: no card, no id burned` / `create_epic with a plan outside both roots -> PLAN_SOURCE_DENIED, no epic written` |
 
 ## The UI, the server and the line parsers: gradeable vs harness-only
@@ -206,7 +209,8 @@ build/package cache, or depends on the checkout's absolute path. None applies:
   an ephemeral port per copy.
 - Every file that writes disk opens its own `fs.mkdtemp(os.tmpdir())` root (`tests/_helpers.mjs`'s
   `freshRoot`, or a local `mkdtemp` for `server.test.mjs`'s fixture build).
-  `parserTiming.test.mjs` also starts worker threads, which share only that per-test root.
+  `parserTiming.test.mjs` and `sync.test.mjs` also start worker threads, which share only that
+  per-test root.
 - The source scanners (`frontendTheme`, `frontendSafety`, `docCitations`, `pluginManifest`) and the
   pure-function files only read. `dist.test.mjs` only reads `frontend/dist`, and skips when it is
   absent.

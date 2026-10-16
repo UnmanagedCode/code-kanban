@@ -2004,6 +2004,21 @@ function seedRawCard(project, state, { id, priorityLine, created = '2026-01-01T0
   ].join('\n'));
 }
 
+// Pins: the next id is exact above 2^53. A card numbered exactly 2^53 made the float `max + 1`
+// round back to 2^53, so file_card minted the EXISTING id and overwrote that card.
+test('file_card past a card numbered 2^53 mints a new id and leaves that card intact', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const year = new Date().getFullYear();
+    const big = `${year}-9007199254740992`;
+    seedRawCard('demo', 'todo', { id: big, priorityLine: null });
+    const f = await board.fileCard({ project: 'demo', title: 'fresh' });
+    assert.equal(f.id, `${year}-9007199254740993`);
+    assert.equal((await board.readCard({ project: 'demo', id: big })).card.title, `legacy ${big}`);
+  } finally { await cleanup(root); }
+});
+
 test('file_card leaves priority UNSET when omitted — it never invents a level', async () => {
   const root = await freshRoot();
   useProjects(['demo']);

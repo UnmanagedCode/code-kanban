@@ -1457,14 +1457,15 @@ export function stripTrailingSlashes(s) {
   return s.slice(0, end);
 }
 
-// The number an id ends in, trailing whitespace ignored (`2026-0042` → 42); 0
+// The number an id ends in, trailing whitespace ignored (`2026-0042` → 42n); 0n
 // when it ends in no digit. What `/(\d+)\s*$/` captured, found without that
-// unanchored regex's quadratic rescan.
+// unanchored regex's quadratic rescan. A BigInt, exact at any length, because the
+// merge's allocator counts up from it (see store.js's id sequence note).
 export function trailingIdNumber(id) {
   const s = String(id ?? '').trimEnd();
   let start = s.length;
   while (start > 0 && s[start - 1] >= '0' && s[start - 1] <= '9') start--;
-  return start === s.length ? 0 : Number.parseInt(s.slice(start), 10);
+  return start === s.length ? 0n : BigInt(s.slice(start));
 }
 
 export async function syncPull({ peerUrl, scope, project } = {}) {
@@ -1541,16 +1542,19 @@ function mergeProject(project, remoteCards, remoteEpics, summary) {
   const usedIds = new Set();
   // Seed from the persisted floor (store.js's nextId uses the same one) so a
   // locally-deleted high-numbered card can't make this allocator reuse its id.
+  // BigInt, so `++maxNum` always yields a new value; usedIds is finite, so the
+  // loop below terminates.
   let maxNum = store.idFloor(project);
   for (const c of localCards) {
     localByUid.set(c.uid, c);
     usedIds.add(c.id);
-    maxNum = Math.max(maxNum, trailingIdNumber(c.id));
+    const n = trailingIdNumber(c.id);
+    if (n > maxNum) maxNum = n;
   }
   const year = new Date().getFullYear();
   const allocId = () => {
     let cand;
-    do { cand = `${year}-${String(++maxNum).padStart(4, '0')}`; } while (usedIds.has(cand));
+    do { cand = store.formatId(year, ++maxNum); } while (usedIds.has(cand));
     usedIds.add(cand);
     return cand;
   };

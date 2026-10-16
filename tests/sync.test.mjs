@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { freshRoot, cleanup } from './_helpers.mjs';
 import { plansDir, epicsDir, crossEpicsDir } from '../src/paths.js';
 import * as board from '../src/board.js';
@@ -378,6 +379,39 @@ test('a peer card id longer than 64, or not <year>-<number>, is skipped', async 
     assert.equal(byTitle('alpha', 'Legacy'), undefined);
     assert.equal(byTitle('alpha', 'Bound').id, atBound);
   });
+});
+
+// Pins: the merge's id allocator does exact integer arithmetic. Above 2^53 a float `+ 1` returns
+// the same value, so with that id already taken the allocator looped forever inside the project
+// lock. Run in a worker (tests/_syncAllocWorker.mjs) with a deadline, so a hang fails in seconds.
+test('reassigning an id above 2^53 terminates and takes the exact next integer', { timeout: 15_000 }, async () => {
+  const root = await freshRoot();
+  const DEADLINE_MS = 5_000;
+  try {
+    const msg = await new Promise((resolve, reject) => {
+      const worker = new Worker(new URL('./_syncAllocWorker.mjs', import.meta.url), { workerData: { root } });
+      let timer;
+      let year;
+      worker.on('message', (m) => {
+        if (m.type === 'start') {
+          year = m.year;
+          timer = setTimeout(() => {
+            worker.terminate();
+            reject(new Error(`syncPull did not return within ${DEADLINE_MS} ms — the id allocator does not terminate`));
+          }, DEADLINE_MS);
+        } else {
+          clearTimeout(timer);
+          worker.terminate();
+          resolve({ ...m, year });
+        }
+      });
+      worker.on('error', (e) => { clearTimeout(timer); reject(e); });
+    });
+    assert.equal(msg.result.ok, true);
+    assert.deepEqual(msg.result.summary.reassigned, [
+      { project: 'alpha', from: `${msg.year}-9007199254740993`, to: `${msg.year}-9007199254740994` },
+    ]);
+  } finally { await cleanup(root); }
 });
 
 test('peerUrl to a loopback/private host is blocked (SSRF guard)', async () => {

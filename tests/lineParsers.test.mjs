@@ -15,7 +15,7 @@ const ORACLE = {
   acceptance: (line) => { const m = /^-\s+\[( |x|X)\]\s+(.*)$/.exec(line); return m ? { text: m[2], done: m[1].toLowerCase() === 'x' } : null; },
   logbook: (line) => { const m = /^-\s+(.*)$/.exec(line); return m ? m[1] : null; },
   slashes: (s) => s.replace(/\/+$/, ''),
-  idNumber: (id) => { const m = /(\d+)\s*$/.exec(id ?? ''); return m ? Number.parseInt(m[1], 10) : 0; },
+  idNumber: (id) => { const m = /(\d+)\s*$/.exec(id ?? ''); return m ? BigInt(m[1]) : 0n; },
 };
 
 const SUBJECT = {
@@ -146,10 +146,12 @@ test('slashes and id numbers: the named shapes', () => {
   assert.equal(stripTrailingSlashes('https://h/board///'), 'https://h/board');
   assert.equal(stripTrailingSlashes('https://h'), 'https://h');
   assert.equal(stripTrailingSlashes('///'), '');
-  assert.equal(trailingIdNumber('2026-0042'), 42);
-  assert.equal(trailingIdNumber('2026-0042 \t'), 42);
-  assert.equal(trailingIdNumber('2026-x'), 0);
-  assert.equal(trailingIdNumber(null), 0);
-  assert.equal(trailingIdNumber(undefined), 0);
-  assert.equal(trailingIdNumber(1234), 1234);
+  assert.equal(trailingIdNumber('2026-0042'), 42n);
+  assert.equal(trailingIdNumber('2026-0042 \t'), 42n);
+  assert.equal(trailingIdNumber('2026-x'), 0n);
+  assert.equal(trailingIdNumber(null), 0n);
+  assert.equal(trailingIdNumber(undefined), 0n);
+  assert.equal(trailingIdNumber(1234), 1234n);
+  // Exact past 2^53, where a float would round 2^53 + 1 back down.
+  assert.equal(trailingIdNumber('2026-9007199254740993'), 9007199254740993n);
 });

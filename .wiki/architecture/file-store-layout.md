@@ -131,6 +131,17 @@ back down. Sync's `mergeProject` seeds its own id allocator from this same floor
 reason (an incoming card reassigned a fresh id must not land on a locally-deleted high id either).
 Purely local bookkeeping — not part of the sync wire format (see [[cross-instance-sync]]).
 
+**Sequence numbers are exact BigInt arithmetic** — `store.idFloor`, `nextId`, `writeCard`'s floor
+bump, `board.trailingIdNumber` and `mergeProject`'s allocator, all minting through the one
+formatter `store.formatId`. An id number is unbounded text (a hand-written card, or any shape id a
+peer sends up to `PEER_ID_MAX` characters), and a float stops counting at 2^53: `2^53 + 1` rounds
+back to `2^53`. With floats, a card numbered `2^53` makes `nextId` re-mint that same id, so
+`file_card` overwrites the card; and the merge's `do { ++maxNum } while (usedIds.has(cand))` never
+leaves once its candidate is taken — a hang inside the project lock that takes every surface with
+it. BigInt `++` always yields a new value and `usedIds` is finite, so the loop terminates. An
+`.id-seq` that is not all digits reads as `0n`. (`compareIdDesc`'s sort key still uses `Number` —
+display order only.)
+
 **`padStart(4, '0')` pads but never truncates**, so the `NNNN` field is a *minimum* width, not a
 fixed one: card 10000 mints `2026-10000`. Any id comparison must therefore be **numeric** — as
 strings `'2026-10000' < '2026-9999'`, so a `localeCompare` tiebreak files the newest card as one of

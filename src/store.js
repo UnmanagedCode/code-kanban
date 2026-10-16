@@ -80,24 +80,34 @@ export function findCardFile(project, id) {
 // floor independently; board.js's sync merge seeds its own id allocator from
 // idFloor() too, so a reassigned incoming card can't reuse a locally-deleted
 // high id either — never against the peer's floor, which isn't on the wire.
+//
+// Sequence numbers are BigInt throughout: an id number is unbounded text, and a
+// float stops counting at 2^53 (`2^53 + 1` rounds back down), so `max + 1` would
+// re-mint an existing id and the merge's allocator would never find a free one.
 function idFloorPath(project) {
   return path.join(projectDir(project), '.id-seq');
 }
 
 // Highest card-id number ever committed to disk in this project, including
 // ids whose card has since been deleted. Read-only peek.
+// -> BigInt (0n when absent or unreadable).
 export function idFloor(project) {
-  try {
-    const n = Number.parseInt(fs.readFileSync(idFloorPath(project), 'utf8').trim(), 10);
-    return Number.isFinite(n) && n >= 0 ? n : 0;
-  } catch {
-    return 0;
-  }
+  let text;
+  try { text = fs.readFileSync(idFloorPath(project), 'utf8').trim(); }
+  catch { return 0n; }
+  return /^\d+$/.test(text) ? BigInt(text) : 0n;
 }
 
-// Raise the persisted floor to at least `n` (never regress it).
+// Raise the persisted floor to at least `n` (a BigInt; never regress it).
 function bumpIdFloor(project, n) {
   if (n > idFloor(project)) atomicWrite(idFloorPath(project), String(n));
+}
+
+// The display id for sequence number `seq` (a BigInt): `<year>-<NNNN>`, padded to
+// four digits and never truncated. The one formatter — nextId and the sync merge's
+// allocator (board.js's mergeProject) both mint through it.
+export function formatId(year, seq) {
+  return `${year}-${String(seq).padStart(4, '0')}`;
 }
 
 // Next id for a project: current year + a project-wide monotonic sequence.
@@ -113,17 +123,19 @@ export function nextId(project) {
     catch { continue; }
     for (const name of names) {
       const m = /-(\d+)\.md$/.exec(name);
-      if (m) max = Math.max(max, Number.parseInt(m[1], 10));
+      if (m) {
+        const n = BigInt(m[1]);
+        if (n > max) max = n;
+      }
     }
   }
-  const year = new Date().getFullYear();
-  return `${year}-${String(max + 1).padStart(4, '0')}`;
+  return formatId(new Date().getFullYear(), max + 1n);
 }
 
 export function writeCard(project, state, task) {
   atomicWrite(cardPath(project, state, task.id), cardfile.serialize({ ...task, project }));
   const m = /-(\d+)$/.exec(task.id ?? '');
-  if (m) bumpIdFloor(project, Number.parseInt(m[1], 10));
+  if (m) bumpIdFloor(project, BigInt(m[1]));
 }
 
 export function readCardById(project, id) {
