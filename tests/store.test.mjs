@@ -83,6 +83,22 @@ test('nextId does not regress after the highest-numbered card is deleted', async
   } finally { await cleanup(root); }
 });
 
+// Pins: the persisted floor is read back EXACTLY above 2^53. With the card deleted the floor is
+// the only record of its number, and a float read rounds 2^53 + 1 down to 2^53, so nextId would
+// re-mint the deleted id.
+test('the persisted id floor is exact above 2^53: a deleted id is never reused', async () => {
+  const root = await freshRoot();
+  try {
+    store.ensureProjectDirs('demo');
+    const year = new Date().getFullYear();
+    const big = `${year}-9007199254740993`;
+    store.writeCard('demo', 'triage', baseTask(big));
+    assert.equal(store.deleteCard('demo', big), true);
+    assert.equal(store.idFloor('demo'), 9007199254740993n);
+    assert.equal(store.nextId('demo'), `${year}-9007199254740994`);
+  } finally { await cleanup(root); }
+});
+
 test('moveCard relocates the file and removes the old one', async () => {
   const root = await freshRoot();
   try {

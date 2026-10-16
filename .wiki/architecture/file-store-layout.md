@@ -138,8 +138,10 @@ peer sends up to `PEER_ID_MAX` characters), and a float stops counting at 2^53: 
 back to `2^53`. With floats, a card numbered `2^53` makes `nextId` re-mint that same id, so
 `file_card` overwrites the card; and the merge's `do { ++maxNum } while (usedIds.has(cand))` never
 leaves once its candidate is taken — a hang inside the project lock that takes every surface with
-it. BigInt `++` always yields a new value and `usedIds` is finite, so the loop terminates. An
-`.id-seq` that is not all digits reads as `0n`. (`compareIdDesc`'s sort key still uses `Number` —
+it. BigInt `++` always yields a new value and `usedIds` is finite, so the loop terminates. The
+`.id-seq` floor is read back as BigInt too — after a delete it is the only record of the deleted
+number, so a float read would let `nextId` re-mint it. An `.id-seq` that is not all digits reads
+as `0n`. (`compareIdDesc`'s sort key still uses `Number` —
 display order only.)
 
 **`padStart(4, '0')` pads but never truncates**, so the `NNNN` field is a *minimum* width, not a
