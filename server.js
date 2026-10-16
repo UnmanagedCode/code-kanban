@@ -16,6 +16,14 @@ export const CSP = "default-src 'none'; script-src 'self'; style-src 'self' 'uns
 const sendText = (res, status, text) => res.status(status).type('text/plain').send(text);
 // An /api path the router did not answer is an unknown route (404), built or not.
 const isApiPath = (p) => p === '/api' || p.startsWith('/api/');
+// express.static decodes the path before it looks the file up (`app.js%2Emap` is
+// `app.js.map`), so the source-map guard judges the decoded form, case-insensitively.
+// A malformed escape is left to static, which answers it 400.
+function isSourceMap(p) {
+  let decoded;
+  try { decoded = decodeURIComponent(p); } catch { return false; }
+  return decoded.toLowerCase().endsWith('.map');
+}
 
 // `distDir` is injectable so tests can serve a fixture build.
 export function createServer({ distDir = path.join(__dirname, 'frontend', 'dist') } = {}) {
@@ -26,7 +34,7 @@ export function createServer({ distDir = path.join(__dirname, 'frontend', 'dist'
   });
   // API first so /api/* is never shadowed by a static file.
   app.use('/api', buildRoutes());
-  app.use((req, res, next) => (req.path.endsWith('.map') ? sendText(res, 404, 'Not found') : next()));
+  app.use((req, res, next) => (isSourceMap(req.path) ? sendText(res, 404, 'Not found') : next()));
 
   const distIndex = path.join(distDir, 'index.html');
   if (fs.existsSync(distIndex)) {

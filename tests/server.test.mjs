@@ -67,11 +67,22 @@ test('/ serves the built index.html, and a built asset is served', async () => {
   });
 });
 
-test('a .map file is never served, even when the build holds one', async () => {
+test('a .map file is never served, even when the build holds one — however the name is escaped or cased', async () => {
   await withFixture(async (base) => {
-    const res = await fetch(`${base}/assets/app-AbC_1.js.map`);
-    assert.equal(res.status, 404);
-    assert.ok(isPlain(res));
+    for (const p of ['/assets/app-AbC_1.js.map', '/assets/app-AbC_1.js%2Emap', '/assets/app-AbC_1.js%2emap', '/assets/app-AbC_1.js.MAP', '/assets/app-AbC_1.js%2EMaP', '/assets/app-AbC_1.js%2E%6Dap']) {
+      const res = await fetch(base + p);
+      assert.equal(res.status, 404, p);
+      assert.ok(isPlain(res), p);
+      assert.equal(await res.text(), 'Not found', p);
+    }
+    // A malformed escape cannot be decoded, so the guard leaves it to static: a client
+    // error, never the map and never a 500.
+    const errors = await capturingErrors(async () => {
+      const bad = await fetch(`${base}/assets/%E0%A4%A.map`);
+      assert.ok(bad.status >= 400 && bad.status < 500, String(bad.status));
+      assert.ok(isPlain(bad));
+    });
+    assert.ok(errors.length <= 1);
   });
 });
 
