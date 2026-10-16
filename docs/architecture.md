@@ -192,3 +192,11 @@ prefixes line up before relying on it.
 `node:test` via `tests/run.mjs` (`npm test`). Each test isolates state in a fresh
 `mkdtemp` set as `PROJECTS_ROOT` (`tests/_helpers.mjs`) and injects the live-project list via
 `projects._setProjectFetcher` — no network, deterministic, order-independent.
+
+Parsers of untrusted lines carry two suites ([.wiki/gotchas/linear-line-parsers.md](../.wiki/gotchas/linear-line-parsers.md)):
+- `tests/lineParsers.test.mjs` — **differential**: each index-scanning helper against the regex it
+  replaced, kept verbatim in the test as the oracle, over every short string of the branching
+  alphabet behind shape prefixes plus a seeded sample.
+- `tests/parserTiming.test.mjs` — **timing**: each pathological shape at 200 000 characters through
+  a public entry point, run in a worker (`tests/_parserTimingWorker.mjs`) that is terminated at a
+  2 s deadline, so a super-linear regression fails in about 2 s instead of hanging the file.

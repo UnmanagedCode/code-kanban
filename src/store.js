@@ -255,8 +255,8 @@ function parseEpicFile(text, seed) {
     if (/^##\s+/.test(lines[i])) { section = null; continue; }
     if (section === 'goal') goal.push(lines[i]);
     else if (section === 'logbook') {
-      const m = /^-\s+(.*)$/.exec(lines[i].trim()); // same rule as cardfile.parse
-      if (m) epic.logbook.push(m[1]);
+      const entry = cardfile.parseLogbookLine(lines[i].trim());
+      if (entry !== null) epic.logbook.push(entry);
     }
   }
   epic.goal = goal.join('\n').trim();

@@ -1396,6 +1396,25 @@ export async function exportBoard({ scope, project } = {}) {
   return { ok: true, nodeId: localNodeId(), scope, projects, projectEpics, crossEpics };
 }
 
+// `s` without its trailing slashes. An index loop rather than `/\/+$/`: that
+// unanchored regex rescans the slash run from every start position, quadratic in
+// a peerUrl the unauthenticated /api/sync/pull body supplies.
+export function stripTrailingSlashes(s) {
+  let end = s.length;
+  while (end > 0 && s[end - 1] === '/') end--;
+  return s.slice(0, end);
+}
+
+// The number an id ends in, trailing whitespace ignored (`2026-0042` → 42); 0
+// when it ends in no digit. What `/(\d+)\s*$/` captured, found without that
+// unanchored regex's quadratic rescan.
+export function trailingIdNumber(id) {
+  const s = String(id ?? '').trimEnd();
+  let start = s.length;
+  while (start > 0 && s[start - 1] >= '0' && s[start - 1] <= '9') start--;
+  return start === s.length ? 0 : Number.parseInt(s.slice(start), 10);
+}
+
 export async function syncPull({ peerUrl, scope, project } = {}) {
   if (scope !== 'all' && scope !== 'project') {
     return fail('INVALID_STATE', "scope must be 'project' or 'all'");
@@ -1406,7 +1425,7 @@ export async function syncPull({ peerUrl, scope, project } = {}) {
     const u = new URL(peerUrl);
     if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('protocol');
     host = u.hostname;
-    base = `${u.origin}${u.pathname}`.replace(/\/+$/, '');
+    base = stripTrailingSlashes(`${u.origin}${u.pathname}`);
   } catch {
     return fail('INVALID_STATE', 'peerUrl must be an absolute http(s) URL');
   }
@@ -1471,11 +1490,10 @@ function mergeProject(project, remoteCards, remoteEpics, summary) {
   // Seed from the persisted floor (store.js's nextId uses the same one) so a
   // locally-deleted high-numbered card can't make this allocator reuse its id.
   let maxNum = store.idFloor(project);
-  const idNum = (id) => { const m = /(\d+)\s*$/.exec(id ?? ''); return m ? Number.parseInt(m[1], 10) : 0; };
   for (const c of localCards) {
     localByUid.set(c.uid, c);
     usedIds.add(c.id);
-    maxNum = Math.max(maxNum, idNum(c.id));
+    maxNum = Math.max(maxNum, trailingIdNumber(c.id));
   }
   const year = new Date().getFullYear();
   const allocId = () => {
