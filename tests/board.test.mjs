@@ -929,6 +929,43 @@ function writeBoardLevelPlan(rel, body) {
 // The board's ingest destination for a card.
 function ingestDest(project, id) { return path.join(plansDir(project), `${id}.md`); }
 
+// Store `link` as a card's plan straight through the store, bypassing set-time validation —
+// the state a sync peer's frontmatter leaves behind.
+function storePlanLink(project, id, link) {
+  const task = store.readCardById(project, id);
+  store.writeCard(project, task.state, { ...task, plan: link });
+}
+
+// Pins: an Object.prototype name is an unknown scheme on the set path — a refusal, not a
+// TypeError thrown out of the lock.
+test('update_card plan with a constructor: scheme -> INVALID_STATE', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileCard({ project: 'demo', title: 't' });
+    const r = await board.updateCard({ project: 'demo', id, fields: { plan: 'constructor:x.md' } });
+    assert.equal(r.code, 'INVALID_STATE');
+    assert.match(r.reason, /^unknown plan link scheme/);
+    assert.equal((await board.readCard({ project: 'demo', id })).card.plan, null);
+  } finally { await cleanup(root); }
+});
+
+// Pins: a STORED constructor: link (as a peer could leave one) is ungrammatical on read —
+// plan_path null and plan_missing, never a throw.
+test('read_card with a stored constructor: plan link -> ok, plan_path null', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileCard({ project: 'demo', title: 't' });
+    storePlanLink('demo', id, 'constructor:x.md');
+    const r = await board.readCard({ project: 'demo', id, includePlan: true });
+    assert.equal(r.ok, true);
+    assert.equal(r.plan_path, null);
+    assert.equal(r.plan_body, null);
+    assert.equal(r.plan_missing, true);
+  } finally { await cleanup(root); }
+});
+
 test('update_card sets a board: plan link; read_card returns plan_path', async () => {
   const root = await freshRoot();
   useProjects(['demo']);

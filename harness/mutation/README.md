@@ -106,6 +106,7 @@ sites, the row says which ones to mutate separately.
 | mutant | killed by |
 | --- | --- |
 | index `handlers` without `Object.hasOwn` in `mcp.handle` | `an Object.prototype key is an unknown tool` (`tests/mcp.test.mjs`) and `a deeply nested tool body cannot take the server down` (`tests/server.test.mjs`) |
+| `scheme in BASE_DIR` instead of `Object.hasOwn(BASE_DIR, scheme)` in `parsePlanLink` | `planLink: an Object.prototype name is an unknown scheme` (`tests/planLink.test.mjs`); on the set path `update_card plan with a constructor: scheme -> INVALID_STATE`, on the read path `read_card with a stored constructor: plan link -> ok, plan_path null` (`tests/board.test.mjs`) |
 
 ## The UI, the server and the line parsers: gradeable vs harness-only
 

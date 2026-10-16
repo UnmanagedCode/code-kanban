@@ -214,7 +214,7 @@ malformed envelope or an unexpected exception.
     pointer — pass `repo:<rel>` explicitly for that. Both `update_card` and `file_card` return the
     resolved `plan` link when the field was part of the call.
     Refused `INVALID_STATE`: an empty value, a non-string, an embedded newline (frontmatter is one
-    verbatim line), any other scheme (`file:`, `http:`, `C:\…`), an absolute path **after an
+    verbatim line), any other scheme (`file:`, `http:`, `C:\…`, and an `Object.prototype` name such as `constructor:` — a scheme is known only as an own key of `src/planLink.js`'s scheme table), an absolute path **after an
     explicit scheme** (`board:/abs` — the scheme makes it a pointer, and a pointer must be
     relative), and `../` escaping a base. Refused `PLAN_UNKNOWN` when a **pointer** is grammatical
     but resolves to no regular file inside its base (incl. via a symlink out of it), **and** when
