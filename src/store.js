@@ -17,8 +17,9 @@ export function ensureProjectDirs(project) {
 }
 
 // Atomic write: tmp file in the same dir + rename (rename is atomic within a
-// filesystem, so a reader never sees a half-written card).
-function atomicWrite(file, content) {
+// filesystem, so a reader never sees a half-written card). Exported for
+// board.js's plan ingest, which writes its copy the same way.
+export function atomicWrite(file, content) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
   fs.writeFileSync(tmp, content);

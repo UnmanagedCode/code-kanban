@@ -44,19 +44,20 @@ still run and report, but don't affect the exit code.
 
 | mutant | site | why unkillable |
 | --- | --- | --- |
-| drop the self-copy guard | `ingestPlanFile`, `src/board.js` | With or without the guard, **nothing is written**: libuv opens the destination `O_WRONLY\|O_CREAT` (no `O_TRUNC`), compares `st_dev`/`st_ino` and returns success. Verified by `strace` on Node v24.18.0, Linux. |
-| `source === dest` string compare instead of realpaths | same | Same reason — the string compare misses the symlink form, but the copy it then performs is still a no-op. |
+| drop the self-copy guard | `ingestPlanFile`, `src/board.js` | With or without the guard the destination ends up byte-identical: the source's bytes are read from its open fd **before** the destination is replaced, and the replace is `store.atomicWrite`'s tmp-file + rename, so a self-copy rewrites the same bytes. Only the destination's inode/mtime differ, which no content-level test reads. |
+| `source === dest` string compare instead of realpaths | same | Same reason — the string compare misses the symlink form, but the rewrite it then performs leaves the same bytes. |
 | `epicLockKey` returns `t.project` for **every** kind (so a cross epic's writes take `withLock(undefined)` instead of `CROSS_LOCK`) | `epicLockKey`, `src/board.js` | Changing the key changes the exclusion domain of **every `withLock(CROSS_LOCK)` holder that read-modify-writes a cross-epic record** — `logEpic`, `createCrossEpic`, `exportBoard`'s cross backfill, and `syncPull`'s `mergeCrossEpics`. All four critical sections are **`await`-free**, so on Node's single thread none can interleave with another whatever key it holds, and every write stays atomic; the reachable orderings are all legal serial orders, so no deterministic test can distinguish them. Same argument `.wiki/architecture/file-store-layout.md` records for the slug guard's two-lock design. **Not dead code — do not delete the branch:** the two values differ semantically and are indistinguishable only while that invariant holds; the branch is what keeps `logEpic` in the same exclusion domain as the other three writers. **Re-test condition:** no `await` may appear inside ANY `withLock(CROSS_LOCK)` callback — the first one to appear makes this mutant killable and the code defective. (The only await-inside-a-lock in the codebase today is `moveCard`, on a per-project key, cards only.) *Waived by owner 2026-08-23; equivalence independently measured by mutation review round 2, not by the author.* |
 | drop the `/mcp` route's try/catch around `mcp.handle` and the response write | `r.post('/mcp')`, `src/routes.js` | A backstop no input reaches: with `Object.hasOwn` dispatch in `src/mcp.js`, every `/mcp` body is built by board.js or is a fixed `{error}` string, so none carries caller-shaped depth and `res.json` cannot throw. `a deeply nested tool body cannot take the server down` (`tests/server.test.mjs`) stays green without it. **Re-test condition:** any tool result or envelope that can carry caller-shaped depth (an argument echoed back, a peer value passed through) makes this mutant killable by that test's shape. |
 | drop `Object.hasOwn` from `shapeBody`'s `RAW_TEXT` lookup | `shapeBody`, `src/mcp.js` | `shapeBody` runs only after `handle` has admitted `tool` as an own key of `handlers`, and no handler name is an `Object.prototype` member, so the lookup never sees an inherited key. Kept so every request-keyed lookup reads the same way (`.wiki/gotchas/request-keyed-lookups.md`). **Re-test condition:** a tool whose name is an `Object.prototype` member, or a `shapeBody` caller that skips `handle`'s check. |
 
-Waiver reason to record: *"owner 2026-08-11: guard kept as insurance against libuv's UNSPECIFIED
-same-inode behaviour (node's fs.copyFile docs promise nothing about it) on an unrecoverable path —
-the destination is the only copy of the plan. Behaviourally unobservable on Linux/libuv, so no test
-can kill it. See .wiki/gotchas/plan-link-and-sync-gap.md."*
+Waiver reason to record: *"owner 2026-08-11: guard kept so a self-copy is a true no-op on an
+unrecoverable path — the destination is the only copy of the plan. Its removal rewrites identical
+bytes (read from the open source before an atomic replace), so no content-level test can kill it.
+See .wiki/gotchas/plan-link-and-sync-gap.md."*
 
-Everything else on that feature must die — notably: drop the `mkdirSync`; `renameSync` instead of
-`copyFileSync`; name the destination from the source basename; skip the copy when the destination
+Everything else on that feature must die — notably: drop the destination dir creation
+(`store.atomicWrite`'s `mkdirSync`); move the source instead of copying it; name the destination
+from the source basename; skip the copy when the destination
 exists; ingest a `board:`/`repo:` pointer; treat a bare relative path as an ingest; set `card.plan`
 before the source is validated; write the card before the copy in `fileCard`.
 
@@ -120,8 +121,14 @@ sites, the row says which ones to mutate separately.
 | `ingestPlanFile`: judge `.md` on the given path rather than the realpath | `ingest: a plans-dir .md symlink to a non-.md file under PROJECTS_ROOT -> PLAN_SOURCE_DENIED` |
 | `ingestPlanFile`: drop the `.md` check, or compare it case-sensitively | `ingest: a non-.md file under PROJECTS_ROOT -> PLAN_SOURCE_DENIED` / `ingest: a plans-dir source of exactly 1 MiB, named .MD, is ingested` |
 | `ingestPlanFile`: drop the size cap, or use `>=` | `ingest: a plans-dir source of 1 MiB + 1 byte -> PLAN_SOURCE_DENIED` / `ingest: a plans-dir source of exactly 1 MiB, named .MD, is ingested` |
-| `ingestPlanFile`: copy from `source` rather than `real` | `ingest copies from the realpath the allowlist checked` (spies `fs.copyFileSync`'s source argument: the bytes are the same unless the link is swapped mid-call) |
-| `ingestPlanFile`: drop `isFile` | `ingest: a FIFO in the plans dir -> PLAN_UNKNOWN (not a regular file), without blocking` — the test's writer process completes the FIFO open, so the mutant reports success rather than hanging |
+| `ingestPlanFile`: open `source` instead of `real` | `ingest: a file swapped in at the checked path after the checks never reaches the board` — its source is a symlink, so the no-follow open of the link path fails |
+| `ingestPlanFile`: re-open the path for the read (`readFileSync(real)`, `copyFileSync(real, dest)`) instead of reading the open fd | `ingest: a file swapped in at the checked path after the checks never reaches the board` (a test-side `fs` hook renames another file over the path right after the regular-file check) |
+| `ingestPlanFile`: drop `O_NOFOLLOW` from `INGEST_OPEN_FLAGS` | `ingest: a symlink swapped in at the checked path before the open is refused` (a hook swaps a symlink to an outside file in right after the realpath) |
+| `ingestPlanFile`: drop `O_NONBLOCK` from `INGEST_OPEN_FLAGS` | `ingest: a FIFO in the plans dir -> PLAN_UNKNOWN (not a regular file), without blocking` — its writer joins only after `WRITER_DELAY_MS`, so a blocking open breaks the elapsed bound instead of hanging |
+| `ingestPlanFile`: drop `isFile` | the same FIFO test — the non-blocking open of a writerless FIFO reads zero bytes, so the mutant ingests an empty plan |
+| `ingestPlanFile`: judge `isFile`/size from `statSync(real)` instead of `fstatSync(fd)` | `ingest: the regular-file check reads the open file, not a file renamed over its path` (a FIFO is opened, then a regular file renamed over its path) |
+| `ingestPlanFile`: drop the `fstat` size check (leaving only the read cap) | `ingest: a source over 1 MiB is refused without being read` (counts `fs.readSync` calls) |
+| `readAtMost`: drop the over-cap result (read without the `max + 1` probe) | `ingest: a source that grows past 1 MiB after the size check -> PLAN_SOURCE_DENIED` |
 | `ingestRoots`: drop or swap a root (the plans dir, or `PROJECTS_ROOT`) | `the conductor attaches a host plan by absolute path over MCP` (`tests/mcp.test.mjs`; the plans dir is outside `PROJECTS_ROOT`) / `update_card plan: an absolute path inside a WORKTREE is copied in` (`PROJECTS_ROOT`) |
 | `safePlanFile`: drop the realpath containment (`isContained(realBase, real)`) | `a board: or repo: link whose realpath is a .md file outside its base is refused on set and missing on read` — its targets are `.md`, so the suffix clause cannot refuse them in containment's place (every other escape fixture targets a non-`.md` file) |
 | `safePlanFile`: drop the `.md` check, or judge it on `resolved.path` instead of the realpath | set path: `a repo: pointer to a non-.md file -> PLAN_UNKNOWN at update_card, file_card and create_epic`; realpath: `a repo: link to a .md symlink naming a non-.md file is refused on set and missing on read` |

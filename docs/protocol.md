@@ -226,7 +226,9 @@ names a record: `CARD_UNKNOWN` / `EPIC_UNKNOWN`, the same refusal as any unknown
     containment first, touching no file, so a path outside the roots is denied whether or not it
     exists; then the realpath (a missing source or dangling link inside a root is `PLAN_UNKNOWN`),
     realpath containment (a symlink out of a root is denied), the suffix, regular-file and size
-    checks. The copy reads the realpath that was checked. Legal forms per surface:
+    checks — taken from ONE non-blocking, no-follow open of the realpath, and the copy is the bytes
+    read from that open file (a symlink swapped in at the checked path is `PLAN_UNKNOWN`; a file
+    renamed over it afterwards is not what gets copied; one grown past the cap is denied). Legal forms per surface:
 
     | `plan` value | `PATCH /api/board/:p/cards/:id` | MCP `update_card` / `file_card` / `create_epic` | `POST /api/board/:p/cards`, `POST /api/board/:p/epics`, `POST /api/epics` |
     |---|---|---|---|

@@ -107,6 +107,25 @@ function ingestRoots() {
   return { lexical, real };
 }
 
+// How ingest opens its source: read-only; non-blocking, so a FIFO's open returns
+// at once instead of waiting for a writer (the regular-file check then refuses
+// it); and not following a symlink at the final component, so one swapped in at
+// the checked realpath is an open error rather than a redirect.
+const INGEST_OPEN_FLAGS = fs.constants.O_RDONLY
+  | (fs.constants.O_NONBLOCK ?? 0) | (fs.constants.O_NOFOLLOW ?? 0);
+
+// The whole of open file `fd`, or null once it holds more than `max` bytes.
+function readAtMost(fd, max) {
+  const buf = Buffer.alloc(max + 1);
+  let off = 0;
+  while (off < buf.length) {
+    const n = fs.readSync(fd, buf, off, buf.length - off, null);
+    if (n === 0) break;
+    off += n;
+  }
+  return off > max ? null : buf.subarray(0, off);
+}
+
 // Ingest: copy an absolute source INTO the board as the owning record's plan
 // file and return the stored `board:<destName>` link. `destDir`/`destName` are
 // supplied by the caller (a card's plans/<id>.md, an epic's plans/epic-<slug>.md,
@@ -125,9 +144,10 @@ function ingestRoots() {
 //   2. realpath — a missing source or dangling link inside a root is PLAN_UNKNOWN;
 //   3. realpath containment, closing a symlink out of a root;
 //   4. the `.md` suffix, on the realpath, so a `.md` NAME for a `.env` is refused;
-//   5. isFile, before anything opens the source (a FIFO would block the open);
-//   6. the size cap.
-// The copy then reads the realpath, so the file checked is the file copied.
+//   5. ONE open of the realpath (INGEST_OPEN_FLAGS); every later step works on
+//      that open file, so a file renamed over the path afterwards changes nothing;
+//   6. isFile, from fstat of the open file;
+//   7. the size cap, from that fstat and again on the bytes actually read.
 // Every denial shares one reason, naming the valid set.
 // -> {link} | a fail('PLAN_UNKNOWN' | 'PLAN_SOURCE_DENIED', …)
 function ingestPlanFile(destDir, destName, source) {
@@ -140,43 +160,42 @@ function ingestPlanFile(destDir, destName, source) {
   catch (e) { return fail('PLAN_UNKNOWN', `cannot read plan file at ${source}: ${e.message}`); }
   if (!roots.real.some((root) => isContained(root, real))) return denied();
   if (!real.toLowerCase().endsWith('.md')) return denied();
-  let stat;
-  try { stat = fs.statSync(real); }
+  let fd;
+  try { fd = fs.openSync(real, INGEST_OPEN_FLAGS); }
   catch (e) { return fail('PLAN_UNKNOWN', `cannot read plan file at ${source}: ${e.message}`); }
-  if (!stat.isFile()) return fail('PLAN_UNKNOWN', `plan source is not a regular file: ${source}`);
-  if (stat.size > PLAN_INGEST_MAX_BYTES) return denied();
-
-  const dest = path.join(destDir, destName);
-  const link = `board:${destName}`;
-  // Self-copy guard — the only special case: re-attaching plans/<id>.md by
-  // absolute path, or via a symlink to it, must be a no-op success. Compared by
-  // REALPATH, not string, since only that catches the symlink form.
-  //
-  // Deliberately kept even though it is (measurably) unobservable here: with the
-  // guard removed, fs.copyFileSync(dest, dest) does NOT damage the file — libuv
-  // opens the destination O_WRONLY|O_CREAT with NO O_TRUNC, compares st_dev/
-  // st_ino and returns success without writing (strace'd on Node v24.18.0). But
-  // that short-circuit is a libuv INTERNAL: node's fs.copyFile docs promise only
-  // that an existing destination is overwritten and say nothing about a source
-  // and destination that are the same file. Betting a data-loss-critical path on
-  // a third-party library's unspecified behaviour is worse than three explicit
-  // lines — in the self-copy case the destination IS the only copy of the plan.
-  // Consequence for coverage: no test can kill the removal of this guard on
-  // Linux/libuv, so that mutant is a WAIVED expected survivor (owner's decision
-  // — see .wiki/gotchas/plan-link-and-sync-gap.md and harness/mutation/README.md).
   try {
-    if (fs.existsSync(dest) && real === fs.realpathSync(dest)) return { link };
-  } catch { /* the destination is unresolvable -> not the same file; fall through */ }
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) return fail('PLAN_UNKNOWN', `plan source is not a regular file: ${source}`);
+    if (stat.size > PLAN_INGEST_MAX_BYTES) return denied();
 
-  try {
+    const dest = path.join(destDir, destName);
+    const link = `board:${destName}`;
+    // Self-copy guard — the only special case: re-attaching plans/<id>.md by
+    // absolute path, or via a symlink to it, is a no-op success. Compared by
+    // REALPATH, not string, since only that catches the symlink form.
+    //
+    // Kept although no content-level test can see it go: the bytes are read
+    // from the open source BEFORE the destination is replaced, and the replace
+    // is an atomic rename, so a self-copy without the guard rewrites identical
+    // bytes. What the guard keeps is a true no-op — the destination's file is not
+    // replaced at all — on the path where it holds the only copy of the plan.
+    // Its removal is a WAIVED expected survivor (owner's decision — see
+    // .wiki/gotchas/plan-link-and-sync-gap.md and harness/mutation/README.md).
+    try {
+      if (fs.existsSync(dest) && real === fs.realpathSync(dest)) return { link };
+    } catch { /* the destination is unresolvable -> not the same file; fall through */ }
+
+    const body = readAtMost(fd, PLAN_INGEST_MAX_BYTES);
+    if (body === null) return denied(); // it grew past the cap after the fstat
     // store.ensureProjectDirs creates plans/, but updateCard never calls it —
-    // a project dir predating that function has none.
-    fs.mkdirSync(destDir, { recursive: true });
-    fs.copyFileSync(real, dest);
+    // atomicWrite creates a missing plans/ (a project dir predating that function).
+    store.atomicWrite(dest, body);
+    return { link };
   } catch (e) {
     return fail('PLAN_UNKNOWN', `could not copy plan file from ${source}: ${e.message}`);
+  } finally {
+    fs.closeSync(fd);
   }
-  return { link };
 }
 
 // The single set-time validator for a caller-supplied plan value, shared by
