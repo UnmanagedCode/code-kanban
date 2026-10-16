@@ -25,7 +25,7 @@ which `fileCard` calls too, so the refusal wording has one home and the two muta
   truthy (`src/cardfile.js:43`), so it was dropped on write and `cardfile.parse` read it back as
   `null` (`src/cardfile.js:81`) — an `{ok:true}` that silently **orphaned the card from its epic**.
   A **truthy non-string** was worse than a refusal: `epicVisibleIn` interpolates its slug into a
-  path template (`src/store.js:175`), so `['ep']` *matched* the real epic `ep` and the array was
+  path template (`store.js`'s `epicPath`), so `['ep']` *matched* the real epic `ep` and the array was
   stored on the card, and `Symbol()` threw a `TypeError` out of the lock. Both closed by `checkEpic`
   (`src/board.js:288`), which `fileCard` calls too — same one-home rule.
 
@@ -43,8 +43,10 @@ presence is `'<key>' in fields` — never truthiness.** `src/board.js:795` (`pri
 reference idiom; the epic gate at `:785` was the last hold-out, and `2026-0032` closed it with
 `checkEpic` — `null` is the clear sentinel (as for `plan`/`priority`/`acceptance`/`owner`), and
 everything else must be a non-empty string. A side effect of the type check: a truthy non-string
-`epic` moved from `EPIC_UNKNOWN` to `INVALID_STATE`. Slug *syntax* is still not re-checked at the
-gate — a string slug containing `/` or `..` reaching `path.join` is card `2026-0036`.
+`epic` moved from `EPIC_UNKNOWN` to `INVALID_STATE`. Slug *syntax* is not re-checked at the gate,
+and needs no check there: the store's record-name rule (`store.isRecordName`, see
+[[file-store-layout]]) makes a slug containing `/`, `\` or `..` name no record, so it is
+`EPIC_UNKNOWN` like any other unknown slug and is never stored.
 
 `2026-0033` closed the title hole in the same prologue: `checkTitle` now also refuses a newline, because a `title` newline does not truncate but
 injects sibling frontmatter keys — see [[frontmatter-injection-via-one-line-keys]] for the

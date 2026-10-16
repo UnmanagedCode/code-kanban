@@ -19,6 +19,22 @@ Epic files carry the same two hand-rolled halves for both kinds — `store.js`'s
 `projects: […]`). An epic record holds `slug, title, project|projects, plan?, created, updated?,
 node?` + `## Goal` + `## Logbook`.
 
+**Record names are one filename segment (`store.isRecordName`).** A card's file is `<id>.md` and an
+epic's `<slug>.md`, and both names arrive from callers: an MCP argument, an HTTP path parameter
+(Express decodes `%2F`), a card's `epic` field, a sync peer's frontmatter. So a name is a record
+only when it matches `^[A-Za-z0-9._-]+$` and is not `.` or `..`. The rule lives in the store, not
+at each surface, because the store is where every record path is built (`recordFile`):
+- the readers (`findCardFile`, `epicExists`, `readEpic`, `crossEpicExists`, `readCrossEpic`) answer
+  "no such record" for a non-segment, so every board.js path already refuses `CARD_UNKNOWN` /
+  `EPIC_UNKNOWN` with no check of its own — reads, `move_card`, `delete_card`, `log_card` by id,
+  `read_epic`/`log_epic`, and a card's `epic` through `epicVisibleIn`;
+- the path builders (`cardPath`, `epicPath`, `crossEpicPath`) **throw** `unsafe record name`, the
+  backstop for every writer.
+
+The pattern is the same as `projects.NAME_RE`, and it admits every id the board holds, legacy
+non-shape ids (`zz-legacy`, `2026-5a`) included. Sync applies the stricter `ID_SHAPE` to a peer's
+card ids on top (see [[cross-instance-sync]]).
+
 A card's **state is its directory** — never stored in the file; `store.js` injects it on read.
 Card files: minimal `---` frontmatter (`id, title, project, epic?, priority?, created, owner?,
 depends_on`) + `## Goal`, `## Acceptance` (checkboxes), `## Logbook` (append-only). Parsed by

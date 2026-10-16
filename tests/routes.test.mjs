@@ -54,6 +54,21 @@ test('GET /api/projects returns the catalog', async () => {
   });
 });
 
+// Pins: a card id arriving as an encoded path parameter is still one segment or no record — the
+// route answers CARD_UNKNOWN rather than reading the `.md` file the decoded id points at.
+test('GET a card by an encoded traversing id -> 200 CARD_UNKNOWN, the file it names is not read', async () => {
+  await withServer(async ({ json }) => {
+    const root = process.env.PROJECTS_ROOT;
+    fs.writeFileSync(path.join(root, 'sentinel.md'), '---\nid: 2026-0099\ntitle: SENTINEL\n---\n');
+    await board.fileCard({ project: 'demo', title: 'real' }); // the project's dirs exist
+    const id = encodeURIComponent('../../../../../sentinel');
+    const { status, body } = await json(`/api/board/demo/cards/${id}`);
+    assert.equal(status, 200);
+    assert.equal(body.ok, false);
+    assert.equal(body.code, 'CARD_UNKNOWN');
+  });
+});
+
 test('GET /api/board/meta returns states + transitions from the single source', async () => {
   await withServer(async ({ json }) => {
     const { status, body } = await json('/api/board/meta');

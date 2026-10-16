@@ -277,13 +277,14 @@ function checkGoal(value) {
 // at update_card — the same sentinel plan/priority/acceptance/owner use — and means
 // "file it unlinked" at file_card. Everything else must be a non-empty string; see
 // [[update-card-verbatim-fields]] for what each wrong shape did on disk pre-fix.
-// The typeof check is NOT redundant with the existence check below it: epicVisibleIn
-// stringifies its slug into a path template (src/store.js:175), so `['ep']` would
-// otherwise MATCH the real epic `ep` and be stored on the card as an array.
+// The typeof check is NOT redundant with the existence check below it: it is what
+// makes a wrong-typed value INVALID_STATE, where the store's record-name rule alone
+// would answer the weaker EPIC_UNKNOWN (`['ep']` names no record).
 // EXISTENCE is deliberately not checked here (it needs fs, and file_card defers it
 // into the lock): a well-formed slug naming no record is still EPIC_UNKNOWN. Slug
-// SYNTAX is not re-checked either — SLUG_RE is createEpic's gate, and a traversing
-// slug reaching path.join is tracked as board card `2026-0036`.
+// SYNTAX is not re-checked either — SLUG_RE is createEpic's gate, and the store's
+// record-name rule (store.isRecordName) bounds what a slug can name: a `/` or `..`
+// names no record, so it is EPIC_UNKNOWN too.
 // -> null when acceptable, else a fail().
 function checkEpic(value) {
   if (value === null) return null;

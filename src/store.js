@@ -25,12 +25,29 @@ function atomicWrite(file, content) {
   fs.renameSync(tmp, file);
 }
 
+// A card id or epic slug names its record's FILE (`<name>.md`), so it must be one
+// plain filename segment: a `/`, a `\\` or a `..` would point the path anywhere.
+// The ONE rule for that, kept here because every record path is built here. Every
+// reader below answers "no such record" for a non-segment (so board.js refuses
+// CARD_UNKNOWN / EPIC_UNKNOWN with no check of its own), and every path builder
+// throws on one, so a writer cannot be steered outside the board either.
+const RECORD_NAME_RE = /^[A-Za-z0-9._-]+$/;
+export function isRecordName(name) {
+  return typeof name === 'string' && RECORD_NAME_RE.test(name) && name !== '.' && name !== '..';
+}
+
+function recordFile(dir, name) {
+  if (!isRecordName(name)) throw new Error(`unsafe record name: ${JSON.stringify(name)}`);
+  return path.join(dir, `${name}.md`);
+}
+
 function cardPath(project, state, id) {
-  return path.join(stateDir(project, state), `${id}.md`);
+  return recordFile(stateDir(project, state), id);
 }
 
 // Locate a card file by id across all state dirs. Returns {file, state} or null.
 export function findCardFile(project, id) {
+  if (!isRecordName(id)) return null;
   for (const state of STATES) {
     const file = cardPath(project, state, id);
     if (fs.existsSync(file)) return { file, state };
@@ -172,11 +189,11 @@ export function listCards(project, { state } = {}) {
 // ---- epics ----
 
 function epicPath(project, slug) {
-  return path.join(epicsDir(project), `${slug}.md`);
+  return recordFile(epicsDir(project), slug);
 }
 
 export function epicExists(project, slug) {
-  return fs.existsSync(epicPath(project, slug));
+  return isRecordName(slug) && fs.existsSync(epicPath(project, slug));
 }
 
 // ---- the shared epic codec ----
@@ -268,6 +285,7 @@ export function writeEpic(project, epic) {
 }
 
 export function readEpic(project, slug) {
+  if (!isRecordName(slug)) return null;
   const file = epicPath(project, slug);
   if (!fs.existsSync(file)) return null;
   return parseEpicFile(fs.readFileSync(file, 'utf8'), {
@@ -289,11 +307,11 @@ export function listEpicSlugs(project) {
 // a card's depends_on: `[a, b]`) instead of a single `project`.
 
 function crossEpicPath(slug) {
-  return path.join(crossEpicsDir(), `${slug}.md`);
+  return recordFile(crossEpicsDir(), slug);
 }
 
 export function crossEpicExists(slug) {
-  return fs.existsSync(crossEpicPath(slug));
+  return isRecordName(slug) && fs.existsSync(crossEpicPath(slug));
 }
 
 export function writeCrossEpic(epic) {
@@ -304,6 +322,7 @@ export function writeCrossEpic(epic) {
 }
 
 export function readCrossEpic(slug) {
+  if (!isRecordName(slug)) return null;
   const file = crossEpicPath(slug);
   if (!fs.existsSync(file)) return null;
   return parseEpicFile(fs.readFileSync(file, 'utf8'), {

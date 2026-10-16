@@ -317,6 +317,35 @@ test('epic write->read round-trips the plan link and the logbook (project AND cr
   } finally { await cleanup(root); }
 });
 
+// Pins: the store's path builders refuse a name that is not one plain segment, so no writer can
+// be steered outside the board even by a caller that skipped the readers' checks.
+test('writeCard, writeEpic and writeCrossEpic throw on a traversing name and write nothing outside the board', async () => {
+  const root = await freshRoot();
+  try {
+    store.ensureProjectDirs('demo');
+    const outside = () => fs.readdirSync(root).filter((n) => n !== '.conduct');
+    const epic = { slug: '../../../../../escaped', title: 't', created: '2026-01-01T00:00:00.000Z', goal: '', logbook: [] };
+    assert.throws(() => store.writeCard('demo', 'triage', baseTask('../../../../../escaped')), /unsafe record name/);
+    assert.throws(() => store.writeEpic('demo', epic), /unsafe record name/);
+    assert.throws(() => store.writeCrossEpic({ ...epic, slug: '../../../escaped', projects: ['a', 'b'] }), /unsafe record name/);
+    for (const name of ['', '.', '..', 'a/b', 'a\\b', 'a b']) {
+      assert.throws(() => store.writeCard('demo', 'triage', baseTask(name)), /unsafe record name/, JSON.stringify(name));
+    }
+    assert.deepEqual(outside(), []);
+  } finally { await cleanup(root); }
+});
+
+// Pins: the rule admits every id shape the board holds — minted, past 9999, and the legacy
+// non-shape ids local reads tolerate — and refuses only non-segments.
+test('isRecordName: one plain filename segment, nothing else', () => {
+  for (const ok of ['2026-0001', '2026-10000', 'zz-legacy', '2026-5a', '999-9999', 'auth', 'a.b_c-d']) {
+    assert.equal(store.isRecordName(ok), true, ok);
+  }
+  for (const bad of ['', '.', '..', '../x', 'a/b', 'a\\b', 'a b', 'a\nb', 42, null, undefined, ['a']]) {
+    assert.equal(store.isRecordName(bad), false, JSON.stringify(bad) ?? String(bad));
+  }
+});
+
 test('ensureProjectDirs creates plans/ (the board: plan-link base)', async () => {
   const root = await freshRoot();
   try {

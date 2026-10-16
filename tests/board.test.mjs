@@ -1589,6 +1589,104 @@ test('list_cards summary carries the plan link', async () => {
   } finally { await cleanup(root); }
 });
 
+// ---- a card id or epic slug names a record only as one plain filename segment ----
+
+// A sentinel `.md` file in the temp root, OUTSIDE .conduct/kanban, and the traversing names that
+// reach it: a card's column dir and a project epic's epics/ dir both sit five levels below the
+// root, the cross-epic dir three.
+const CARD_TRAVERSAL = '../../../../../sentinel';
+const CROSS_TRAVERSAL = '../../../sentinel';
+const SENTINEL = '---\nid: 2026-0099\ntitle: SENTINEL\nprojects: [demo, other]\n---\n## Goal\nkeep out\n';
+function seedSentinel(root) {
+  const file = path.join(root, 'sentinel.md');
+  fs.writeFileSync(file, SENTINEL);
+  return file;
+}
+
+// Pins: every card reader refuses a traversing id as CARD_UNKNOWN, and neither the move nor the
+// delete touches the file it names.
+test('a traversing card id is CARD_UNKNOWN on every card path; the sentinel is byte-identical', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    store.ensureProjectDirs('demo');
+    const sentinel = seedSentinel(root);
+    const id = CARD_TRAVERSAL;
+    const results = {
+      readCard: await board.readCard({ project: 'demo', id }),
+      readCardLog: await board.readCardLog({ project: 'demo', id }),
+      moveCard: await board.moveCard({ project: 'demo', id, to: 'backlog' }),
+      deleteCard: await board.deleteCard({ project: 'demo', id }),
+      logCard: await board.logCard({ project: 'demo', id, entry: 'x' }),
+    };
+    for (const [name, r] of Object.entries(results)) {
+      assert.equal(r.code, 'CARD_UNKNOWN', name);
+      assert.equal(fs.readFileSync(sentinel, 'utf8'), SENTINEL, `${name} left the sentinel alone`);
+    }
+  } finally { await cleanup(root); }
+});
+
+// Pins: the epic readers refuse a traversing slug as EPIC_UNKNOWN — the project-epic reader (with
+// a project) and the cross-epic reader (without) — and log_epic writes nothing through it.
+test('a traversing epic slug is EPIC_UNKNOWN on read_epic and log_epic; the sentinel is unchanged', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    store.ensureProjectDirs('demo');
+    const sentinel = seedSentinel(root);
+    const calls = {
+      'readEpic (project)': await board.readEpic({ project: 'demo', slug: CARD_TRAVERSAL }),
+      'logEpic (project)': await board.logEpic({ project: 'demo', slug: CARD_TRAVERSAL, entry: 'x' }),
+      'readEpic (cross)': await board.readEpic({ slug: CROSS_TRAVERSAL }),
+      'logEpic (cross)': await board.logEpic({ slug: CROSS_TRAVERSAL, entry: 'x' }),
+    };
+    for (const [name, r] of Object.entries(calls)) {
+      assert.equal(r.code, 'EPIC_UNKNOWN', name);
+      assert.equal(fs.readFileSync(sentinel, 'utf8'), SENTINEL, `${name} left the sentinel alone`);
+    }
+  } finally { await cleanup(root); }
+});
+
+// Pins: a card's `epic` must name a record, so a traversing slug is EPIC_UNKNOWN at update_card
+// and file_card and is never stored — through the project-epic check (five levels) and the
+// cross-epic check (three). The cross form also keeps the create hint: no cross epic has that slug.
+test('a traversing epic slug on a card is EPIC_UNKNOWN and never stored', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    store.ensureProjectDirs('demo');
+    seedSentinel(root);
+    const { id } = await board.fileCard({ project: 'demo', title: 't' });
+    for (const epic of [CARD_TRAVERSAL, CROSS_TRAVERSAL]) {
+      const u = await board.updateCard({ project: 'demo', id, fields: { epic } });
+      assert.equal(u.code, 'EPIC_UNKNOWN', epic);
+      assert.match(u.reason, /; or create it with create_epic$/, epic);
+      const f = await board.fileCard({ project: 'demo', title: 'u', epic });
+      assert.equal(f.code, 'EPIC_UNKNOWN', epic);
+    }
+    assert.equal((await board.readCard({ project: 'demo', id })).card.epic, null);
+    assert.equal((await board.listCards({ project: 'demo' })).cards.length, 1);
+  } finally { await cleanup(root); }
+});
+
+// Pins: update_card refuses a traversing id BEFORE the plan ingest, so the sentinel is neither
+// read as a card nor overwritten by the copy, and no plan file lands anywhere.
+test('update_card with a traversing id and an absolute plan -> CARD_UNKNOWN, nothing copied', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    store.ensureProjectDirs('demo');
+    const sentinel = seedSentinel(root);
+    const source = path.join(root, 'demo', 'plan.md');
+    fs.mkdirSync(path.dirname(source), { recursive: true });
+    fs.writeFileSync(source, '# not for the sentinel');
+    const r = await board.updateCard({ project: 'demo', id: CARD_TRAVERSAL, fields: { plan: source, title: 'hijack' } });
+    assert.equal(r.code, 'CARD_UNKNOWN');
+    assert.equal(fs.readFileSync(sentinel, 'utf8'), SENTINEL);
+    assert.deepEqual(fs.readdirSync(plansDir('demo')), []);
+  } finally { await cleanup(root); }
+});
+
 // ---- priority ----------------------------------------------------------
 //
 // The field is an enum (src/priority.js) plus a first-class UNSET state. These
