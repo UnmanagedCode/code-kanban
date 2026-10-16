@@ -23,6 +23,17 @@ test('unknown tool -> 200 {error}', async () => {
   assert.match(res.body.error, /unknown tool/);
 });
 
+// Pins: a tool name resolves only as an OWN key of the dispatch map. An inherited
+// Object.prototype member is a function (or an object) too, so indexing the map with it
+// dispatched `constructor` as `Object(args)` and echoed the caller's arguments back.
+test('an Object.prototype key is an unknown tool', async () => {
+  for (const tool of ['constructor', 'toString', 'hasOwnProperty', '__proto__', 'valueOf', 'handle']) {
+    const res = await mcp.handle({ tool, arguments: { echo: 'me' } });
+    assert.equal(res.status, 200, tool);
+    assert.deepEqual(res.body, { error: `unknown tool: ${tool}` }, tool);
+  }
+});
+
 test('success rides in {result}', async () => {
   const root = await freshRoot();
   useProjects(['demo']);

@@ -39,7 +39,10 @@ to `POST /api/mcp`:
   `updated` — minus the three body sections that moved into the text block.
   The channel is **MCP-only**: the GUI's HTTP routes bypass `src/mcp.js` and keep reading these as
   plain JSON fields.
-- Missing/empty `tool` → **400** `{error}`; unknown tool name → 200 `{error}`.
+- Missing/empty `tool` → **400** `{error}`; unknown tool name → 200 `{error}` (`unknown tool: <tool>`).
+  A tool name resolves as an **own key** of `src/mcp.js`'s dispatch map only, so an
+  `Object.prototype` member (`constructor`, `toString`, `__proto__`, …) is an unknown tool too.
+- A response body that cannot be serialised → **500** `{error}`.
 - `caller.sessionId` may be `null` when the host can't resolve the caller.
 
 ## Result payloads (the `{ok}` domain convention)

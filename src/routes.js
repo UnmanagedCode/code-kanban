@@ -48,10 +48,16 @@ export function buildRoutes() {
 
   // MCP bridge for code-conductor: {tool, arguments, caller} in, {result}|{error}
   // out. Tool-level outcomes (unknown tool, refusals) are normal results, not
-  // transport failures — see docs/protocol.md. mcp.handle catches its own throws.
+  // transport failures — see docs/protocol.md. mcp.handle catches its own throws;
+  // the catch here covers the response write (a body JSON cannot serialise), which
+  // would otherwise reject outside any handler and end the process.
   r.post('/mcp', async (req, res) => {
-    const { status, body } = await mcp.handle(req.body);
-    res.status(status).json(body);
+    try {
+      const { status, body } = await mcp.handle(req.body);
+      res.status(status).json(body);
+    } catch (e) {
+      if (!res.headersSent) res.status(500).json({ error: e.message });
+    }
   });
 
   // ---- web GUI routes ----
