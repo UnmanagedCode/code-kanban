@@ -65,7 +65,8 @@ Board DATA lives in the conductor's tree, not this repo:
 ```
 
 - **No git writes from the plugin** (decision — see `.wiki/architecture/file-store-layout.md`).
-  Moves are plain fs (write new dir + unlink old); writes are tmp-file + `rename` (atomic).
+  Moves are plain fs (write new dir + unlink old); writes are tmp-file + `rename` (atomic;
+  `store.atomicWrite` removes its temp file when the write or rename fails, then rethrows).
   Per-card history lives in the Logbook; git snapshotting of `.conduct` is the conductor's job.
 - **IDs**: `${year}-${NNNN}`, where `NNNN` is a project-wide monotonic sequence
   (`max existing + 1`, does **not** reset on year rollover). Assigned inside the project mutex.

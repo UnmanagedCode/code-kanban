@@ -122,6 +122,22 @@ test('atomicWrite leaves no .tmp- residue', async () => {
   } finally { await cleanup(root); }
 });
 
+// Pins: a write whose rename fails leaves no temp file behind, and the caller sees the rename's
+// own error. The failure is injected through a scoped fs.renameSync hook, restored afterwards.
+test('atomicWrite removes its temp file and rethrows when the rename fails', async () => {
+  const root = await freshRoot();
+  const realRename = fs.renameSync;
+  try {
+    store.ensureProjectDirs('demo');
+    const boom = Object.assign(new Error('EXDEV: injected rename failure'), { code: 'EXDEV' });
+    fs.renameSync = () => { throw boom; };
+    try {
+      assert.throws(() => store.writeCard('demo', 'triage', baseTask('2026-0001')), (e) => e === boom);
+    } finally { fs.renameSync = realRename; }
+    assert.deepEqual(fs.readdirSync(stateDir('demo', 'triage')).filter((n) => n.includes('.tmp-')), []);
+  } finally { fs.renameSync = realRename; await cleanup(root); }
+});
+
 // Characterization pins for the two epic codec PAIRS, written before the
 // serializer/parser halves were factored out of writeEpic/readEpic and
 // writeCrossEpic/readCrossEpic. They fix the pre-extraction behaviour of every

@@ -22,8 +22,14 @@ export function ensureProjectDirs(project) {
 export function atomicWrite(file, content) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-  fs.writeFileSync(tmp, content);
-  fs.renameSync(tmp, file);
+  try {
+    fs.writeFileSync(tmp, content);
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    // Best effort: a failed write or rename must not leave its temp file behind.
+    try { fs.rmSync(tmp, { force: true }); } catch { /* the original error is the one to report */ }
+    throw e;
+  }
 }
 
 // A card id or epic slug names its record's FILE (`<name>.md`), so it must be one
