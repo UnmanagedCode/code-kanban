@@ -331,6 +331,55 @@ test('malformed remote cards (bad/missing id or state) are skipped, not written'
   });
 });
 
+// Pins: a peer card id is one `<year>-<number>` token or it is skipped. The id names the card's
+// file, so an id with `..` segments wrote that file wherever the segments pointed — here, over a
+// sentinel `.md` file in the temp root, outside .conduct/kanban.
+test('a peer card id that traverses out of the board is skipped; the sentinel is untouched', async () => {
+  await withRoot(async () => {
+    const root = process.env.PROJECTS_ROOT;
+    const sentinel = path.join(root, 'sentinel.md');
+    fs.writeFileSync(sentinel, 'SENTINEL');
+    // <root>/.conduct/kanban/projects/alpha/triage/ is five levels below <root>.
+    const evil = '../../../../../sentinel';
+    serveDump({ alpha: [
+      card({ id: '2026-0001', uid: 'u-ok', title: 'Good' }),
+      card({ id: evil, uid: 'u-evil', title: 'Evil' }),
+    ] });
+    const r = await pull('project', 'alpha');
+    assert.equal(r.ok, true);
+    assert.equal(fs.readFileSync(sentinel, 'utf8'), 'SENTINEL');
+    assert.deepEqual(r.summary.skippedCards, [{ project: 'alpha', id: evil }]);
+    assert.equal(r.summary.added, 1);
+    assert.equal(byTitle('alpha', 'Good').id, '2026-0001');
+    assert.equal(byTitle('alpha', 'Evil'), undefined);
+  });
+});
+
+// Pins: the peer id rule is ID_SHAPE AND at most 64 characters. A shape id past the bound and a
+// legacy non-shape id are both skipped; a shape id at the bound still merges.
+test('a peer card id longer than 64, or not <year>-<number>, is skipped', async () => {
+  await withRoot(async () => {
+    const long = `2026-${'1'.repeat(60)}`; // 65 characters
+    const atBound = `2026-${'2'.repeat(59)}`; // 64 characters
+    assert.equal(long.length, 65);
+    assert.equal(atBound.length, 64);
+    serveDump({ alpha: [
+      card({ id: long, uid: 'u-long', title: 'Long' }),
+      card({ id: 'zz-legacy', uid: 'u-legacy', title: 'Legacy' }),
+      card({ id: atBound, uid: 'u-bound', title: 'Bound' }),
+    ] });
+    const r = await pull('project', 'alpha');
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.summary.skippedCards, [
+      { project: 'alpha', id: long },
+      { project: 'alpha', id: 'zz-legacy' },
+    ]);
+    assert.equal(byTitle('alpha', 'Long'), undefined);
+    assert.equal(byTitle('alpha', 'Legacy'), undefined);
+    assert.equal(byTitle('alpha', 'Bound').id, atBound);
+  });
+});
+
 test('peerUrl to a loopback/private host is blocked (SSRF guard)', async () => {
   await withRoot(async () => {
     for (const host of [

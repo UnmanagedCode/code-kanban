@@ -272,7 +272,8 @@ lists (`list_cards`, `read_epic`) are ordered **column (`STATES` order) → prio
 after every judged level, so an unjudged card never outranks a judged one. The id tiebreak is
 **numeric** on the `YYYY-NNNN` shape — year, then number — not lexicographic, because the number is
 not a fixed width (`2026-10000` is a valid id and sorts ahead of `2026-9999`). An id **not** matching
-that shape (only reachable from a peer that minted it) sorts after every id that does, and such ids
+that shape (only reachable from a card file written outside this allocator — a sync peer's id must
+match it) sorts after every id that does, and such ids
 are ordered among themselves by reverse string compare. `list_cards`' MCP text rendering of a `summary` prints
 `id`, `priority`, `title` and the date-only `created`; `epic`/`owner`/`depends_on`/`plan` print only
 when set (never as a bare `epic —`); `project` and `state` are never repeated per row — the
@@ -357,7 +358,10 @@ Notes:
   `POST /api/sync/pull` fetches the peer's export (`<peerUrl>/api/sync/export`) **backend-to-backend**
   (avoids browser CORS) and merges by `uid` (union + card-level last-edit-wins). The pull summary
   contains **display ids/slugs/counts only** — never `uid`/`node` (it reaches the GUI). Malformed peer
-  cards (missing/non-string `id`, or an unknown column) are skipped and listed in `skippedCards`.
+  cards are skipped and listed in `skippedCards`: an `id` that is not a string matching `ID_SHAPE`
+  (`<year>-<number>`, `src/board.js`) or is longer than `PEER_ID_MAX` (64) characters, or an
+  unknown column. The id names the card's file, so this is what keeps a peer from writing outside
+  the board.
   **Epics** are exported (`projectEpics`/`crossEpics`) and merged BEFORE cards, matched by **slug**
   (whole-epic last-edit-wins; hidden `updated`/`node` exposed only by export, never by `read_epic`/
   `list_epics`). A slug that is a project epic on one side and cross-project on the other is skipped +

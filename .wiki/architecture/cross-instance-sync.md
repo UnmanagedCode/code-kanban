@@ -44,6 +44,19 @@ short display id must stay the MCP-facing handle.
    `depends_on` translated `remote display id → remote uid → local display id` from the pulled
    set. A state change moves the file (`store.moveCard`).
 
+## Peer ids are strict, local ids tolerant
+A peer card's display id becomes a **filename** on this machine (`store.writeCard` names the file
+`<id>.md`), so `mergeProject` admits only an id matching `ID_SHAPE` (`<year>-<number>`) and at most
+`PEER_ID_MAX` characters. Without that check, a peer serving `../../../../../x` writes a card file five
+levels up, outside `.conduct/kanban`. The length bound keeps the filename legal and the id number
+small enough for the allocator to parse.
+
+Local reads stay tolerant: `store.listCards` reads any `*.md` in a column and trusts its
+frontmatter, so a hand-written or legacy card with a non-shape id (`zz-legacy`) still lists, sorts
+(shape bucket 1 of `compareIdDesc`) and syncs **out**. **Accepted limitation:** the peer pulling it
+skips that card into its own `skippedCards` — a non-shape id never crosses machines. Rename the
+card to a shape id to sync it.
+
 ## depends_on translation rule (confirmed decision)
 `depends_on` is display-id sugar over `uid`. Entries that don't resolve from the pulled set are
 **dropped and reported** in the summary — NOT kept as a raw remote id (a raw id could later collide
@@ -71,8 +84,8 @@ dep drops.
 ## The pull summary is GUI-facing — display ids only
 `syncPull` returns a `summary` that `routes.js` passes to the GUI's Sync dialog (`syncSummaryText` in `frontend/src/lib/forms.ts`). It must carry **no `uid`/`node`**
 (same invariant as reads). So `reassigned` uses `{from,to}` display ids, `droppedDeps` reports the
-dependent card by its remote **display** id, and malformed peer cards (missing/non-string `id` or an
-unknown column) are skipped into `skippedCards` by display id. Epic-merge adds `epicsAdded`/
+dependent card by its remote **display** id, and malformed peer cards (an `id` that fails `ID_SHAPE` or exceeds
+`PEER_ID_MAX`, or an unknown column) are skipped into `skippedCards` by display id. Epic-merge adds `epicsAdded`/
 `epicsUpdated` counts, `epicConflicts[]` and `skippedEpics[]` — all **slugs/counts only**, no
 `updated`/`node`. GOTCHA: if you add a field to the summary, don't put a `uid`/`node`/timestamp in
 it. `tests/sync.test.mjs` scans the whole serialized summary to enforce this.

@@ -492,8 +492,8 @@ function summary(t) {
 // `2026-9999`. The year is a field of its own so an id whose year and number
 // DISAGREE still answers by creation year — impossible from our own allocator
 // (the sequence never resets on rollover, src/store.js:86-90) but reachable
-// from a sync peer running its own counter, since any non-empty id string is
-// accepted on the wire (src/board.js:1443). It is also what makes readEpic's
+// from a sync peer running its own counter, since mergeProject checks a peer
+// id's SHAPE, not its year. It is also what makes readEpic's
 // cross-project listing, which flat-maps independent per-project counters,
 // come out newest-first rather than by whichever counter ran further.
 //
@@ -502,6 +502,8 @@ function summary(t) {
 // fields are neutral in each bucket (bucket 0 carries raw:'', bucket 1 carries
 // year/num 0), so one comparison chain serves both.
 const ID_SHAPE = /^(\d+)-(\d+)$/;
+// The longest display id a sync peer may hand us (mergeProject).
+const PEER_ID_MAX = 64;
 function idSortKey(id) {
   const m = ID_SHAPE.exec(id);
   return m
@@ -1505,10 +1507,14 @@ function mergeProject(project, remoteCards, remoteEpics, summary) {
 
   // Validate incoming shape before it can reach deriveUid/writeCard: a card
   // without a usable display id or a known column would write a garbage file.
-  // Skip (and report) rather than corrupt the store.
+  // Skip (and report) rather than corrupt the store. The id names the card's
+  // FILE, so it must be one `<year>-<number>` token: anything else (a `..`
+  // segment, a separator) would write wherever it points. The length bound
+  // keeps the filename valid and the id number small enough to parse.
   const valid = [];
   for (const rc of remoteCards) {
-    if (!rc || typeof rc.id !== 'string' || !rc.id.trim() || !STATES.includes(rc.state)) {
+    if (!rc || typeof rc.id !== 'string' || !ID_SHAPE.test(rc.id) || rc.id.length > PEER_ID_MAX
+      || !STATES.includes(rc.state)) {
       summary.skippedCards.push({ project, id: (rc && typeof rc.id === 'string') ? rc.id : null });
       continue;
     }
