@@ -245,6 +245,17 @@ code-conductor (never your own):
 `mkdtemp` set as `PROJECTS_ROOT` (`tests/_helpers.mjs`) and injects the live-project list via
 `projects._setProjectFetcher` — no network, deterministic, order-independent.
 
+Repo-wide gates read the prose and the code as text. Each pairs a liveness floor on what it read
+with known-bad samples its own predicate must flag (and negative controls it must not), so a check
+that is removed or inverted fails even though the clean tree still passes:
+- `tests/docCitations.test.mjs` — every in-repo path the prose layers (`tests/_prose.mjs`) cite
+  exists; `.ts`/`.tsx` cites included, code-conductor's own paths allowlisted, and nothing cited
+  inside the gitignored `frontend/dist`.
+- `tests/docFormat.test.mjs` — every markdown heading in the prose layers, outside fenced code, has
+  a blank line or the file's start above it (`crowdedHeadings`).
+- `tests/codeFormat.test.mjs` — no code file (`server.js`, `src/`, `tests/`, `harness/`, the
+  frontend sources and config) holds two blank lines in a row (`doubledLines`).
+
 Parsers of untrusted lines carry two suites ([.wiki/gotchas/linear-line-parsers.md](../.wiki/gotchas/linear-line-parsers.md)):
 - `tests/lineParsers.test.mjs` — **differential**: each index-scanning helper against the regex it
   replaced, kept verbatim in the test as the oracle, over every short string of the branching
