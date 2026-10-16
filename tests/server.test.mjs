@@ -174,12 +174,20 @@ test('start() binds loopback by default', async () => {
   }
 });
 
-test('the CSP holds every directive the host contract needs', () => {
-  const directives = new Map(CSP.split(';').map((d) => d.trim().split(/\s+/)).map(([k, ...v]) => [k, v]));
-  assert.deepEqual(directives.get('default-src'), ["'none'"]);
-  for (const k of ['script-src', 'style-src', 'font-src', 'connect-src', 'frame-ancestors']) {
-    assert.ok(directives.get(k)?.includes("'self'"), `${k} 'self'`);
-  }
-  assert.deepEqual(directives.get('script-src'), ["'self'"], 'no inline or eval script');
-  assert.deepEqual(directives.get('base-uri'), ["'none'"]);
+test('the CSP is exactly the policy the UI needs, directive by directive', () => {
+  const directives = Object.fromEntries(CSP.split(';').map((d) => d.trim().split(/\s+/)).map(([k, ...v]) => [k, v]));
+  // Each directive's reason is its assertion message: the headers elsewhere are
+  // compared with this constant, so this list is what pins the policy itself.
+  const expected = [
+    ['default-src', ["'none'"], 'deny anything not listed'],
+    ['script-src', ["'self'"], "the bundle, theme-init.js and cc's /pluginBridge.js; no inline script, no eval"],
+    ['style-src', ["'self'", "'unsafe-inline'"], "the CSS bundle and cc's /pluginTheme.css, plus 'unsafe-inline' because the Radix Dialog's scroll lock injects a <style> element (without it, opening a dialog logs a CSP violation)"],
+    ['font-src', ["'self'"], "the Geist fonts cc's theme sheet serves"],
+    ['connect-src', ["'self'"], 'the API, by relative URL'],
+    ['frame-ancestors', ["'self'"], 'framed only by code-conductor on the same origin'],
+    ['base-uri', ["'none'"], 'no <base> rewrite'],
+    ['form-action', ["'self'"], 'forms never post off-origin'],
+  ];
+  for (const [name, sources, why] of expected) assert.deepEqual(directives[name], sources, `${name}: ${why}`);
+  assert.deepEqual(Object.keys(directives).sort(), expected.map(([name]) => name).sort(), 'no directive beyond these');
 });
