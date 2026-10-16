@@ -78,6 +78,7 @@ The GUI does not hardcode the transition table. The card detail's Move form call
 target list is always derived from `ALLOWED_TRANSITIONS` — the same Set `board.js` enforces. If
 the transition table changes, the GUI's offered targets change with it; an `INVALID_STATE`
 refusal can still surface on a race (card moved between meta-load and the move POST).
+
 ## Harness hooks
 
 The Playwright harness (`harness/playwright/`) selects by role and accessible name plus these

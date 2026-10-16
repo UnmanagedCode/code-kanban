@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { ROOT, proseFiles } from './_prose.mjs';
 
 // 2026-0028 — every in-repo file path cited by the prose layers must resolve to
 // a file that exists.
@@ -28,12 +28,6 @@ import { fileURLToPath } from 'node:url';
 // a dead pointer. The one-shot shell sweep that caught it during the rename is
 // codified here so the class stays closed.
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-
-// Prose layers that cite code. `harness/` is included deliberately: its mutation
-// README quotes module paths and test titles, and a gate that skips a whole
-// directory is not a gate.
-const PROSE_ROOTS = ['docs', '.wiki', 'conventions', 'harness', 'README.md', 'CONVENTIONS.md'];
 
 // Directory prefixes that name THIS repo's tree. A citation must start with one
 // to be checked at all, which is what keeps bare prose words out.
@@ -55,12 +49,6 @@ const CROSS_REPO = new Map([
   ['src/planFile.ts', 'code-conductor'],
 ]);
 
-function walk(rel) {
-  const abs = path.join(ROOT, rel);
-  if (!fs.existsSync(abs)) return [];
-  if (fs.statSync(abs).isFile()) return rel.endsWith('.md') ? [rel] : [];
-  return fs.readdirSync(abs).flatMap((n) => walk(path.join(rel, n)));
-}
 
 // Liveness floor: the MINIMUM number of citations that must actually reach the
 // existence check below. Without it this sweep has a silent do-nothing mode — a
@@ -82,7 +70,7 @@ function walk(rel) {
 const MIN_CITATIONS_CHECKED = 40;
 
 test('every in-repo file path cited in the docs/wiki/conventions prose exists', () => {
-  const files = PROSE_ROOTS.flatMap(walk);
+  const files = proseFiles();
   assert.ok(files.length > 10, `expected to scan a real doc set, scanned ${files.length}`);
 
   const dangling = [];
@@ -121,7 +109,7 @@ test('no cross-repo citation allowlist entry resolves inside this repo', () => {
 // ("the built `index.html` in `frontend/dist`") instead. Checked here on its own,
 // so it holds whether or not the build happens to exist.
 test('no prose cites a file inside the gitignored frontend/dist build', () => {
-  const intoDist = PROSE_ROOTS.flatMap(walk).flatMap((rel) =>
+  const intoDist = proseFiles().flatMap((rel) =>
     (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(CITATION_RE) ?? [])
       .filter((cite) => cite.startsWith('frontend/dist/'))
       .map((cite) => `${rel} -> ${cite}`));
