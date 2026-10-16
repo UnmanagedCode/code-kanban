@@ -114,3 +114,16 @@ test('no cross-repo citation allowlist entry resolves inside this repo', () => {
     );
   }
 });
+
+// frontend/dist is build output (gitignored): it is absent from a fresh checkout,
+// a mutation copy, and any tree before `npm install`, so a citation into it would
+// make the sweep above fail exactly there. Docs name the built files in prose
+// ("the built `index.html` in `frontend/dist`") instead. Checked here on its own,
+// so it holds whether or not the build happens to exist.
+test('no prose cites a file inside the gitignored frontend/dist build', () => {
+  const intoDist = PROSE_ROOTS.flatMap(walk).flatMap((rel) =>
+    (fs.readFileSync(path.join(ROOT, rel), 'utf8').match(CITATION_RE) ?? [])
+      .filter((cite) => cite.startsWith('frontend/dist/'))
+      .map((cite) => `${rel} -> ${cite}`));
+  assert.deepEqual(intoDist, []);
+});

@@ -9,6 +9,10 @@
   (`createServer({distDir})`); `tests/dist.test.mjs` checks the real build and **skips** when it is
   absent (a fresh checkout before install, a mutation-harness copy). A fresh clone plus
   `npm install` must run it, not skip it.
+- Never cite a path inside `frontend/dist/` in docs or the wiki: `tests/docCitations.test.mjs`
+  checks every cited path exists, so such a citation fails every unbuilt tree. Name it in prose
+  ("the built `index.html` in `frontend/dist`"); a dedicated test there rejects a `frontend/dist/…`
+  citation outright.
 - Unbuilt, the server still starts: one `UI not built: … — run npm install` log line at
   `createServer`, then every non-`/api` request is a `text/plain` 503. An install under
   `NODE_ENV=production` / `npm_config_omit=dev` skips the devDependencies, so `prepare` fails and
