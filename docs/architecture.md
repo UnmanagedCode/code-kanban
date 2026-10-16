@@ -186,7 +186,7 @@ log line (and in-progress ownership); it never leaves a stuck owner.
   1. `Content-Security-Policy: CSP` and `X-Content-Type-Options: nosniff` on every response;
   2. `/api` → `buildRoutes()`;
   3. any path whose decoded form ends `.map`, case-insensitively → 404 (`express.static` decodes
-     before its lookup, so `%2Emap` is a `.map` too; a malformed escape falls through to its 400);
+     before its lookup, so `%2Emap` is a `.map` too; a malformed escape cannot be decoded and falls through to the terminal 404);
   4. `express.static(distDir)` when `distDir/index.html` exists; otherwise one
      `UI not built: <entry> is missing — run npm install` log line and a `text/plain` 503 for every
      non-`/api` request;

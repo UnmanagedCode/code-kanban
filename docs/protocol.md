@@ -388,7 +388,7 @@ Notes:
 |---|---|
 | `/` | the built `index.html` in `frontend/dist`, 200 `text/html` |
 | `/theme-init.js`, `/assets/*` (hashed names) | the built file, 200 |
-| any path whose **decoded** form ends `.map`, in any case (`app.js.map`, `app.js%2Emap`, `app.js.MAP`) | 404 `text/plain` `Not found` (none are built; never served). A path with a malformed escape is static's 400 |
+| any path whose **decoded** form ends `.map`, in any case (`app.js.map`, `app.js%2Emap`, `app.js.MAP`) | 404 `text/plain` `Not found` (none are built; never served). A path with a malformed escape cannot be decoded: it falls through to the terminal 404 `Not found` |
 | `/pluginBridge.js`, `/pluginTheme.css` (standalone), any other path | 404 `text/plain` `Not found`: no SPA fallback |
 | any non-`/api` path while the built `index.html` in `frontend/dist` is missing | 503 `text/plain` `UI not built — run npm install`; `/api/*` and `/api/health` stay up, unrouted `/api` paths (the bare `/api` included) stay 404, and start-up logs `UI not built: <entry> is missing — run npm install` once |
 | an error reaching the terminal handler | `text/plain`; a client status is kept with its message, a 500 says `Internal error` |

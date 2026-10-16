@@ -75,14 +75,15 @@ test('a .map file is never served, even when the build holds one — however the
       assert.ok(isPlain(res), p);
       assert.equal(await res.text(), 'Not found', p);
     }
-    // A malformed escape cannot be decoded, so the guard leaves it to static: a client
-    // error, never the map and never a 500.
+    // A malformed escape cannot be decoded, so the guard leaves it to static, which
+    // falls through (status below 500) to the terminal 404: never the map, never a 500.
     const errors = await capturingErrors(async () => {
       const bad = await fetch(`${base}/assets/%E0%A4%A.map`);
-      assert.ok(bad.status >= 400 && bad.status < 500, String(bad.status));
+      assert.equal(bad.status, 404);
       assert.ok(isPlain(bad));
+      assert.equal(await bad.text(), 'Not found');
     });
-    assert.ok(errors.length <= 1);
+    assert.deepEqual(errors, [], 'a fall-through 404 reaches no error handler');
   });
 });
 

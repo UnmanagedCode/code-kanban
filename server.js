@@ -18,7 +18,8 @@ const sendText = (res, status, text) => res.status(status).type('text/plain').se
 const isApiPath = (p) => p === '/api' || p.startsWith('/api/');
 // express.static decodes the path before it looks the file up (`app.js%2Emap` is
 // `app.js.map`), so the source-map guard judges the decoded form, case-insensitively.
-// A malformed escape is left to static, which answers it 400.
+// A malformed escape cannot be decoded, so it is left to static, which falls through
+// (its status is below 500) to the terminal 404.
 function isSourceMap(p) {
   let decoded;
   try { decoded = decodeURIComponent(p); } catch { return false; }
