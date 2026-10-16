@@ -35,15 +35,20 @@ const RULES = [
     bad: ['<a href={u}>', '<img src={u} />', '<img srcSet={u} />', '<form action={u}>', '<button formAction={u}>', '<use xlinkHref={u} />'],
   },
   {
-    // Every way a style reaches the DOM: the JSX/HTML attribute, a <style> element, a
-    // `style:` props key (an object spread or React.createElement), and any `.style` /
-    // `['style']` access on an element (`.style = …`, `.style.x = …`, `.style.setProperty`).
-    name: 'style attribute or element',
+    // UI source never styles an element from code, by any route: the JSX/HTML
+    // attribute, a <style> element, a `style` key anywhere (a React.createElement
+    // props object, an object spread — and, deliberately, a type such as
+    // `{ style?: string }`: no UI type names a style key either, which keeps the key
+    // rule free of the type-vs-value guesswork a stricter anchor would need), and any
+    // `.style` / `['style']` access on an element (`.style = …`, `.style.x = …`,
+    // `.style.setProperty`).
+    name: 'a style by any route (attribute, <style>, a style key, .style access)',
     re: /\bstyle\s*=\s*[{"'`]|<style\b|createElement\(\s*['"`]style['"`]|(?<![\w$-])style\s*\??\s*:|\.style\b|\[\s*['"`]style['"`]\s*\]/,
     bad: [
       '<p style={{ color: c }} />', '<p style="color:red">', "<p style='color:red'>", '<p style=`x`>', '<style>p{}</style>',
       "document.createElement('style')", "React.createElement('div', { style: v.css })", 'const p = { style: v }',
       'el.style = v', 'el.style.color = v', "el.style.setProperty('color', v)", "el['style'] = v",
+      'type P = { style?: string }', 'interface Q { style: CSSProperties }',
     ],
   },
   {
@@ -157,15 +162,15 @@ test('each rule fires on every script type the bundle can contain', () => {
       fs.writeFileSync(path.join(root, rel), text);
     }
     assert.deepEqual(violations(root).sort(), [
-      'frontend/index.html: style attribute or element',
+      'frontend/index.html: a style by any route (attribute, <style>, a style key, .style access)',
       'frontend/public/boot.js: raw-HTML, eval or cross-frame sink',
       'frontend/src/Card.tsx: fetch call',
       'frontend/src/Spread.tsx: JSX spread props',
-      'frontend/src/Styled.jsx: style attribute or element',
+      'frontend/src/Styled.jsx: a style by any route (attribute, <style>, a style key, .style access)',
       'frontend/src/View.jsx: expression-built link, source or form target',
       'frontend/src/k.ts: localStorage use',
-      'frontend/src/lib/paint.js: style attribute or element',
-      'frontend/src/lib/tint.ts: style attribute or element',
+      'frontend/src/lib/paint.js: a style by any route (attribute, <style>, a style key, .style access)',
+      'frontend/src/lib/tint.ts: a style by any route (attribute, <style>, a style key, .style access)',
       'frontend/src/lib/x.js: raw-HTML, eval or cross-frame sink',
       'frontend/src/lib/y.mjs: root-relative /api literal',
     ]);
