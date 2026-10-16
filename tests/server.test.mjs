@@ -137,6 +137,36 @@ test('an error past the API router keeps its client status as plain text, with t
   });
 });
 
+test('a 500 reaching the error handler says only "Internal error": the thrown message never leaks', async () => {
+  // A disk error under express.static is the request path that reaches the
+  // terminal handler with a plain Error: static forwards any error of status 500 or
+  // more instead of falling through. Stub fs.stat for one fixture path to throw one.
+  const SECRET = 'secret-disk-detail-7f3a';
+  const realStat = fs.stat;
+  fs.stat = (p, ...rest) => {
+    const cb = rest.at(-1);
+    if (String(p).endsWith('boom.js')) return process.nextTick(cb, new Error(SECRET));
+    return realStat.call(fs, p, ...rest);
+  };
+  try {
+    await withFixture(async (base) => {
+      const errors = await capturingErrors(async () => {
+        const res = await fetch(`${base}/boom.js`);
+        assert.equal(res.status, 500);
+        assert.ok(isPlain(res));
+        assertHeaders(res, '500');
+        const body = await res.text();
+        assert.equal(body, 'Internal error');
+        assert.ok(!body.includes(SECRET), 'the error message must not reach the client');
+      });
+      assert.equal(errors.length, 1, 'the 500 is logged server-side');
+      assert.match(String(errors[0][0]?.message ?? errors[0][0]), new RegExp(SECRET));
+    });
+  } finally {
+    fs.stat = realStat;
+  }
+});
+
 test('without a build: the UI answers a plain-text 503 naming npm install, the API stays up, the missing entry is logged once', async () => {
   const missing = path.join(os.tmpdir(), `code-kanban-no-dist-${process.pid}-${Date.now()}`);
   const errors = await capturingErrors(() => withServer(missing, async (base) => {
