@@ -171,9 +171,9 @@ the server will copy in or point at, not by who asks. `read_card` / `read_epic` 
   realpath is under the Claude plans dir (`paths.claudePlansDir`) or `PROJECTS_ROOT` — copied into
   the board, then read from the copy. Anything else is `PLAN_SOURCE_DENIED`, and a path outside
   both roots is denied before any fs access, so the refusal reveals nothing about it.
-- **Pointer** (`board:` / `repo:`, `safePlanFile`): a regular file whose realpath stays inside its
-  own base — the record's `plans/` dir, or the project's base checkout — on set and again on
-  every read.
+- **Pointer** (`board:` / `repo:`, `safePlanFile`): a regular `.md` file (by realpath) whose
+  realpath stays inside its own base — the record's `plans/` dir, or the project's base checkout —
+  on set and again on every read, so a stored link a peer synced is held to the same rule.
 
 **Readable:** any `.md` file of at most 1 MiB under either ingest root — the conductor's plans,
 any worktree or checkout, and the board's own files. **Not readable:** anything outside both

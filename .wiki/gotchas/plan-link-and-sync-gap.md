@@ -134,3 +134,10 @@ Two guards exist for that, both worth keeping:
 - After stat, containment is re-checked against `fs.realpathSync` of both the file and its base
   (`safePlanFile` in `src/board.js`). Grammar-level containment alone is not enough: a worker can
   drop a symlink into `plans/`, and `includePlan` would then read straight out of it.
+- The realpath must also end in `.md` (lowercase compare), the same suffix rule ingest applies.
+  `repo:`'s base is a whole checkout, so without it `repo:.env` is a contained, regular file that
+  sets fine and reads back through `includePlan`. `safePlanFile` serves the set path
+  (`resolvePlanForSet` → `PLAN_UNKNOWN`) **and** the read path (`planFields`), so a stored
+  non-`.md` link — a legacy one, or one a sync peer carried, since a link rides sync unchecked —
+  degrades to `plan_missing: true` and never refuses. `resolvePlanLink`'s lexical `../` refusal
+  sits in front of all of this on both paths.

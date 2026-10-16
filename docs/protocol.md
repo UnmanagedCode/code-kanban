@@ -121,7 +121,9 @@ names a record: `CARD_UNKNOWN` / `EPIC_UNKNOWN`, the same refusal as any unknown
   peer). `includePlan: true` (default `false`) adds `plan_body` — the plan file read up to a fixed
   **64 KiB** cap (`PLAN_MAX_BYTES` in `src/board.js`; not caller-settable) — plus
   `plan_truncated` (file larger than the cap) and `plan_missing` (a link exists but its file is
-  absent/unreadable, incl. a symlink pointing out of its base dir). A dead link is **never a
+  absent/unreadable, incl. a symlink pointing out of its base dir, or is not a regular `.md` file by
+  realpath — so a stored link to a `.env`, e.g. one a sync peer carried, degrades here and never
+  returns that file's body). A dead link is **never a
   refusal**: `plan_body: null, plan_missing: true`. No link at all → `plan_body: null,
   plan_missing: false`.
 
@@ -246,7 +248,8 @@ names a record: `CARD_UNKNOWN` / `EPIC_UNKNOWN`, the same refusal as any unknown
     verbatim line), any other scheme (`file:`, `http:`, `C:\…`, and an `Object.prototype` name such as `constructor:` — a scheme is known only as an own key of `src/planLink.js`'s scheme table), an absolute path **after an
     explicit scheme** (`board:/abs` — the scheme makes it a pointer, and a pointer must be
     relative), and `../` escaping a base. Refused `PLAN_UNKNOWN` when a **pointer** is grammatical
-    but resolves to no regular file inside its base (incl. via a symlink out of it), **and** when
+    but resolves to no regular **`.md`** file inside its base (incl. via a symlink out of it, and a
+    `.md` name whose realpath is not `.md`; the reason names the base), **and** when
     an absolute source inside an ingest root is missing, a dangling link, a directory, not a
     regular file, or cannot be read/copied. Refused `PLAN_SOURCE_DENIED` when an absolute source
     fails the ingest allowlist above. Either way the card's `plan` is left unchanged. `plan: null` clears it.

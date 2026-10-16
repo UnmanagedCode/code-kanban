@@ -1510,6 +1510,93 @@ test('ingest copies from the realpath the allowlist checked', async () => {
   } finally { fs.copyFileSync = realCopy; await cleanup(root); }
 });
 
+// ---- a pointer, set or stored, names a regular .md file inside its own base ----
+
+// Pins (already true): a STORED repo: link escaping its base with ../ is ungrammatical on read —
+// plan_path null, plan_missing, nothing read — even though the file it names exists.
+test('a stored repo: link with a ../ escape reads as plan_path null, plan_missing', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const { id } = await board.fileCard({ project: 'demo', title: 't' });
+    fs.writeFileSync(path.join(root, 'outside.md'), '# outside the checkout');
+    storePlanLink('demo', id, 'repo:../outside.md');
+    const r = await board.readCard({ project: 'demo', id, includePlan: true });
+    assert.equal(r.plan_path, null);
+    assert.equal(r.plan_body, null);
+    assert.equal(r.plan_missing, true);
+  } finally { await cleanup(root); }
+});
+
+// Pins: a pointer must name a .md file — a repo: link to a project's .env is PLAN_UNKNOWN at every
+// set-path call site (update_card, file_card, the epic upsert), and nothing is stored.
+test('a repo: pointer to a non-.md file -> PLAN_UNKNOWN at update_card, file_card and create_epic', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    writeRepoPlan('demo', '.env', 'TOKEN=hunter2');
+    const { id } = await board.fileCard({ project: 'demo', title: 't' });
+    const u = await board.updateCard({ project: 'demo', id, fields: { plan: 'repo:.env' } });
+    assert.equal(u.code, 'PLAN_UNKNOWN');
+    assert.match(u.reason, /regular \.md file inside /);
+    assert.equal((await board.readCard({ project: 'demo', id })).card.plan, null);
+    assert.equal((await board.fileCard({ project: 'demo', title: 'u', plan: 'repo:.env' })).code, 'PLAN_UNKNOWN');
+    assert.equal((await board.listCards({ project: 'demo' })).cards.length, 1);
+    assert.equal((await board.createEpic({ project: 'demo', slug: 'ep', title: 'E', plan: 'repo:.env' })).code, 'PLAN_UNKNOWN');
+    assert.equal(store.epicExists('demo', 'ep'), false);
+  } finally { await cleanup(root); }
+});
+
+// Pins: the read path applies the same rule — a STORED repo: link to a .env (as a sync peer could
+// leave one) degrades to plan_missing, and its contents never reach plan_body.
+test('a stored repo: link to a .env reads as plan_missing with no body', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    const env = writeRepoPlan('demo', '.env', 'TOKEN=hunter2');
+    const { id } = await board.fileCard({ project: 'demo', title: 't' });
+    storePlanLink('demo', id, 'repo:.env');
+    const r = await board.readCard({ project: 'demo', id, includePlan: true });
+    assert.equal(r.plan_path, env);
+    assert.equal(r.plan_body, null);
+    assert.equal(r.plan_missing, true);
+  } finally { await cleanup(root); }
+});
+
+// Pins: the suffix is judged on the REALPATH — a repo: link to a `.md` symlink whose target is a
+// non-.md file in the same checkout is refused on set and missing on read.
+test('a repo: link to a .md symlink naming a non-.md file is refused on set and missing on read', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    writeRepoPlan('demo', 'config.json', '{"secret":1}');
+    fs.mkdirSync(path.join(projectRepoDir('demo'), 'docs'), { recursive: true });
+    fs.symlinkSync(path.join(projectRepoDir('demo'), 'config.json'), path.join(projectRepoDir('demo'), 'docs', 'plan.md'));
+    const { id } = await board.fileCard({ project: 'demo', title: 't' });
+    assert.equal((await board.updateCard({ project: 'demo', id, fields: { plan: 'repo:docs/plan.md' } })).code, 'PLAN_UNKNOWN');
+    storePlanLink('demo', id, 'repo:docs/plan.md');
+    const r = await board.readCard({ project: 'demo', id, includePlan: true });
+    assert.equal(r.plan_body, null);
+    assert.equal(r.plan_missing, true);
+  } finally { await cleanup(root); }
+});
+
+// Pins: read_epic's call site applies the rule too — a cross epic whose stored board: link names a
+// non-.md file in the board-level plans/ dir reads as plan_missing.
+test('read_epic: a stored board: link to a non-.md file reads as plan_missing', async () => {
+  const root = await freshRoot();
+  useProjects(['web', 'api']);
+  try {
+    writeBoardLevelPlan('notes.txt', 'not a plan');
+    assert.equal((await board.createEpic({ projects: ['web', 'api'], slug: 'plat', title: 'P' })).ok, true);
+    store.writeCrossEpic({ ...store.readCrossEpic('plat'), plan: 'board:notes.txt' });
+    const r = await board.readEpic({ slug: 'plat', includePlan: true });
+    assert.equal(r.ok, true);
+    assert.equal(r.plan_body, null);
+    assert.equal(r.plan_missing, true);
+  } finally { await cleanup(root); }
+});
+
 // ---- file_card's plan param (same three input forms, same validator) ----
 
 test('file_card ingests an absolute plan into the CARD\'s own id', async () => {

@@ -72,16 +72,18 @@ const PLAN_MAX_BYTES = 65536;
 // is not one, and copying it in would only make it readable back.
 const PLAN_INGEST_MAX_BYTES = 1 << 20;
 
-// The absolute path of a resolved link IF it is a regular file that really sits
-// inside its base dir, else null. The realpath re-check closes the symlink hole:
-// plans/ is worker-writable, so a symlink out of it would otherwise be an
-// arbitrary-file read once includePlan exists.
+// The absolute path of a resolved link IF it is a regular `.md` file that really
+// sits inside its base dir, else null. The realpath re-check closes the symlink
+// hole: plans/ is worker-writable, so a symlink out of it would otherwise be an
+// arbitrary-file read once includePlan exists. The `.md` rule (on the realpath,
+// lowercase — the same rule ingestPlanFile applies) keeps a pointer from naming
+// a checkout's `.env` or key file, which repo:'s base contains.
 function safePlanFile(project, resolved) {
   try {
     if (!fs.statSync(resolved.path).isFile()) return null;
     const realBase = fs.realpathSync(planBaseDir(project, resolved.scheme));
     const real = fs.realpathSync(resolved.path);
-    return isContained(realBase, real) ? real : null;
+    return isContained(realBase, real) && real.toLowerCase().endsWith('.md') ? real : null;
   } catch {
     return null;
   }
@@ -190,7 +192,7 @@ function resolvePlanForSet(project, value, destName) {
   if (c.error) return fail(c.error.code, c.error.reason);
   if (c.kind === 'ingest') return ingestPlanFile(planBaseDir(project, 'board'), destName, c.source);
   if (!safePlanFile(project, c)) {
-    return fail('PLAN_UNKNOWN', `no plan file at ${c.link} (resolved to ${c.path})`);
+    return fail('PLAN_UNKNOWN', `no plan file at ${c.link}: it must name a regular .md file inside ${planBaseDir(project, c.scheme)} (resolved to ${c.path})`);
   }
   return { link: c.link };
 }
