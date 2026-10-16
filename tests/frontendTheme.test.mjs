@@ -100,6 +100,12 @@ test('index.css imports Tailwind, tw-animate-css and the fallback, and keys dark
 const COLOUR_LITERAL = /#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?|oklch|oklab|lab|lch|hwb|color)\(/;
 const PALETTE_UTILITY = /\b(?:bg|text|border|ring|outline|fill|stroke|shadow|from|to|via|decoration|divide|accent|caret)-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|black|white)\b/;
 
+/** What a line breaks: `literal colour` and/or `palette utility`. */
+const colourHits = (line) => [
+  ...(COLOUR_LITERAL.test(line) ? ['literal colour'] : []),
+  ...(PALETTE_UTILITY.test(line) ? ['palette utility'] : []),
+];
+
 /** `file:line: what` for every literal colour in the plugin's own code under `root`. */
 function colourOffences(root) {
   const out = [];
@@ -107,21 +113,25 @@ function colourOffences(root) {
   for (const f of own) {
     const text = f.endsWith('.css') ? read(f, root).replace(/\/\*[\s\S]*?\*\//g, '') : blankComments(read(f, root));
     text.split('\n').forEach((line, i) => {
-      if (COLOUR_LITERAL.test(line)) out.push(`${f}:${i + 1}: literal colour`);
-      if (PALETTE_UTILITY.test(line)) out.push(`${f}:${i + 1}: palette utility`);
+      for (const what of colourHits(line)) out.push(`${f}:${i + 1}: ${what}`);
     });
   }
   return { scanned: own.length, out };
 }
+
+// Theme writes only theme-init.js may make.
+const TOGGLES = [
+  { what: 'writes the dark class', re: /classList\s*\.\s*\w+\(\s*['"`]dark['"`]/ },
+  { what: 'writes data-cc-theme', re: /setAttribute\(\s*['"`]data-cc-theme/ },
+  { what: 'sets the dark class', re: /className\s*=\s*['"`][^'"`]*\bdark\b/ },
+];
 
 /** `file: what` for every write of the dark class or data-cc-theme outside theme-init.js. */
 function toggleOffences(root) {
   const out = [];
   for (const f of [...listUiCode('frontend/src', root), ...listFiles('frontend/index.html', ['.html'], root)]) {
     const code = f.endsWith('.html') ? read(f, root) : blankComments(read(f, root));
-    if (/classList\s*\.\s*\w+\(\s*['"`]dark['"`]/.test(code)) out.push(`${f}: writes the dark class`);
-    if (/setAttribute\(\s*['"`]data-cc-theme/.test(code)) out.push(`${f}: writes data-cc-theme`);
-    if (/className\s*=\s*['"`][^'"`]*\bdark\b/.test(code)) out.push(`${f}: sets the dark class`);
+    for (const { what, re } of TOGGLES) if (re.test(code)) out.push(`${f}: ${what}`);
   }
   return out;
 }
@@ -161,6 +171,41 @@ test('every button in feature code states its type, and a default-variant Button
   assert.ok(buttons >= MIN_BUTTONS, `found only ${buttons} buttons`);
 });
 
+// Known-bad samples, at least one per alternative of each pattern: every hex length
+// and colour function, every utility prefix and every palette name. Run through the
+// same check the scan uses, counted at the check, so a pattern that stops matching
+// (or loses an alternative) fails although the clean real tree still reads as clean.
+const COLOUR_BAD = [
+  "const c = '#f00'", "const c = '#ff0000'", "const c = '#ff000080'", 'rgb(1 2 3)', 'rgba(1, 2, 3, .5)', 'hsl(1 2% 3%)',
+  'hsla(1, 2%, 3%, .5)', 'oklch(0.5 0.1 30)', 'oklab(0.5 0.1 0.1)', 'lab(50% 0 0)', 'lch(50% 0 0)', 'hwb(0 0% 0%)', 'color(srgb 1 0 0)',
+];
+const PALETTE_BAD = [
+  'bg-slate-100', 'text-gray-500', 'border-zinc-200', 'ring-neutral-300', 'outline-stone-400', 'fill-red-500',
+  'stroke-orange-600', 'shadow-amber-700', 'from-yellow-800', 'to-lime-900', 'via-green-50', 'decoration-emerald-100',
+  'divide-teal-200', 'accent-cyan-300', 'caret-sky-400', 'bg-blue-500', 'bg-indigo-500', 'bg-violet-500', 'bg-purple-500',
+  'bg-fuchsia-500', 'bg-pink-500', 'bg-rose-500', 'bg-black', 'text-white',
+];
+const TOGGLE_BAD = [
+  ["document.documentElement.classList.toggle('dark')", 'writes the dark class'],
+  ['root.classList.add("dark")', 'writes the dark class'],
+  ["root.setAttribute('data-cc-theme', 'dark')", 'writes data-cc-theme'],
+  ['<html className="dark">', 'sets the dark class'],
+];
+
+test('every theme rule still flags each of its known-bad samples, alternative by alternative', () => {
+  const missed = [];
+  let flagged = 0;
+  for (const line of COLOUR_BAD) (colourHits(line).includes('literal colour') ? flagged++ : missed.push(`literal colour: ${line}`));
+  for (const line of PALETTE_BAD) (colourHits(line).includes('palette utility') ? flagged++ : missed.push(`palette utility: ${line}`));
+  for (const [code, what] of TOGGLE_BAD) {
+    (TOGGLES.some((t) => t.what === what && t.re.test(code)) ? flagged++ : missed.push(`${what}: ${code}`));
+  }
+  assert.deepEqual(missed, []);
+  assert.equal(flagged, COLOUR_BAD.length + PALETTE_BAD.length + TOGGLE_BAD.length);
+  // And the clean shapes stay clean: token utilities and a `#` that is no colour.
+  for (const ok of ['bg-card text-muted-foreground border-t-plan', "href=\"#\"", '#root']) assert.deepEqual(colourHits(ok), [], ok);
+});
+
 // A fixture tree breaking each rule from a script type other than .ts/.tsx, so a scan
 // that stops reading .js, .jsx or .mjs fails here.
 const FIXTURE = {
@@ -169,6 +214,7 @@ const FIXTURE = {
   'frontend/src/Tile.jsx': 'export const T = () => <p className="bg-red-500">x</p>;',
   'frontend/src/theme.mjs': "document.documentElement.classList.toggle('dark');",
   'frontend/src/Save.jsx': 'export const S = () => <Button>Save</Button>;',
+  'frontend/src/Go.jsx': 'export const G = () => <><Button type="button">Go</Button><Button variant="destructive" type="button">Del</Button><Button variant="ghost" type="button">Ok</Button><button>raw</button></>;',
   'frontend/src/components/ui/button.tsx': "export const ink = '#000000';",
 };
 
@@ -181,7 +227,12 @@ test('the theme guards read every script type the bundle can contain', () => {
     }
     assert.deepEqual(colourOffences(root).out, ['frontend/src/Tile.jsx:1: palette utility', 'frontend/src/lib/palette.js:1: literal colour']);
     assert.deepEqual(toggleOffences(root), ['frontend/src/theme.mjs: writes the dark class']);
-    assert.deepEqual(buttonOffences(root).out, ['frontend/src/Save.jsx: <Button> has no explicit type']);
+    assert.deepEqual(buttonOffences(root).out, [
+      'frontend/src/Go.jsx: a default-variant Button is the form\'s commit, so type="submit"',
+      'frontend/src/Go.jsx: a destructive-variant Button is the form\'s commit, so type="submit"',
+      'frontend/src/Go.jsx: <button> has no explicit type',
+      'frontend/src/Save.jsx: <Button> has no explicit type',
+    ]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

@@ -14,20 +14,56 @@ import { listFiles, listUiCode, read, blankComments, openingTags, hasSpread } fr
 // rules run over the real tree, and over a fixture tree that breaks each one, so a
 // rule (or a file type) the scan silently stops covering fails here.
 
+// Each rule carries `bad`: known-bad samples, at least one per alternative of its
+// pattern. The liveness test runs them through the same check the scan uses, so a
+// pattern that stops matching (or loses an alternative) fails even though the real
+// tree, which is meant to be clean, still reads as clean.
 const RULES = [
-  ['raw-HTML, eval or cross-frame sink', /\binnerHTML\b|\bouterHTML\b|\binsertAdjacentHTML\b|document\.write|dangerouslySetInnerHTML|\beval\s*\(|new\s+Function\b|\bDOMParser\b|createContextualFragment|\bsetAttribute\s*\(|location\.hash\s*=|\bpushState\b|window\.parent\b|code-conductor:/],
-  ['expression-built link, source or form target', /\b(?:href|src|srcSet|action|formAction|xlinkHref)\s*=\s*\{/],
-  // Every way a style reaches the DOM: the JSX/HTML attribute, a <style> element, a
-  // `style:` props key (an object spread or React.createElement), and any `.style` /
-  // `['style']` access on an element (`.style = …`, `.style.x = …`, `.style.setProperty`).
-  ['style attribute or element', /\bstyle\s*=\s*[{"'`]|<style\b|createElement\(\s*['"`]style['"`]|(?<![\w$-])style\s*\??\s*:|\.style\b|\[\s*['"`]style['"`]\s*\]/],
-  ['root-relative /api literal', /['"`]\/api\b/],
+  {
+    name: 'raw-HTML, eval or cross-frame sink',
+    re: /\binnerHTML\b|\bouterHTML\b|\binsertAdjacentHTML\b|document\.write|dangerouslySetInnerHTML|\beval\s*\(|new\s+Function\b|\bDOMParser\b|createContextualFragment|\bsetAttribute\s*\(|location\.hash\s*=|\bpushState\b|window\.parent\b|code-conductor:/,
+    bad: [
+      'el.innerHTML = html', 'el.outerHTML = html', "el.insertAdjacentHTML('beforeend', h)", 'document.write(h)',
+      '<div dangerouslySetInnerHTML={{ __html: h }} />', 'eval(code)', "new Function('return 1')", 'new DOMParser()',
+      'range.createContextualFragment(h)', "el.setAttribute('href', u)", "location.hash = '#x'", "history.pushState(null, '', u)",
+      'window.parent.postMessage(m)', "localStorage.getItem('code-conductor:theme')",
+    ],
+  },
+  {
+    name: 'expression-built link, source or form target',
+    re: /\b(?:href|src|srcSet|action|formAction|xlinkHref)\s*=\s*\{/,
+    bad: ['<a href={u}>', '<img src={u} />', '<img srcSet={u} />', '<form action={u}>', '<button formAction={u}>', '<use xlinkHref={u} />'],
+  },
+  {
+    // Every way a style reaches the DOM: the JSX/HTML attribute, a <style> element, a
+    // `style:` props key (an object spread or React.createElement), and any `.style` /
+    // `['style']` access on an element (`.style = …`, `.style.x = …`, `.style.setProperty`).
+    name: 'style attribute or element',
+    re: /\bstyle\s*=\s*[{"'`]|<style\b|createElement\(\s*['"`]style['"`]|(?<![\w$-])style\s*\??\s*:|\.style\b|\[\s*['"`]style['"`]\s*\]/,
+    bad: [
+      '<p style={{ color: c }} />', '<p style="color:red">', "<p style='color:red'>", '<p style=`x`>', '<style>p{}</style>',
+      "document.createElement('style')", "React.createElement('div', { style: v.css })", 'const p = { style: v }',
+      'el.style = v', 'el.style.color = v', "el.style.setProperty('color', v)", "el['style'] = v",
+    ],
+  },
+  {
+    name: 'root-relative /api literal',
+    re: /['"`]\/api\b/,
+    bad: ["fetch('/api/x')", 'fetch("/api/x")', 'fetch(`/api/${p}`)'],
+  },
 ];
 // One permitted site each, repo-relative.
 const ONLY_IN = [
-  ['fetch call', /\bfetch\s*\(/, 'frontend/src/lib/api.ts'],
-  ['localStorage use', /\blocalStorage\b/, 'frontend/src/lib/persist.ts'],
+  { name: 'fetch call', re: /\bfetch\s*\(/, home: 'frontend/src/lib/api.ts', bad: ['fetch(url)', 'await fetch (url, init)'] },
+  { name: 'localStorage use', re: /\blocalStorage\b/, home: 'frontend/src/lib/persist.ts', bad: ["localStorage.setItem('k', v)"] },
 ];
+
+/** How many JSX opening tags in `text` spread props (`{...x}`), and how many tags were read. */
+function spreads(text) {
+  const tags = openingTags(text);
+  return { tags: tags.length, spread: tags.filter((t) => hasSpread(t.attrs)).length };
+}
+const SPREAD_BAD = ['<div {...p} />', '<Card id="a" {...rest}>x</Card>', '<Input { ...props } value={v} />', '<a href="#" {...{ target: t }}>'];
 
 /** The files the guards read under `root`: index.html, public/ and src/ (every script type, plus CSS). */
 function uiFiles(root) {
@@ -47,13 +83,12 @@ function scan(root) {
   let tags = 0;
   for (const f of uiFiles(root)) {
     const text = f.endsWith('.html') || f.endsWith('.css') ? read(f, root) : blankComments(read(f, root));
-    for (const [rule, re] of RULES) if (re.test(text)) out.push(`${f}: ${rule}`);
-    for (const [rule, re, home] of ONLY_IN) if (re.test(text) && f !== home) out.push(`${f}: ${rule}`);
+    for (const { name, re } of RULES) if (re.test(text)) out.push(`${f}: ${name}`);
+    for (const { name, re, home } of ONLY_IN) if (re.test(text) && f !== home) out.push(`${f}: ${name}`);
     if (!isFeatureCode(f)) continue;
-    for (const tag of openingTags(text)) {
-      tags++;
-      if (hasSpread(tag.attrs)) out.push(`${f}: JSX spread props`);
-    }
+    const n = spreads(text);
+    tags += n.tags;
+    if (n.spread) out.push(`${f}: JSX spread props`);
   }
   return { out, tags };
 }
@@ -76,7 +111,22 @@ test('the real UI source breaks no DOM-safety rule', () => {
 });
 
 test('fetch and localStorage each still have their one site', () => {
-  for (const [, re, home] of ONLY_IN) assert.match(blankComments(read(home)), re, home);
+  for (const { re, home } of ONLY_IN) assert.match(blankComments(read(home)), re, home);
+});
+
+// Counted at the check: every known-bad sample must be flagged by the very test the
+// scan applies. A floor well under the sample count would let a deadened pattern pass.
+test('every rule still flags each of its known-bad samples, alternative by alternative', () => {
+  const missed = [];
+  let flagged = 0;
+  for (const { name, re, bad } of [...RULES, ...ONLY_IN]) {
+    for (const sample of bad) (re.test(sample) ? flagged++ : missed.push(`${name}: ${sample}`));
+  }
+  for (const sample of SPREAD_BAD) (spreads(sample).spread === 1 ? flagged++ : missed.push(`JSX spread props: ${sample}`));
+  assert.deepEqual(missed, []);
+  const total = [...RULES, ...ONLY_IN].reduce((n, r) => n + r.bad.length, SPREAD_BAD.length);
+  assert.equal(flagged, total);
+  assert.ok(RULES.every((r) => r.bad.length > 0) && ONLY_IN.every((r) => r.bad.length > 0), 'every rule has a sample');
 });
 
 // A fixture tree: one file per script type the bundle can contain, each breaking a
