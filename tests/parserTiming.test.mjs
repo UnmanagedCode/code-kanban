@@ -75,5 +75,5 @@ test('board.syncPull: a peerUrl with a long slash run trims in linear time', opt
 test('board.trailingIdNumber: a long digit run before a non-digit reads in linear time', opts, () => withRoot(async (root) => {
   const { ms, result } = await timeCase('idNumber', root);
   assert.ok(ms < DEADLINE_MS, `${ms} ms`);
-  assert.equal(result, 0);
+  assert.equal(result, 0n);
 }));

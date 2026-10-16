@@ -80,30 +80,51 @@ Two sharp edges of the copy:
   `fs.realpathSync(source) === fs.realpathSync(dest)`; string comparison would miss the reachable
   second form, an absolute path that is a *symlink* to `plans/<id>.md`.
 
-  **Measured, 2026-08-11 (Node v24.18.0, Linux):** removing the guard does **not** corrupt anything.
-  `fs.copyFileSync(dest, dest)` leaves content, size and mtime untouched — `strace` shows libuv
-  opening the destination `O_WRONLY|O_CREAT` with **no `O_TRUNC`**, then comparing `st_dev`/`st_ino`
-  and returning success without writing. Do not repeat the claim that the file would be zeroed; it
-  is false here.
+  **Why the guard stays (owner's decision, 2026-08-11):** in the self-copy case the destination
+  **is** the only copy of the plan, so the guard makes re-attaching it a true no-op — the file is
+  not replaced at all — rather than depending on how the copy path happens to behave.
 
-  **Why the guard stays anyway (owner's decision, 2026-08-11):** that short-circuit is a libuv
-  internal. Node's `fs.copyFile` docs promise only that an existing destination is overwritten and
-  say nothing about a source and destination that are the same file. The failure it guards is
-  unrecoverable — in the self-copy case the destination **is** the only copy of the plan — so three
-  explicit lines beat depending on a third party's unspecified behaviour.
-
-  **Coverage consequence (waived).** No test can kill the guard's removal on Linux/libuv: with or
-  without it, nothing is written. So two mutants are **expected survivors, waived by the owner** —
+  **Coverage consequence (waived).** No content-level test can kill the guard's removal: the
+  source's bytes are read from its open fd before the destination is replaced by an atomic rename,
+  so without the guard a self-copy rewrites identical bytes. So two mutants are **expected survivors, waived by the owner** —
   *drop the self-copy guard* and *compare `source === dest` as strings instead of realpaths*. Every
   other mutant on this feature still has to die (see `harness/mutation/README.md`). The two tests
   named `…AT the destination…` / `…SYMLINK to the destination…` in `tests/board.test.mjs` pin the
   observable outcome (no-op success, link stored, content intact) and are **not** coverage of the
   guard — do not read them as such.
-- **Arbitrary-source read, accepted.** `file_card` is worker-callable, so ingest lets any caller have
-  the server copy any readable absolute path into the board and read it back via
-  `read_card({includePlan:true})`. Previously the server only read under `plansDir` (realpath-guarded)
-  or `projectRepoDir`. Accepted deliberately — workers already have full local fs access and the
-  plugin runs as the same user. **No ACL**; do not add one without a new decision.
+- **The ingest source is allowlisted (owner's decision, 2026-10-16).** Ingest copies a file into
+  the board, and `includePlan` reads it back to any caller — every surface is unauthenticated,
+  `/api/mcp` included. So the source must be a regular `.md` file of at most 1 MiB
+  (`PLAN_INGEST_MAX_BYTES`) whose **realpath** is under the Claude plans dir
+  (`paths.claudePlansDir`: `$CLAUDE_CONFIG_DIR/plans`, else `~/.claude/plans`) or `PROJECTS_ROOT`;
+  anything else is `PLAN_SOURCE_DENIED`. Those two roots are exactly where the absolute paths
+  actually handed over live: a plan wake's file, and a worktree's or checkout's plan. The
+  plans-dir rule is code-conductor's own config-dir rule, and the host spawns this plugin with
+  its environment, so both resolve the same directory with no new setting.
+
+  The check order in `ingestPlanFile` carries the reasons:
+  1. **Lexical containment, no fs access.** A path outside the roots is denied whether or not it
+     exists, so the refusal is no existence oracle for the rest of the disk.
+  2. **Realpath.** Fails → `PLAN_UNKNOWN`: a missing source or dangling link *inside* a root.
+  3. **Realpath containment** — closes a symlink out of a root.
+  4. **`.md` on the realpath**, lowercase — so a `plan.md` link naming a `.env` is refused.
+  5. **One open of the realpath**, non-blocking (a FIFO's open would otherwise wait forever for a
+     writer) and not following a final-component symlink (one swapped in at the checked path is an
+     open error, `PLAN_UNKNOWN`). Every later step works on that open file.
+  6. **`isFile`**, from `fstat` of the open file.
+  7. **Size cap**, from that `fstat`, and again on the bytes actually read (a file that grows
+     after the `fstat` is denied).
+
+  The copy is the bytes read from that fd, written by `store.atomicWrite`, so a file renamed over
+  the checked path after the open changes nothing: the file checked is the file copied. The one
+  window left open is an *ancestor directory* swapped for a symlink between the realpath and the
+  open; closing it needs the kernel's path for the open fd, which Node offers no portable way to
+  read. It takes write access inside a root and a won race of microseconds. All denials share one
+  reason string, naming the valid set. HTTP and MCP apply the identical rule: a stricter HTTP rule
+  would close nothing while `/api/mcp` is open.
+
+  **Residual risk, accepted:** any `.md` file of at most 1 MiB under either root is readable by
+  any caller — every project's tracked docs, worktrees, and the board's own card files.
 
 ## Frontmatter is one verbatim line, and plans/ is worker-writable
 
@@ -114,3 +135,13 @@ Two guards exist for that, both worth keeping:
 - After stat, containment is re-checked against `fs.realpathSync` of both the file and its base
   (`safePlanFile` in `src/board.js`). Grammar-level containment alone is not enough: a worker can
   drop a symlink into `plans/`, and `includePlan` would then read straight out of it.
+- The realpath must also end in `.md` (lowercase compare), the same suffix rule ingest applies.
+  It is an addition to containment, never a stand-in: a symlink at another project's `.md` plan
+  passes the suffix and only the realpath containment refuses it — a test that wants to pin
+  containment must target a `.md` file outside the base.
+  `repo:`'s base is a whole checkout, so without it `repo:.env` is a contained, regular file that
+  sets fine and reads back through `includePlan`. `safePlanFile` serves the set path
+  (`resolvePlanForSet` → `PLAN_UNKNOWN`) **and** the read path (`planFields`), so a stored
+  non-`.md` link — a legacy one, or one a sync peer carried, since a link rides sync unchecked —
+  degrades to `plan_missing: true` and never refuses. `resolvePlanLink`'s lexical `../` refusal
+  sits in front of all of this on both paths.

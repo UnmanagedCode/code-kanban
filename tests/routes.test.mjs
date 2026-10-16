@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { freshRoot, cleanup } from './_helpers.mjs';
-import { plansDir, boardPlansDir } from '../src/paths.js';
+import { plansDir, boardPlansDir, claudePlansDir } from '../src/paths.js';
 import { _setProjectFetcher } from '../src/projects.js';
 import * as board from '../src/board.js';
 import { PRIORITIES } from '../src/priority.js';
@@ -51,6 +51,21 @@ test('GET /api/projects returns the catalog', async () => {
     const { status, body } = await json('/api/projects');
     assert.equal(status, 200);
     assert.deepEqual(body, { projects: ['demo'] });
+  });
+});
+
+// Pins: a card id arriving as an encoded path parameter is still one segment or no record — the
+// route answers CARD_UNKNOWN rather than reading the `.md` file the decoded id points at.
+test('GET a card by an encoded traversing id -> 200 CARD_UNKNOWN, the file it names is not read', async () => {
+  await withServer(async ({ json }) => {
+    const root = process.env.PROJECTS_ROOT;
+    fs.writeFileSync(path.join(root, 'sentinel.md'), '---\nid: 2026-0099\ntitle: SENTINEL\n---\n');
+    await board.fileCard({ project: 'demo', title: 'real' }); // the project's dirs exist
+    const id = encodeURIComponent('../../../../../sentinel');
+    const { status, body } = await json(`/api/board/demo/cards/${id}`);
+    assert.equal(status, 200);
+    assert.equal(body.ok, false);
+    assert.equal(body.code, 'CARD_UNKNOWN');
   });
 });
 
@@ -592,12 +607,33 @@ test('PATCH with an unresolvable plan field returns 200 PLAN_UNKNOWN', async () 
   });
 });
 
+// Pins: the GUI's PATCH seam applies the same ingest allowlist as the tools — a file outside both
+// ingest roots is refused, nothing is stored, and includePlan has no body to return.
+test('PATCH with an absolute plan outside both ingest roots -> 200 PLAN_SOURCE_DENIED, no body on read', async () => {
+  await withServer(async ({ json }) => {
+    const id = (await json('/api/board/demo/cards', { method: 'POST', body: { title: 'planned' } })).body.id;
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'code-kanban-outside-'));
+    try {
+      const source = path.join(outside, 'secret.md');
+      fs.writeFileSync(source, '# not yours');
+      const res = await json(`/api/board/demo/cards/${id}`, { method: 'PATCH', body: { plan: source } });
+      assert.equal(res.status, 200);
+      assert.equal(res.body.ok, false);
+      assert.equal(res.body.code, 'PLAN_SOURCE_DENIED');
+      const read = await json(`/api/board/demo/cards/${id}?includePlan=1`);
+      assert.equal(read.body.card.plan, null);
+      assert.equal(read.body.plan_body, null);
+    } finally { fs.rmSync(outside, { recursive: true, force: true }); }
+  });
+});
+
 // The ingest lives in board.js, NOT at a surface — so the GUI's PATCH seam gets
 // it for free (routes.js passes req.body through as `fields`, zero edits).
 test('PATCH with an ABSOLUTE plan path ingests the file and returns the board: link', async () => {
   await withServer(async ({ json }) => {
     const id = (await json('/api/board/demo/cards', { method: 'POST', body: { title: 'planned' } })).body.id;
-    const srcDir = fs.mkdtempSync(path.join(os.tmpdir(), 'code-kanban-src-'));
+    fs.mkdirSync(claudePlansDir(), { recursive: true });
+    const srcDir = fs.mkdtempSync(path.join(claudePlansDir(), 'src-'));
     try {
       const source = path.join(srcDir, 'host-plan.md');
       fs.writeFileSync(source, '# ingested over HTTP\n');

@@ -23,7 +23,7 @@ const RULES = [
     // Raw markup, script evaluation, attribute writes that bypass React, navigation
     // (not governed by the CSP), cookies, and messages to or scripting of cc's frame.
     name: 'raw-HTML, eval or cross-frame sink',
-    re: /\binnerHTML\b|\bouterHTML\b|\binsertAdjacentHTML\b|document\.write|dangerouslySetInnerHTML|\beval\s*\(|new\s+Function\b|\bDOMParser\b|createContextualFragment|\bsetAttribute\s*\(|location\.hash\s*=|\bpushState\b|window\.parent\b|code-conductor:|location\s*\.\s*(?:href|assign|replace)\s*=|location\s*\.\s*(?:assign|replace)\s*\(|document\s*\.\s*cookie|\bparent\s*\.\s*postMessage|\bsetAttributeNS\s*\(|\binsertAdjacentElement\s*\(/,
+    re: /\binnerHTML\b|\bouterHTML\b|\binsertAdjacentHTML\b|document\.write|dangerouslySetInnerHTML|\beval\s*\(|new\s+Function\b|\bDOMParser\b|createContextualFragment|\bsetAttribute\s*\(|location\.hash\s*=|\bpushState\b|window\.parent\b|code-conductor:|location\s*\.\s*(?:href|assign|replace)\s*(?:\|\||\?\?)?=|location\s*\.\s*(?:assign|replace)\s*\(|\b(?:window|document|self|top|globalThis)\s*\.\s*location\s*(?:\|\||\?\?)?=(?![=>])|(?:^|[^\w.$])location\s*(?:\|\||\?\?)?=(?![=>])|\[\s*['"`]location['"`]\s*\]\s*(?:\|\||\?\?)?=(?![=>])|document\s*\.\s*cookie|\bdocument\s*\[\s*['"`]cookie['"`]\s*\]|\bparent\s*\.\s*postMessage|\bsetAttributeNS\s*\(|\binsertAdjacentElement\s*\(/,
     bad: [
       'el.innerHTML = html', 'el.outerHTML = html', "el.insertAdjacentHTML('beforeend', h)", 'document.write(h)',
       '<div dangerouslySetInnerHTML={{ __html: h }} />', 'eval(code)', "new Function('return 1')", 'new DOMParser()',
@@ -31,7 +31,13 @@ const RULES = [
       'window.parent.postMessage(m)', "localStorage.getItem('code-conductor:theme')",
       // Navigation is not governed by the CSP: a content-built URL there is a javascript: link.
       'location.href = u', 'window.location . assign = f', 'location.replace = f', 'location.assign(u)', 'window.location.replace (u)',
+      // Assigning the location object itself navigates too, through any global that holds it.
+      'window.location = u', 'document.location=u', 'self . location = u', 'top.location  =u', 'globalThis\t.location = u',
+      // ...bare, bracketed, and as a logical compound assignment.
+      'location = u', "window['location'] = u", 'window.location ||= u', 'top.location ??= u', 'location.href ??= u',
       'const c = document.cookie', 'parent.postMessage(m, origin)', "el.setAttributeNS(null, 'href', u)",
+      // The bracketed spellings of document.cookie, in each quote style.
+      "document['cookie']", 'document [ "cookie" ]', 'document[`cookie`]',
       "el.insertAdjacentElement('afterend', node)",
     ],
   },
@@ -159,6 +165,13 @@ const FIXTURE = {
   'frontend/src/Card.tsx': 'export const C = () => <p>{fetch("api/x")}</p>;',
   'frontend/src/k.ts': "localStorage.setItem('k', 'v');",
   'frontend/src/clean.ts': '// innerHTML in a comment is prose, not code\nexport const ok = 1;',
+  // Comparing or reading the location — or naming a parameter `location` — is not a navigation.
+  'frontend/src/lib/where.ts': [
+    'export const framed = () => window.location === top.location;',
+    'export const here = (location: Location) => location.href;',
+    "export const same = (l: Location) => location == l || window['location'] !== l;",
+    'export const pick = (location?: Location) => location;',
+  ].join('\n'),
   'frontend/src/Styled.jsx': "export const S = (v) => React.createElement('div', { style: v.css });",
   'frontend/src/lib/paint.js': 'export const paint = (el, v) => { el.style = v; };',
   'frontend/src/lib/tint.ts': 'export const tint = (el: HTMLElement, v: string) => { el.style.color = v; };',

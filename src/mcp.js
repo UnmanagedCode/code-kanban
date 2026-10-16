@@ -148,7 +148,7 @@ function epicListing(result, meta, args) {
 }
 
 function shapeBody(tool, result, args) {
-  const extractors = RAW_TEXT[tool];
+  const extractors = Object.hasOwn(RAW_TEXT, tool) ? RAW_TEXT[tool] : null;
   if (extractors && result?.ok === true) {
     const meta = { ...result };
     const text = [];
@@ -169,8 +169,10 @@ export async function handle(body) {
   if (typeof tool !== 'string' || tool.length === 0) {
     return { status: 400, body: { error: 'tool is required and must be a non-empty string' } };
   }
+  // Own keys only: an inherited Object.prototype member (`constructor`, `toString`)
+  // would otherwise dispatch as a tool.
+  if (!Object.hasOwn(handlers, tool)) return { status: 200, body: { error: `unknown tool: ${tool}` } };
   const fn = handlers[tool];
-  if (!fn) return { status: 200, body: { error: `unknown tool: ${tool}` } };
   try {
     const a = args ?? {};
     const result = await fn(a, caller?.sessionId ?? null);

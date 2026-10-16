@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { freshRoot, cleanup } from './_helpers.mjs';
-import { plansDir } from '../src/paths.js';
+import { plansDir, claudePlansDir } from '../src/paths.js';
 import * as mcp from '../src/mcp.js';
 import { _setProjectFetcher } from '../src/projects.js';
 
@@ -21,6 +21,17 @@ test('unknown tool -> 200 {error}', async () => {
   const res = await mcp.handle({ tool: 'nope', arguments: {} });
   assert.equal(res.status, 200);
   assert.match(res.body.error, /unknown tool/);
+});
+
+// Pins: a tool name resolves only as an OWN key of the dispatch map. An inherited
+// Object.prototype member is a function (or an object) too, so indexing the map with it
+// dispatched `constructor` as `Object(args)` and echoed the caller's arguments back.
+test('an Object.prototype key is an unknown tool', async () => {
+  for (const tool of ['constructor', 'toString', 'hasOwnProperty', '__proto__', 'valueOf', 'handle']) {
+    const res = await mcp.handle({ tool, arguments: { echo: 'me' } });
+    assert.equal(res.status, 200, tool);
+    assert.deepEqual(res.body, { error: `unknown tool: ${tool}` }, tool);
+  }
 });
 
 test('success rides in {result}', async () => {
@@ -96,8 +107,9 @@ test('caller.sessionId is threaded into owner-scoped tools', async () => {
 test('file_card via mcp: an absolute plan is ingested and reported in {result}', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
-  const srcDir = fs.mkdtempSync(path.join(os.tmpdir(), 'code-kanban-src-'));
+  const srcDir = claudePlansDir();
   try {
+    fs.mkdirSync(srcDir, { recursive: true });
     const source = path.join(srcDir, 'wake.md');
     fs.writeFileSync(source, '# plan from the wake\n');
     const res = await mcp.handle({ tool: 'file_card', arguments: { project: 'demo', title: 't', plan: source } });
@@ -794,11 +806,43 @@ test('read_epic keeps logbook_total in the metadata block, at full length', asyn
   } finally { await cleanup(root); }
 });
 
+// Pins (acceptance 4): the conductor's plan-wake attach keeps working. The plan sits in the
+// Claude plans dir, which freshRoot places OUTSIDE PROJECTS_ROOT, so the plans-dir root of the
+// ingest allowlist is what admits it — for each of the three tools that take `plan`.
+test('the conductor attaches a host plan by absolute path over MCP', async () => {
+  const root = await freshRoot();
+  useProjects(['demo']);
+  try {
+    fs.mkdirSync(claudePlansDir(), { recursive: true });
+    const wake = path.join(claudePlansDir(), 'wake.md');
+    fs.writeFileSync(wake, '# the wake plan\n');
+    assert.equal(wake.startsWith(root + path.sep), false, 'the plans dir is outside PROJECTS_ROOT');
+    const call = async (tool, args) => (await mcp.handle({ tool, arguments: args })).body;
+
+    const { id } = (await call('file_card', { project: 'demo', title: 't' })).result;
+    const u = await call('update_card', { project: 'demo', id, fields: { plan: wake } });
+    assert.deepEqual(u.result, { ok: true, plan: `board:${id}.md` });
+    const read = await call('read_card', { project: 'demo', id, includePlan: true });
+    assert.deepEqual(read.text, [read.text[0], '# the wake plan\n']);
+
+    const f = (await call('file_card', { project: 'demo', title: 'filed', plan: wake })).result;
+    assert.equal(f.ok, true);
+    assert.equal(f.plan, `board:${f.id}.md`);
+    assert.equal((await call('read_card', { project: 'demo', id: f.id, includePlan: true })).text[1], '# the wake plan\n');
+
+    const e = (await call('create_epic', { project: 'demo', slug: 'ep', title: 'E', plan: wake })).result;
+    assert.deepEqual(e, { ok: true, plan: 'board:epic-ep.md' });
+    const re = await call('read_epic', { project: 'demo', slug: 'ep', includePlan: true });
+    assert.equal(re.text.at(-1), '# the wake plan\n');
+  } finally { await cleanup(root); }
+});
+
 test('create_epic via mcp: an absolute plan is ingested and the stored link reported', async () => {
   const root = await freshRoot();
   useProjects(['demo']);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'code-kanban-src-'));
+  const dir = claudePlansDir();
   try {
+    fs.mkdirSync(dir, { recursive: true });
     const source = path.join(dir, 'wake-plan.md');
     fs.writeFileSync(source, '# the epic strategy');
     const c = await mcp.handle({ tool: 'create_epic', arguments: { project: 'demo', slug: 'auth', title: 'A', plan: source } });

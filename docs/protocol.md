@@ -39,7 +39,10 @@ to `POST /api/mcp`:
   `updated` — minus the three body sections that moved into the text block.
   The channel is **MCP-only**: the GUI's HTTP routes bypass `src/mcp.js` and keep reading these as
   plain JSON fields.
-- Missing/empty `tool` → **400** `{error}`; unknown tool name → 200 `{error}`.
+- Missing/empty `tool` → **400** `{error}`; unknown tool name → 200 `{error}` (`unknown tool: <tool>`).
+  A tool name resolves as an **own key** of `src/mcp.js`'s dispatch map only, so an
+  `Object.prototype` member (`constructor`, `toString`, `__proto__`, …) is an unknown tool too.
+- A response body that cannot be serialised → **500** `{error}`.
 - `caller.sessionId` may be `null` when the host can't resolve the caller.
 
 ## Result payloads (the `{ok}` domain convention)
@@ -55,11 +58,17 @@ result the conductor relays to the model, **not** an `{error}`. `{error}` is res
 malformed envelope or an unexpected exception.
 
 **Refusal codes:** `PROJECT_UNKNOWN`, `CARD_UNKNOWN`, `EPIC_UNKNOWN`, `EPIC_CONFLICT`, `INVALID_STATE`,
-`PLAN_UNKNOWN`.
+`PLAN_UNKNOWN`, `PLAN_SOURCE_DENIED` (an absolute `plan` source outside the ingest allowlist — see
+`update_card`'s `plan` bullet).
+
+A card `id` or epic `slug` names a record only when it is one plain filename segment
+(`store.isRecordName`: `^[A-Za-z0-9._-]+$`, not `.` or `..`). Anything else — a `/`, a `\`, a `..`,
+however it arrives (a tool argument, a decoded HTTP path parameter, a card's `epic` field) — never
+names a record: `CARD_UNKNOWN` / `EPIC_UNKNOWN`, the same refusal as any unknown name.
 
 ## Tool signatures
 
-- `file_card({project, title, goal?, acceptance?, epic?, depends_on?, category?, priority?, plan?}) → {ok, id[, plan]}` — card lands in `triage` by default; `category` names the lane to file into, one of `CATEGORIES` in `src/board.js` — `triage` plus triage's legal exits, derived via `legalTargets('triage')` from `ALLOWED_TRANSITIONS` (the manifest's `enum` is pinned to it by `tests/pluginManifest.test.mjs`). Any other `category` value → `INVALID_STATE` naming `CATEGORIES`. `epic` is omitted or `null` (filed unlinked), else a non-empty string that must already exist → `EPIC_UNKNOWN` (reason lists the known slugs, plus a conditional `create_epic` hint — see the shared `epic` paragraph below); any other shape → `INVALID_STATE` through the same `checkEpic` `update_card` uses (see its `epic` bullet). `priority` is one of `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` (advertised in the manifest as an `enum` with **no `default`**); omitted or `null` → unset; anything else → `INVALID_STATE`. `acceptance` and `depends_on` are each `string[]` — omitted or `null` for none; **anything else, including a non-array or a non-string item, is `INVALID_STATE`** naming the field (and the item's index), never silently coerced to an empty list. Each `acceptance` item runs through the **same** text validator as `update_card`'s `add`/`rename`/`replace` (no newline, non-empty after trim, stored trimmed — see the `acceptance` bullet below), reported as `acceptance[i]: …`. `title` must be a non-empty string containing **no newline or carriage return** (checked on the raw value; `title must not contain a newline`) and `goal` a string or `null` — the **same two validators** `update_card` uses, so the refusal strings are identical at both surfaces (see `update_card`'s `title`/`goal` bullet). `plan` takes the same three input forms as `update_card`'s `fields.plan` (below) and is resolved against the card's freshly-minted id, so an **absolute** path is copied to `plans/<id>.md`; the stored link comes back as `plan` in the result. All of these validate **before** the card is written, so a refusal consumes no id — including a `PLAN_UNKNOWN` plan: no card is created and the next `file_card` gets that same id.
+- `file_card({project, title, goal?, acceptance?, epic?, depends_on?, category?, priority?, plan?}) → {ok, id[, plan]}` — card lands in `triage` by default; `category` names the lane to file into, one of `CATEGORIES` in `src/board.js` — `triage` plus triage's legal exits, derived via `legalTargets('triage')` from `ALLOWED_TRANSITIONS` (the manifest's `enum` is pinned to it by `tests/pluginManifest.test.mjs`). Any other `category` value → `INVALID_STATE` naming `CATEGORIES`. `epic` is omitted or `null` (filed unlinked), else a non-empty string that must already exist → `EPIC_UNKNOWN` (reason lists the known slugs, plus a conditional `create_epic` hint — see the shared `epic` paragraph below); any other shape → `INVALID_STATE` through the same `checkEpic` `update_card` uses (see its `epic` bullet). `priority` is one of `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` (advertised in the manifest as an `enum` with **no `default`**); omitted or `null` → unset; anything else → `INVALID_STATE`. `acceptance` and `depends_on` are each `string[]` — omitted or `null` for none; **anything else, including a non-array or a non-string item, is `INVALID_STATE`** naming the field (and the item's index), never silently coerced to an empty list. Each `acceptance` item runs through the **same** text validator as `update_card`'s `add`/`rename`/`replace` (no newline, non-empty after trim, stored trimmed — see the `acceptance` bullet below), reported as `acceptance[i]: …`. `title` must be a non-empty string containing **no newline or carriage return** (checked on the raw value; `title must not contain a newline`) and `goal` a string or `null` — the **same two validators** `update_card` uses, so the refusal strings are identical at both surfaces (see `update_card`'s `title`/`goal` bullet). `plan` takes the same three input forms as `update_card`'s `fields.plan` (below) and is resolved against the card's freshly-minted id, so an **absolute** path is copied to `plans/<id>.md`; the stored link comes back as `plan` in the result. All of these validate **before** the card is written, so a refusal consumes no id — including a `PLAN_UNKNOWN` or `PLAN_SOURCE_DENIED` plan: no card is created and the next `file_card` gets that same id.
 - `log_card({project?, id?, entry}) → {ok}` — two paths, chosen by `id`:
   - **`id` omitted (worker path):** target card resolved server-side from `caller.sessionId`
     (the owned `in-progress` card; ties broken by most-recently-modified). `project` is
@@ -112,7 +121,9 @@ malformed envelope or an unexpected exception.
   peer). `includePlan: true` (default `false`) adds `plan_body` — the plan file read up to a fixed
   **64 KiB** cap (`PLAN_MAX_BYTES` in `src/board.js`; not caller-settable) — plus
   `plan_truncated` (file larger than the cap) and `plan_missing` (a link exists but its file is
-  absent/unreadable, incl. a symlink pointing out of its base dir). A dead link is **never a
+  absent/unreadable, incl. a symlink pointing out of its base dir, or is not a regular `.md` file by
+  realpath — so a stored link to a `.env`, e.g. one a sync peer carried, degrades here and never
+  returns that file's body). A dead link is **never a
   refusal**: `plan_body: null, plan_missing: true`. No link at all → `plan_body: null,
   plan_missing: false`.
 
@@ -205,18 +216,45 @@ malformed envelope or an unexpected exception.
     and an **absolute path** (**ingested**: copied to
     `<kanbanRoot>/projects/<project>/plans/<id>.md`, `plans/` created if absent, an existing copy
     overwritten — last write wins, no versioning; the source is never moved or modified).
+    **Ingest allowlist:** the source must be a **regular `.md` file** (suffix compared
+    case-insensitively, on the realpath) of **at most 1 MiB** (`PLAN_INGEST_MAX_BYTES` in
+    `src/board.js`) whose **realpath** is under one of two roots — the **Claude plans dir**
+    (`paths.claudePlansDir`: `$CLAUDE_CONFIG_DIR/plans`, else `~/.claude/plans`, the rule
+    code-conductor resolves its own config dir by) or **`PROJECTS_ROOT`** (worktrees, checkouts,
+    the board's own `plans/`). Anything else is `PLAN_SOURCE_DENIED`, one reason for every
+    denial, naming that set. The checks run in a fixed order (`ingestPlanFile`): lexical
+    containment first, touching no file, so a path outside the roots is denied whether or not it
+    exists; then the realpath (a missing source or dangling link inside a root is `PLAN_UNKNOWN`),
+    realpath containment (a symlink out of a root is denied), the suffix, regular-file and size
+    checks — taken from ONE non-blocking, no-follow open of the realpath, and the copy is the bytes
+    read from that open file (a symlink swapped in at the checked path is `PLAN_UNKNOWN`; a file
+    renamed over it afterwards is not what gets copied; one grown past the cap is denied). Legal forms per surface:
+
+    | `plan` value | `PATCH /api/board/:p/cards/:id` | MCP `update_card` / `file_card` / `create_epic` | `POST /api/board/:p/cards`, `POST /api/board/:p/epics`, `POST /api/epics` |
+    |---|---|---|---|
+    | `board:<rel>` / bare `<rel>` | pointer: realpath inside the base, regular `.md` | same | `plan` not passed (the route destructures a fixed field list) |
+    | `repo:<rel>` | pointer: realpath inside `<PROJECTS_ROOT>/<project>`, regular `.md`; refused on a cross-project epic | same | not passed |
+    | absolute, realpath under the Claude plans dir, `.md`, ≤ 1 MiB | ingested | ingested (the conductor's plan-wake attach) | not passed |
+    | absolute, realpath under `PROJECTS_ROOT`, `.md`, ≤ 1 MiB | ingested | ingested | not passed |
+    | absolute, outside both roots, a symlink escaping them, not `.md`, or over the cap | `PLAN_SOURCE_DENIED` | `PLAN_SOURCE_DENIED` | not passed |
+    | absolute, inside a root but missing or dangling | `PLAN_UNKNOWN` | `PLAN_UNKNOWN` | not passed |
+
+    HTTP and MCP accept the same forms on purpose: `/api/mcp` is unauthenticated too, so a
+    stricter HTTP rule would close nothing.
     **Stored form (1)** — always `board:<rel>` or `repo:<rel>`. Unchanged by this feature, so
     reads, sync, `delete_card`'s unlink and the GUI all see one grammar.
     An absolute path pointing at an in-tree file yields a board **snapshot**, not a live `repo:`
     pointer — pass `repo:<rel>` explicitly for that. Both `update_card` and `file_card` return the
     resolved `plan` link when the field was part of the call.
     Refused `INVALID_STATE`: an empty value, a non-string, an embedded newline (frontmatter is one
-    verbatim line), any other scheme (`file:`, `http:`, `C:\…`), an absolute path **after an
+    verbatim line), any other scheme (`file:`, `http:`, `C:\…`, and an `Object.prototype` name such as `constructor:` — a scheme is known only as an own key of `src/planLink.js`'s scheme table), an absolute path **after an
     explicit scheme** (`board:/abs` — the scheme makes it a pointer, and a pointer must be
     relative), and `../` escaping a base. Refused `PLAN_UNKNOWN` when a **pointer** is grammatical
-    but resolves to no regular file inside its base (incl. via a symlink out of it), **and** when
-    an absolute source is missing, a directory, not a regular file, or cannot be read/copied — the
-    card's `plan` is left unchanged. `plan: null` clears it.
+    but resolves to no regular **`.md`** file inside its base (incl. via a symlink out of it, and a
+    `.md` name whose realpath is not `.md`; the reason names the base), **and** when
+    an absolute source inside an ingest root is missing, a dangling link, a directory, not a
+    regular file, or cannot be read/copied. Refused `PLAN_SOURCE_DENIED` when an absolute source
+    fails the ingest allowlist above. Either way the card's `plan` is left unchanged. `plan: null` clears it.
   - **`owner`** — only settable on an **`in-progress`** card → else `INVALID_STATE` (a plan-worker →
     implementer handoff needs no lane move). Must be a non-empty single token with no whitespace;
     `null` clears it. A real change stamps a logbook line `owner <from> -> <to>` (`none` for an
@@ -256,7 +294,7 @@ malformed envelope or an unexpected exception.
     `.wiki/gotchas/acceptance-line-round-trip.md`). No logbook line is written for an acceptance edit
     (unlike `owner`, this is an edit, not a handoff). The edited list is **not** echoed back in the
     result — `read_card` is the read path.
-- `create_epic({project?, projects?, slug, title, goal?, plan?}) → {ok[, plan]}` — `slug` matches `^[a-z0-9._-]+$`; idempotent upsert. `title` is required and always overwrites; **every optional field the caller OMITS is preserved** (`goal`, `plan`, and the logbook, which no caller can pass) — pass `goal: ''`/`null` or `plan: null` to clear one explicitly. Presence is tested `!== undefined`, **never** `'goal' in args`: `src/routes.js` destructures the request body, so the key is always present holding `undefined`, and an `in` test would make every GUI epic re-post clobber the goal. `created` is preserved; for a cross-project epic the member `projects` list **is** replaced — membership is mutable. `plan` is a link to the epic's PLAN file (the *strategy*: why these choices, why this sequence — not the dependency graph, which `depends_on` owns, and not progress, which the rollup owns), taking the same three input forms as `update_card`'s `fields.plan`; an **absolute** path is ingested to `plans/epic-<slug>.md` and stored as `board:epic-<slug>.md`. The `epic-` prefix is load-bearing: `SLUG_RE` admits a card-id-shaped slug (`2026-0001`), so an unprefixed name would overwrite that card's own plan file. For a **project-scoped** epic `board:` resolves under that project's `plans/` dir; a **cross-project** epic has no owning project, so its `board:` resolves under the **board-level** `<kanbanRoot>/plans/` dir and `repo:` is refused `INVALID_STATE`. The stored link is returned as `plan` only when `plan` was part of the call. A malformed value is refused `INVALID_STATE` **before any lock**, an unresolvable one `PLAN_UNKNOWN` — either way nothing is written. Give **exactly one** of `project` (project-scoped) or `projects` (a cross-project epic spanning ≥2 members) → else `INVALID_STATE`. A slug may not be both a cross-project epic and a per-project epic in one of its members → `EPIC_CONFLICT` (guarded in both create orders).
+- `create_epic({project?, projects?, slug, title, goal?, plan?}) → {ok[, plan]}` — `slug` matches `^[a-z0-9._-]+$`; idempotent upsert. `title` is required and always overwrites; **every optional field the caller OMITS is preserved** (`goal`, `plan`, and the logbook, which no caller can pass) — pass `goal: ''`/`null` or `plan: null` to clear one explicitly. Presence is tested `!== undefined`, **never** `'goal' in args`: `src/routes.js` destructures the request body, so the key is always present holding `undefined`, and an `in` test would make every GUI epic re-post clobber the goal. `created` is preserved; for a cross-project epic the member `projects` list **is** replaced — membership is mutable. `plan` is a link to the epic's PLAN file (the *strategy*: why these choices, why this sequence — not the dependency graph, which `depends_on` owns, and not progress, which the rollup owns), taking the same three input forms as `update_card`'s `fields.plan`; an **absolute** path is ingested to `plans/epic-<slug>.md` and stored as `board:epic-<slug>.md`. The `epic-` prefix is load-bearing: `SLUG_RE` admits a card-id-shaped slug (`2026-0001`), so an unprefixed name would overwrite that card's own plan file. For a **project-scoped** epic `board:` resolves under that project's `plans/` dir; a **cross-project** epic has no owning project, so its `board:` resolves under the **board-level** `<kanbanRoot>/plans/` dir and `repo:` is refused `INVALID_STATE`. The stored link is returned as `plan` only when `plan` was part of the call. A malformed value is refused `INVALID_STATE` **before any lock**, an unresolvable one `PLAN_UNKNOWN`, an absolute source outside the ingest allowlist `PLAN_SOURCE_DENIED` — either way nothing is written. Give **exactly one** of `project` (project-scoped) or `projects` (a cross-project epic spanning ≥2 members) → else `INVALID_STATE`. A slug may not be both a cross-project epic and a per-project epic in one of its members → `EPIC_CONFLICT` (guarded in both create orders).
 - `list_epics({project}) → {ok, epics:[{slug, title, plan, rollup, projects, completed}]}` — `plan` is the epic's raw stored link (`null` when unlinked). The project's own epics (`projects:null`) plus cross-project epics spanning it (`projects:[…]`, `rollup` aggregated over all members). `completed` is `true` when the epic has **≥1 card and every card is `done`** (derived from `rollup`; an epic with **no cards is not completed**; a cross epic counts every member project). **Order** (`compareEpics` in `src/board.js`): active (`completed:false`) before completed → **last activity** descending → `slug` ascending by code units. Last activity = the latest of the epic's `updated` and each member card's `updated` (in every project the epic spans), each falling back to `created` when unset; a missing/unparseable stamp sorts last and never refuses. Cross-project epics interleave with project epics by that order. The activity value itself is a sort key only — **not** in the response (whitelist). Blind spots: deleting a card, or re-pointing it to another epic, does not bump the epic it left. **Over MCP:** the result rides the raw-text channel — one epic-roster text block (slug, title, per-state rollup always printed for all five lanes, `cross: <members>` for a cross-project epic, and a single `── completed (N) ──` line immediately before the first completed epic, omitted when none is completed) plus `{ok, count}`. Unlike `list_cards`, there is no default-hide: an epic has no state, and its rollup's `done` count is the fact a reader wants, not noise. There is no honest whole-list aggregate for the rollups (a cross-project epic's rollup already spans other projects), so `meta` carries only the epic count — every rollup number lives in the text.
 - `read_epic({project?, slug, logTail?, includePlan?}) → {ok, epic:{slug,title,goal,plan,rollup[,projects],logbook}, logbook_total, plan_path[, plan_body, plan_truncated, plan_missing], cards:[summary], cards_total, cards_truncated}` — `project` may be the epic's **owning** project (a project-scoped epic resolves first) **or any member** of a cross-project epic; omit it to address a cross-project epic by slug. A cross epic addressed with a **non-member** `project` → `EPIC_UNKNOWN`. Every `EPIC_UNKNOWN` reason lists the slugs that would resolve for the scope (`knownEpicSlugs` in `src/board.js`, code-unit sorted, `(none)` when empty): with `project`, `unknown epic: <slug> in project <project>; known: …` (its own epics plus the cross epics it is a member of); without, `unknown epic: <slug>; with no project only cross-project epics resolve: … — pass project for a project-scoped epic`. One resolver (`resolveEpic` in `src/board.js`) serves this and `log_epic`, so the two cannot disagree. A cross epic's `rollup` and `cards` aggregate across all member projects and `epic.projects` lists them. `epic.plan` is the raw stored link (mirroring the record, as `card` mirrors frontmatter) and `epic.logbook` is returned **by default** in **chronological** order, `logTail` keeping only the last N entries (`logTail: 0` → zero, the same `slice(-0)` trap `read_card` avoids). `logbook_total` is **top-level** and is the logbook's **full** length **before** any `logTail` cap, so a tail'd caller can tell 5 entries from 50. The plan fields are **top-level** and behave exactly as `read_card`'s — `plan_path` always, `includePlan` adding `plan_body`/`plan_truncated`/`plan_missing` under the same 64 KiB `PLAN_MAX_BYTES` cap, a dead link degrading to `plan_missing: true` rather than refusing. Both reads run through one shared implementation (`planFields` in `src/board.js`). The hidden `updated`/`node` stamp is stripped (the response is a field whitelist). `board.readEpic` also takes an internal `cardLimit` (not a caller param) that keeps the first N `cards` in board order — done last, so a cut drops done cards first; `cards_total` (the full count) and `cards_truncated` are **top-level on every read**. **Bounds are MCP-only:** the MCP handler defaults `logTail` and always sets `cardLimit` from `READ_EPIC_BOUNDS` in `src/mcp.js` (the manifest advertises the `logTail` default and the card cap, pinned to that constant); an explicit `logTail` overrides its bound, and `list_cards({project, epic, includeDone: true})` — once per member project for a cross epic — lists every card. `includeDone: true` is required: the cap cuts `done` cards first, and `list_cards` hides `done` by default over MCP. The HTTP routes pass neither, so the GUI's reads are unbounded. **Over MCP:** metadata block `{ok, epic:{slug,title,plan,rollup[,projects]}, logbook_total, plan_path[,…], cards:[summary], cards_total, cards_truncated}` (`logbook_total` is a scalar, so it stays in the metadata block by the split rule) plus up to three raw blocks in order — `epic.goal`, the logbook as a `- ` list, then `plan_body` — each omitted when empty; `cards` stays JSON — the split rule's one exception, since it is a secondary field of a card-detail read rather than the payload the caller asked for (`list_cards({epic})` is the text rendering of that same set).
 - `delete_card({project, id}) → {ok}` — permanently removes the card's file; unknown id → `CARD_UNKNOWN`. Also best-effort removes the card's plan file **when the link is `board:`** — a `repo:` plan is a source-tree file and is never touched; a failed unlink leaves an orphan, never a refusal. Irreversible and not sync-aware: see "Cross-instance sync" in `docs/architecture.md`.
@@ -269,7 +307,8 @@ lists (`list_cards`, `read_epic`) are ordered **column (`STATES` order) → prio
 after every judged level, so an unjudged card never outranks a judged one. The id tiebreak is
 **numeric** on the `YYYY-NNNN` shape — year, then number — not lexicographic, because the number is
 not a fixed width (`2026-10000` is a valid id and sorts ahead of `2026-9999`). An id **not** matching
-that shape (only reachable from a peer that minted it) sorts after every id that does, and such ids
+that shape (only reachable from a card file written outside this allocator — a sync peer's id must
+match it) sorts after every id that does, and such ids
 are ordered among themselves by reverse string compare. `list_cards`' MCP text rendering of a `summary` prints
 `id`, `priority`, `title` and the date-only `created`; `epic`/`owner`/`depends_on`/`plan` print only
 when set (never as a bare `epic —`); `project` and `state` are never repeated per row — the
@@ -327,7 +366,7 @@ malformed path segment (`/api/board/%E0%A4%A/cards`) or an oversized body → it
 | `GET /api/board/:project/cards` | `board.listCards` | `?state`, `?epic` | `{ok, cards:[summary]}` |
 | `GET /api/board/:project/cards/:id` | `board.readCard` | `?includePlan=1\|true` | `{ok, card, plan_path[, plan_body, plan_truncated, plan_missing]}` (full: goal, acceptance, logbook). Any other `includePlan` value is falsy. The GUI always sends `includePlan=1` and reads `plan_body` as a field (the raw-text channel is MCP-only). |
 | `POST /api/board/:project/cards` | `board.fileCard` | `{title, goal?, acceptance?, epic?, depends_on?, priority?}` | `{ok, id}` (lands in `triage`; `priority` omitted or `null` → unset). The route destructures a fixed field list and deliberately does **not** pass `plan` — the GUI has no file picker and documents the plan link as non-editable. A non-array or non-string-item `acceptance`/`depends_on` is refused `INVALID_STATE`, not emptied (same refusals as the tool). |
-| `PATCH /api/board/:project/cards/:id` | `board.updateCard` | body **is** `fields` ⊆ `{title, goal, epic, priority, depends_on, plan, owner, acceptance}` | `{ok[, plan]}` (same refusals as the tool, incl. `PLAN_UNKNOWN`; an absolute `plan` is ingested here too — the copy lives in `board.js`, not at a surface; a bare `acceptance` array — e.g. `[{text,done}]` — is refused `INVALID_STATE`, not silently ignored: it must be `{ops:[…]}`, `{replace:[…]}`, or `null`) |
+| `PATCH /api/board/:project/cards/:id` | `board.updateCard` | body **is** `fields` ⊆ `{title, goal, epic, priority, depends_on, plan, owner, acceptance}` | `{ok[, plan]}` (same refusals as the tool, incl. `PLAN_UNKNOWN` and `PLAN_SOURCE_DENIED`; an absolute `plan` is ingested here too, under the same allowlist — the copy lives in `board.js`, not at a surface; a bare `acceptance` array — e.g. `[{text,done}]` — is refused `INVALID_STATE`, not silently ignored: it must be `{ops:[…]}`, `{replace:[…]}`, or `null`) |
 | `POST /api/board/:project/cards/:id/move` | `board.moveCard` | `{to, owner?, commit?}` | `{ok, from, to}` |
 | `GET /api/board/:project/epics` | `board.listEpics` | — | `{ok, epics:[{slug, title, plan, rollup, projects, completed}]}` (`plan` is the raw link, or `null`; the GUI's row `plan` badge reads it) (incl. cross-project epics spanning the project), ordered active before completed, then last activity descending, then slug — same rule as `list_epics` above |
 | `GET /api/board/:project/epics/:slug` | `board.readEpic` | `?includePlan=1\|true` | `{ok, epic, logbook_total, plan_path[, plan_body, plan_truncated, plan_missing], cards:[summary], cards_total, cards_truncated}` — unbounded (no `logTail`/`cardLimit`; `cards_truncated` is always `false`) (resolves a cross-project epic the project belongs to). Any other `includePlan` value is falsy. The GUI's epic detail always sends `includePlan=1`, as for a card. |
@@ -354,13 +393,17 @@ Notes:
   `POST /api/sync/pull` fetches the peer's export (`<peerUrl>/api/sync/export`) **backend-to-backend**
   (avoids browser CORS) and merges by `uid` (union + card-level last-edit-wins). The pull summary
   contains **display ids/slugs/counts only** — never `uid`/`node` (it reaches the GUI). Malformed peer
-  cards (missing/non-string `id`, or an unknown column) are skipped and listed in `skippedCards`.
+  cards are skipped and listed in `skippedCards`: an `id` that is not a string matching `ID_SHAPE`
+  (`<year>-<number>`, `src/board.js`) or is longer than `PEER_ID_MAX` (64) characters, or an
+  unknown column. The id names the card's file, so this is what keeps a peer from writing outside
+  the board.
   **Epics** are exported (`projectEpics`/`crossEpics`) and merged BEFORE cards, matched by **slug**
   (whole-epic last-edit-wins; hidden `updated`/`node` exposed only by export, never by `read_epic`/
   `list_epics`). A slug that is a project epic on one side and cross-project on the other is skipped +
   reported in `epicConflicts` (never merged/deleted — grow-only); malformed epics (bad slug / cross
   epic with <2 members) go to `skippedEpics`. A cross epic's `projects` list is filtered to
-  non-empty **strings** first, so junk members are dropped *before* that <2 check — an epic left
+  **record names** first (strings passing `store.isRecordName` — one plain segment, so a blank or
+  traversing member such as `../../x` is dropped), so junk members are dropped *before* that <2 check — an epic left
   too short by the filter is skipped, not half-written. Beyond skip and conflict there is a **third
   outcome**: a well-formed epic whose BODY fields are malformed (`goal` not a string, `plan` a
   non-string or newline-bearing value, `logbook` not an array of strings) is neither skipped nor

@@ -253,3 +253,24 @@ test('a card file written by the PRE-rename build parses and re-serializes byte-
 
   assert.equal(serialize(card), original);
 });
+
+// Pins: a section heading is a peer- or caller-supplied key, so the parser's section map has no
+// prototype — `## __proto__` and `## constructor` are ordinary unknown sections, their lines land
+// in no known field, and the known sections still parse.
+test('parse treats `## __proto__` and `## constructor` headings as ordinary unknown sections', () => {
+  const text = [
+    '---', 'id: 2026-0001', 'title: t', 'project: demo', 'created: 2026-01-01T00:00:00.000Z', 'depends_on: []', '---',
+    '## __proto__', '- [ ] smuggled criterion', '- smuggled entry',
+    '## Goal', 'the goal',
+    '## Constructor', 'goal: not this',
+    '## Acceptance', '- [x] real criterion',
+    '## __PROTO__', '- [ ] smuggled again',
+    '## Logbook', '- real entry',
+  ].join('\n');
+  const t = parse(text, { state: 'triage' });
+  assert.equal(t.goal, 'the goal');
+  assert.deepEqual(t.acceptance, [{ text: 'real criterion', done: true }]);
+  assert.deepEqual(t.logbook, ['real entry']);
+  assert.equal(Object.prototype.goal, undefined);
+  assert.equal([].goal, undefined);
+});

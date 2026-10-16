@@ -13,7 +13,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import { STATES } from './paths.js';
+import { STATES, claudePlansDir, projectsRoot } from './paths.js';
 import { resolvePlanLink, classifyPlanInput, planBaseDir, isContained } from './planLink.js';
 import { validateProject, listProjects } from './projects.js';
 import { withLock } from './mutex.js';
@@ -68,20 +68,62 @@ function sanitizeCommit(commit) {
 // tighter than project_read's 256 KiB — plan prose lands in an agent's context.
 // A constant, not a parameter: nothing needs to tune it.
 const PLAN_MAX_BYTES = 65536;
+// Hard cap on an ingest SOURCE (ingestPlanFile). A plan is prose; a larger file
+// is not one, and copying it in would only make it readable back.
+const PLAN_INGEST_MAX_BYTES = 1 << 20;
 
-// The absolute path of a resolved link IF it is a regular file that really sits
-// inside its base dir, else null. The realpath re-check closes the symlink hole:
-// plans/ is worker-writable, so a symlink out of it would otherwise be an
-// arbitrary-file read once includePlan exists.
+// The absolute path of a resolved link IF it is a regular `.md` file that really
+// sits inside its base dir, else null. The realpath re-check closes the symlink
+// hole: plans/ is worker-writable, so a symlink out of it would otherwise be an
+// arbitrary-file read once includePlan exists. The `.md` rule (on the realpath,
+// lowercase — the same rule ingestPlanFile applies) keeps a pointer from naming
+// a checkout's `.env` or key file, which repo:'s base contains.
 function safePlanFile(project, resolved) {
   try {
     if (!fs.statSync(resolved.path).isFile()) return null;
     const realBase = fs.realpathSync(planBaseDir(project, resolved.scheme));
     const real = fs.realpathSync(resolved.path);
-    return isContained(realBase, real) ? real : null;
+    return isContained(realBase, real) && real.toLowerCase().endsWith('.md') ? real : null;
   } catch {
     return null;
   }
+}
+
+// The dirs an ingest source must sit under: the Claude plans dir (a plan wake's
+// ~/.claude/plans/<slug>.md) and PROJECTS_ROOT (a worktree's or a checkout's
+// plan). `lexical` holds each as given and realpath'd, so a caller may name the
+// source through either spelling; `real` holds the realpath'd forms only, which
+// are what the source's own realpath is judged against. A root that does not
+// exist is skipped — nothing under it exists either.
+function ingestRoots() {
+  const lexical = [];
+  const real = [];
+  for (const root of [claudePlansDir(), projectsRoot()]) {
+    let resolved;
+    try { resolved = fs.realpathSync(root); } catch { continue; }
+    lexical.push(path.resolve(root), resolved);
+    real.push(resolved);
+  }
+  return { lexical, real };
+}
+
+// How ingest opens its source: read-only; non-blocking, so a FIFO's open returns
+// at once instead of waiting for a writer (the regular-file check then refuses
+// it); and not following a symlink at the final component, so one swapped in at
+// the checked realpath is an open error rather than a redirect.
+const INGEST_OPEN_FLAGS = fs.constants.O_RDONLY
+  | (fs.constants.O_NONBLOCK ?? 0) | (fs.constants.O_NOFOLLOW ?? 0);
+
+// The whole of open file `fd`, or null once it holds more than `max` bytes.
+function readAtMost(fd, max) {
+  const buf = Buffer.alloc(max + 1);
+  let off = 0;
+  while (off < buf.length) {
+    const n = fs.readSync(fd, buf, off, buf.length - off, null);
+    if (n === 0) break;
+    off += n;
+  }
+  return off > max ? null : buf.subarray(0, off);
 }
 
 // Ingest: copy an absolute source INTO the board as the owning record's plan
@@ -92,44 +134,68 @@ function safePlanFile(project, resolved) {
 // plan wake's ~/.claude/plans/<slug>.md, typically) is never touched or
 // modified. An existing destination is overwritten: last write wins, no
 // versioning, so re-attaching a revised plan simply replaces the board's copy.
-// -> {link} | a fail('PLAN_UNKNOWN', …)
+//
+// The source must be a regular `.md` file of at most PLAN_INGEST_MAX_BYTES whose
+// REAL path is under an ingestRoots() dir; anything else is PLAN_SOURCE_DENIED —
+// the copy is readable back through includePlan, so without this any caller
+// could read any file the server can. The order is load-bearing:
+//   1. lexical containment, with NO fs access, so a path outside the roots
+//      answers the same whether or not it exists (no existence oracle);
+//   2. realpath — a missing source or dangling link inside a root is PLAN_UNKNOWN;
+//   3. realpath containment, closing a symlink out of a root;
+//   4. the `.md` suffix, on the realpath, so a `.md` NAME for a `.env` is refused;
+//   5. ONE open of the realpath (INGEST_OPEN_FLAGS); every later step works on
+//      that open file, so a file renamed over the path afterwards changes nothing;
+//   6. isFile, from fstat of the open file;
+//   7. the size cap, from that fstat and again on the bytes actually read.
+// Every denial shares one reason, naming the valid set.
+// -> {link} | a fail('PLAN_UNKNOWN' | 'PLAN_SOURCE_DENIED', …)
 function ingestPlanFile(destDir, destName, source) {
-  let stat;
-  try { stat = fs.statSync(source); } // follows symlinks
+  const roots = ingestRoots();
+  const denied = () => fail('PLAN_SOURCE_DENIED',
+    `plan source must be a regular .md file of at most 1 MiB whose real path is under ${claudePlansDir()} or ${projectsRoot()}: ${source}`);
+  if (!roots.lexical.some((root) => isContained(root, source))) return denied();
+  let real;
+  try { real = fs.realpathSync(source); }
   catch (e) { return fail('PLAN_UNKNOWN', `cannot read plan file at ${source}: ${e.message}`); }
-  if (!stat.isFile()) return fail('PLAN_UNKNOWN', `plan source is not a regular file: ${source}`);
-
-  const dest = path.join(destDir, destName);
-  const link = `board:${destName}`;
-  // Self-copy guard — the only special case: re-attaching plans/<id>.md by
-  // absolute path, or via a symlink to it, must be a no-op success. Compared by
-  // REALPATH, not string, since only that catches the symlink form.
-  //
-  // Deliberately kept even though it is (measurably) unobservable here: with the
-  // guard removed, fs.copyFileSync(dest, dest) does NOT damage the file — libuv
-  // opens the destination O_WRONLY|O_CREAT with NO O_TRUNC, compares st_dev/
-  // st_ino and returns success without writing (strace'd on Node v24.18.0). But
-  // that short-circuit is a libuv INTERNAL: node's fs.copyFile docs promise only
-  // that an existing destination is overwritten and say nothing about a source
-  // and destination that are the same file. Betting a data-loss-critical path on
-  // a third-party library's unspecified behaviour is worse than three explicit
-  // lines — in the self-copy case the destination IS the only copy of the plan.
-  // Consequence for coverage: no test can kill the removal of this guard on
-  // Linux/libuv, so that mutant is a WAIVED expected survivor (owner's decision
-  // — see .wiki/gotchas/plan-link-and-sync-gap.md and harness/mutation/README.md).
+  if (!roots.real.some((root) => isContained(root, real))) return denied();
+  if (!real.toLowerCase().endsWith('.md')) return denied();
+  let fd;
+  try { fd = fs.openSync(real, INGEST_OPEN_FLAGS); }
+  catch (e) { return fail('PLAN_UNKNOWN', `cannot read plan file at ${source}: ${e.message}`); }
   try {
-    if (fs.existsSync(dest) && fs.realpathSync(source) === fs.realpathSync(dest)) return { link };
-  } catch { /* either side unresolvable -> not the same file; fall through */ }
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) return fail('PLAN_UNKNOWN', `plan source is not a regular file: ${source}`);
+    if (stat.size > PLAN_INGEST_MAX_BYTES) return denied();
 
-  try {
+    const dest = path.join(destDir, destName);
+    const link = `board:${destName}`;
+    // Self-copy guard — the only special case: re-attaching plans/<id>.md by
+    // absolute path, or via a symlink to it, is a no-op success. Compared by
+    // REALPATH, not string, since only that catches the symlink form.
+    //
+    // Kept although no content-level test can see it go: the bytes are read
+    // from the open source BEFORE the destination is replaced, and the replace
+    // is an atomic rename, so a self-copy without the guard rewrites identical
+    // bytes. What the guard keeps is a true no-op — the destination's file is not
+    // replaced at all — on the path where it holds the only copy of the plan.
+    // Its removal is a WAIVED expected survivor (owner's decision — see
+    // .wiki/gotchas/plan-link-and-sync-gap.md and harness/mutation/README.md).
+    try {
+      if (fs.existsSync(dest) && real === fs.realpathSync(dest)) return { link };
+    } catch { /* the destination is unresolvable -> not the same file; fall through */ }
+
+    const body = readAtMost(fd, PLAN_INGEST_MAX_BYTES);
+    if (body === null) return denied(); // it grew past the cap after the fstat
     // store.ensureProjectDirs creates plans/, but updateCard never calls it —
-    // a project dir predating that function has none.
-    fs.mkdirSync(destDir, { recursive: true });
-    fs.copyFileSync(source, dest);
+    // atomicWrite creates a missing plans/ (a project dir predating that function).
+    store.atomicWrite(dest, body);
+    return { link };
   } catch (e) {
     return fail('PLAN_UNKNOWN', `could not copy plan file from ${source}: ${e.message}`);
+  } finally {
+    fs.closeSync(fd);
   }
-  return { link };
 }
 
 // The single set-time validator for a caller-supplied plan value, shared by
@@ -145,7 +211,7 @@ function resolvePlanForSet(project, value, destName) {
   if (c.error) return fail(c.error.code, c.error.reason);
   if (c.kind === 'ingest') return ingestPlanFile(planBaseDir(project, 'board'), destName, c.source);
   if (!safePlanFile(project, c)) {
-    return fail('PLAN_UNKNOWN', `no plan file at ${c.link} (resolved to ${c.path})`);
+    return fail('PLAN_UNKNOWN', `no plan file at ${c.link}: it must name a regular .md file inside ${planBaseDir(project, c.scheme)} (resolved to ${c.path})`);
   }
   return { link: c.link };
 }
@@ -277,13 +343,14 @@ function checkGoal(value) {
 // at update_card — the same sentinel plan/priority/acceptance/owner use — and means
 // "file it unlinked" at file_card. Everything else must be a non-empty string; see
 // [[update-card-verbatim-fields]] for what each wrong shape did on disk pre-fix.
-// The typeof check is NOT redundant with the existence check below it: epicVisibleIn
-// stringifies its slug into a path template (src/store.js:175), so `['ep']` would
-// otherwise MATCH the real epic `ep` and be stored on the card as an array.
+// The typeof check is NOT redundant with the existence check below it: it is what
+// makes a wrong-typed value INVALID_STATE, where the store's record-name rule alone
+// would answer the weaker EPIC_UNKNOWN (`['ep']` names no record).
 // EXISTENCE is deliberately not checked here (it needs fs, and file_card defers it
 // into the lock): a well-formed slug naming no record is still EPIC_UNKNOWN. Slug
-// SYNTAX is not re-checked either — SLUG_RE is createEpic's gate, and a traversing
-// slug reaching path.join is tracked as board card `2026-0036`.
+// SYNTAX is not re-checked either — SLUG_RE is createEpic's gate, and the store's
+// record-name rule (store.isRecordName) bounds what a slug can name: a `/` or `..`
+// names no record, so it is EPIC_UNKNOWN too.
 // -> null when acceptable, else a fail().
 function checkEpic(value) {
   if (value === null) return null;
@@ -492,8 +559,8 @@ function summary(t) {
 // `2026-9999`. The year is a field of its own so an id whose year and number
 // DISAGREE still answers by creation year — impossible from our own allocator
 // (the sequence never resets on rollover, src/store.js:86-90) but reachable
-// from a sync peer running its own counter, since any non-empty id string is
-// accepted on the wire (src/board.js:1443). It is also what makes readEpic's
+// from a sync peer running its own counter, since mergeProject checks a peer
+// id's SHAPE, not its year. It is also what makes readEpic's
 // cross-project listing, which flat-maps independent per-project counters,
 // come out newest-first rather than by whichever counter ran further.
 //
@@ -502,6 +569,8 @@ function summary(t) {
 // fields are neutral in each bucket (bucket 0 carries raw:'', bucket 1 carries
 // year/num 0), so one comparison chain serves both.
 const ID_SHAPE = /^(\d+)-(\d+)$/;
+// The longest display id a sync peer may hand us (mergeProject).
+const PEER_ID_MAX = 64;
 function idSortKey(id) {
   const m = ID_SHAPE.exec(id);
   return m
@@ -1321,15 +1390,17 @@ function mergeCrossEpics(remoteCross, localProjects, summary) {
     }
     // Members must be usable project NAMES before anything indexes a path with
     // them: a non-string throws in path.join, inside withLock(CROSS_LOCK) and so
-    // before the per-project card loop — killing the whole pull. An empty string
-    // is dropped too, since writeCrossEpic's `[a, b]` list is re-read with
-    // .filter(Boolean) and would silently lose it on the next parse anyway.
+    // before the per-project card loop — killing the whole pull. A member must
+    // also be one plain segment (store.isRecordName): every read of the epic
+    // joins it into a project path, so `../../x` would list cards from wherever
+    // it points. That drops an empty or blank string too, which writeCrossEpic's
+    // `[a, b]` list could not round-trip (it is re-read with .filter(Boolean)).
     // This runs BEFORE the length check on purpose, so a list that is short only
     // once the junk is gone is skipped-and-reported rather than half-written.
     // NB a member naming a project absent from THIS machine is legitimate and
     // kept — a cross epic may span projects only the peer has.
     const members = Array.isArray(re.projects)
-      ? [...new Set(re.projects.filter((p) => typeof p === 'string' && p.trim() !== ''))]
+      ? [...new Set(re.projects.filter((p) => typeof p === 'string' && store.isRecordName(p)))]
       : [];
     if (members.length < 2) { summary.skippedEpics.push({ slug: re.slug, kind: 'cross' }); continue; }
     if (!members.some((p) => localProjects.has(p))) continue; // covers no local project — irrelevant
@@ -1405,14 +1476,15 @@ export function stripTrailingSlashes(s) {
   return s.slice(0, end);
 }
 
-// The number an id ends in, trailing whitespace ignored (`2026-0042` → 42); 0
+// The number an id ends in, trailing whitespace ignored (`2026-0042` → 42n); 0n
 // when it ends in no digit. What `/(\d+)\s*$/` captured, found without that
-// unanchored regex's quadratic rescan.
+// unanchored regex's quadratic rescan. A BigInt, exact at any length, because the
+// merge's allocator counts up from it (see store.js's id sequence note).
 export function trailingIdNumber(id) {
   const s = String(id ?? '').trimEnd();
   let start = s.length;
   while (start > 0 && s[start - 1] >= '0' && s[start - 1] <= '9') start--;
-  return start === s.length ? 0 : Number.parseInt(s.slice(start), 10);
+  return start === s.length ? 0n : BigInt(s.slice(start));
 }
 
 export async function syncPull({ peerUrl, scope, project } = {}) {
@@ -1489,26 +1561,33 @@ function mergeProject(project, remoteCards, remoteEpics, summary) {
   const usedIds = new Set();
   // Seed from the persisted floor (store.js's nextId uses the same one) so a
   // locally-deleted high-numbered card can't make this allocator reuse its id.
+  // BigInt, so `++maxNum` always yields a new value; usedIds is finite, so the
+  // loop below terminates.
   let maxNum = store.idFloor(project);
   for (const c of localCards) {
     localByUid.set(c.uid, c);
     usedIds.add(c.id);
-    maxNum = Math.max(maxNum, trailingIdNumber(c.id));
+    const n = trailingIdNumber(c.id);
+    if (n > maxNum) maxNum = n;
   }
   const year = new Date().getFullYear();
   const allocId = () => {
     let cand;
-    do { cand = `${year}-${String(++maxNum).padStart(4, '0')}`; } while (usedIds.has(cand));
+    do { cand = store.formatId(year, ++maxNum); } while (usedIds.has(cand));
     usedIds.add(cand);
     return cand;
   };
 
   // Validate incoming shape before it can reach deriveUid/writeCard: a card
   // without a usable display id or a known column would write a garbage file.
-  // Skip (and report) rather than corrupt the store.
+  // Skip (and report) rather than corrupt the store. The id names the card's
+  // FILE, so it must be one `<year>-<number>` token: anything else (a `..`
+  // segment, a separator) would write wherever it points. The length bound
+  // keeps the filename valid and the id number small enough to parse.
   const valid = [];
   for (const rc of remoteCards) {
-    if (!rc || typeof rc.id !== 'string' || !rc.id.trim() || !STATES.includes(rc.state)) {
+    if (!rc || typeof rc.id !== 'string' || !ID_SHAPE.test(rc.id) || rc.id.length > PEER_ID_MAX
+      || !STATES.includes(rc.state)) {
       summary.skippedCards.push({ project, id: (rc && typeof rc.id === 'string') ? rc.id : null });
       continue;
     }

@@ -68,7 +68,8 @@ export function parsePlanLink(link) {
   const m = SCHEME_RE.exec(trimmed);
   if (m) {
     scheme = m[1].toLowerCase();
-    if (!(scheme in BASE_DIR)) {
+    // Own keys only: `constructor:` would otherwise resolve through Object.prototype.
+    if (!Object.hasOwn(BASE_DIR, scheme)) {
       return bad(`unknown plan link scheme "${m[1]}:" — use board:, repo:, or a bare relative path`);
     }
     rel = trimmed.slice(m[0].length);

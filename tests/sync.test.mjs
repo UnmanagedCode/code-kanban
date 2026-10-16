@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { freshRoot, cleanup } from './_helpers.mjs';
 import { plansDir, epicsDir, crossEpicsDir } from '../src/paths.js';
 import * as board from '../src/board.js';
@@ -329,6 +330,88 @@ test('malformed remote cards (bad/missing id or state) are skipped, not written'
     assert.equal(store.exportCards('alpha').length, 1);
     assert.equal(byTitle('alpha', 'Good').id, '2026-0001');
   });
+});
+
+// Pins: a peer card id is one `<year>-<number>` token or it is skipped. The id names the card's
+// file, so an id with `..` segments wrote that file wherever the segments pointed — here, over a
+// sentinel `.md` file in the temp root, outside .conduct/kanban.
+test('a peer card id that traverses out of the board is skipped; the sentinel is untouched', async () => {
+  await withRoot(async () => {
+    const root = process.env.PROJECTS_ROOT;
+    const sentinel = path.join(root, 'sentinel.md');
+    fs.writeFileSync(sentinel, 'SENTINEL');
+    // <root>/.conduct/kanban/projects/alpha/triage/ is five levels below <root>.
+    const evil = '../../../../../sentinel';
+    serveDump({ alpha: [
+      card({ id: '2026-0001', uid: 'u-ok', title: 'Good' }),
+      card({ id: evil, uid: 'u-evil', title: 'Evil' }),
+    ] });
+    const r = await pull('project', 'alpha');
+    assert.equal(r.ok, true);
+    assert.equal(fs.readFileSync(sentinel, 'utf8'), 'SENTINEL');
+    assert.deepEqual(r.summary.skippedCards, [{ project: 'alpha', id: evil }]);
+    assert.equal(r.summary.added, 1);
+    assert.equal(byTitle('alpha', 'Good').id, '2026-0001');
+    assert.equal(byTitle('alpha', 'Evil'), undefined);
+  });
+});
+
+// Pins: the peer id rule is ID_SHAPE AND at most 64 characters. A shape id past the bound and a
+// legacy non-shape id are both skipped; a shape id at the bound still merges.
+test('a peer card id longer than 64, or not <year>-<number>, is skipped', async () => {
+  await withRoot(async () => {
+    const long = `2026-${'1'.repeat(60)}`; // 65 characters
+    const atBound = `2026-${'2'.repeat(59)}`; // 64 characters
+    assert.equal(long.length, 65);
+    assert.equal(atBound.length, 64);
+    serveDump({ alpha: [
+      card({ id: long, uid: 'u-long', title: 'Long' }),
+      card({ id: 'zz-legacy', uid: 'u-legacy', title: 'Legacy' }),
+      card({ id: atBound, uid: 'u-bound', title: 'Bound' }),
+    ] });
+    const r = await pull('project', 'alpha');
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.summary.skippedCards, [
+      { project: 'alpha', id: long },
+      { project: 'alpha', id: 'zz-legacy' },
+    ]);
+    assert.equal(byTitle('alpha', 'Long'), undefined);
+    assert.equal(byTitle('alpha', 'Legacy'), undefined);
+    assert.equal(byTitle('alpha', 'Bound').id, atBound);
+  });
+});
+
+// Pins: the merge's id allocator does exact integer arithmetic. Above 2^53 a float `+ 1` returns
+// the same value, so with that id already taken the allocator looped forever inside the project
+// lock. Run in a worker (tests/_syncAllocWorker.mjs) with a deadline, so a hang fails in seconds.
+test('reassigning an id above 2^53 terminates and takes the exact next integer', { timeout: 15_000 }, async () => {
+  const root = await freshRoot();
+  const DEADLINE_MS = 5_000;
+  try {
+    const msg = await new Promise((resolve, reject) => {
+      const worker = new Worker(new URL('./_syncAllocWorker.mjs', import.meta.url), { workerData: { root } });
+      let timer;
+      let year;
+      worker.on('message', (m) => {
+        if (m.type === 'start') {
+          year = m.year;
+          timer = setTimeout(() => {
+            worker.terminate();
+            reject(new Error(`syncPull did not return within ${DEADLINE_MS} ms — the id allocator does not terminate`));
+          }, DEADLINE_MS);
+        } else {
+          clearTimeout(timer);
+          worker.terminate();
+          resolve({ ...m, year });
+        }
+      });
+      worker.on('error', (e) => { clearTimeout(timer); reject(e); });
+    });
+    assert.equal(msg.result.ok, true);
+    assert.deepEqual(msg.result.summary.reassigned, [
+      { project: 'alpha', from: `${msg.year}-9007199254740993`, to: `${msg.year}-9007199254740994` },
+    ]);
+  } finally { await cleanup(root); }
 });
 
 test('peerUrl to a loopback/private host is blocked (SSRF guard)', async () => {
@@ -942,6 +1025,30 @@ test('a cross epic with non-string members is filtered, not fatal — and the le
     const re = await board.readEpic({ slug: 'plat' });
     assert.equal(re.ok, true);
     assert.deepEqual(re.epic.projects, ['alpha', 'beta']);
+  });
+});
+
+// Pins: a peer cross epic's members are filtered to record names before they are stored. A member
+// is joined into a project path by every read of the epic, so a traversing one made read_epic list
+// cards from any directory shaped like a project — here a sentinel card outside the board.
+test('a peer cross epic with a traversing member stores only record-name members', async () => {
+  await withRoot(async () => {
+    const root = process.env.PROJECTS_ROOT;
+    // <root>/.conduct/kanban/projects/ is three levels below <root>.
+    const evil = '../../../evil';
+    fs.mkdirSync(path.join(root, 'evil', 'triage'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, 'evil', 'triage', '2026-0001.md'),
+      cardfile.serialize(card({ id: '2026-0001', uid: 'u-s', title: 'SENTINEL-CARD', epic: 'plat' })),
+    );
+    serveFull({ crossEpics: [xEpic({ slug: 'plat', projects: ['alpha', 'gamma', evil] })] });
+    const r = await board.syncPull({ peerUrl: 'https://peer.example', scope: 'all' });
+    assert.equal(r.ok, true);
+    assert.deepEqual(store.readCrossEpic('plat').projects, ['alpha', 'gamma']);
+    const re = await board.readEpic({ slug: 'plat' });
+    assert.equal(re.ok, true);
+    assert.deepEqual(re.epic.projects, ['alpha', 'gamma']);
+    assert.equal(re.cards.some((c) => c.title === 'SENTINEL-CARD'), false);
   });
 });
 

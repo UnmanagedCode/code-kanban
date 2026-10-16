@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -213,6 +214,55 @@ test('start() binds loopback by default', async () => {
     console.log = realLog;
     if (savedHost !== undefined) process.env.HOST = savedHost;
     if (server) await new Promise((r) => server.close(r));
+  }
+});
+
+// A real server in a CHILD process on an OS-assigned port, so a crash takes down the
+// child rather than the test runner. Its env names scratch dirs only, and carries no
+// CONDUCTOR_URL. Resolves {base, child} once the listen line is printed.
+function spawnServer(env) {
+  const serverUrl = new URL('../server.js', import.meta.url).href;
+  const child = spawn(process.execPath, [
+    '--input-type=module', '-e', `import(${JSON.stringify(serverUrl)}).then((m) => m.start({ port: 0 }))`,
+  ], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  return new Promise((resolve, reject) => {
+    let out = '';
+    child.stdout.on('data', (d) => {
+      out += d;
+      const m = /listening on (http:\/\/[^\s]+)/.exec(out);
+      if (m) resolve({ base: m[1], child });
+    });
+    child.stderr.resume();
+    child.once('exit', (code) => reject(new Error(`server exited (${code}) before listening: ${out}`)));
+  });
+}
+
+// Pins: a request whose arguments nest deeper than JSON.stringify can serialise, sent to an
+// Object.prototype tool name, gets a JSON answer and leaves the process serving. Unfixed,
+// `constructor` dispatched as Object(args) and echoed the arguments as {result}; the
+// response write then threw outside any catch and the process exited.
+test('a deeply nested tool body cannot take the server down', async () => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'code-kanban-crash-'));
+  const env = { ...process.env, PROJECTS_ROOT: path.join(scratch, 'root'), CLAUDE_CONFIG_DIR: path.join(scratch, 'claude') };
+  delete env.CONDUCTOR_URL;
+  delete env.PORT;
+  delete env.HOST;
+  fs.mkdirSync(env.PROJECTS_ROOT);
+  const { base, child } = await spawnServer(env);
+  try {
+    // Arrays nest in 2 bytes a level, so this stays under the router's 256 kb body limit.
+    const depth = 100_000;
+    const body = `{"tool":"constructor","arguments":${'['.repeat(depth)}${']'.repeat(depth)}}`;
+    assert.ok(body.length < 256 * 1024);
+    const res = await fetch(`${base}/api/mcp`, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
+    assert.match(res.headers.get('content-type') ?? '', /application\/json/);
+    assert.deepEqual(await res.json(), { error: 'unknown tool: constructor' });
+    const health = await fetch(`${base}/api/health`);
+    assert.deepEqual(await health.json(), { ok: true });
+    assert.equal(child.exitCode, null, 'the server process is still running');
+  } finally {
+    child.kill();
+    fs.rmSync(scratch, { recursive: true, force: true });
   }
 });
 

@@ -1,3 +1,4 @@
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -61,4 +62,13 @@ export function boardPlansDir() {
 // cross-project epic never share a slug in the same project (board.js guards it).
 export function crossEpicsDir() {
   return path.join(kanbanRoot(), 'epics');
+}
+
+// The Claude plans dir, where a plan wake's `<slug>.md` lands: one of the two
+// roots an absolute `plan` may be ingested from (board.js's ingestPlanFile; the
+// other is projectsRoot()). Resolved exactly as code-conductor's own config dir
+// is — CLAUDE_CONFIG_DIR, else ~/.claude — and the host spawns this plugin with
+// its own environment, so both find the same directory.
+export function claudePlansDir() {
+  return path.join(process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude'), 'plans');
 }

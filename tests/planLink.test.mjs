@@ -98,6 +98,17 @@ test('planLink: an unknown scheme -> INVALID_STATE', () => {
   }
 });
 
+// Pins: a scheme is known only as an OWN key of the scheme table. `constructor:` and the other
+// Object.prototype names passed an `in` check and resolved through Object.prototype's member.
+// (`__proto__` cannot reach the table: SCHEME_RE needs a leading letter, so it is a bare path.)
+test('planLink: an Object.prototype name is an unknown scheme', () => {
+  for (const scheme of ['constructor', 'toString', 'hasOwnProperty', 'valueOf']) {
+    const r = parsePlanLink(`${scheme}:x.md`);
+    assert.equal(r.error?.code, 'INVALID_STATE', scheme);
+    assert.match(r.error.reason, /^unknown plan link scheme/, scheme);
+  }
+});
+
 // A BARE absolute path is no longer a pointer at all — it is an ingest source
 // (classifyPlanInput below). After an EXPLICIT scheme it stays refused: the
 // scheme makes it a pointer, and a pointer must be relative.

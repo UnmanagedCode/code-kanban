@@ -40,4 +40,6 @@ const run = setups[kind] ? CASES[kind]() : () => CASES[kind]();
 parentPort.postMessage({ type: 'start' });
 const t0 = performance.now();
 const result = await run();
-parentPort.postMessage({ type: 'done', ms: performance.now() - t0, result: JSON.parse(JSON.stringify(result ?? null)) });
+// A BigInt (trailingIdNumber's result) is posted as is: structured clone carries it, JSON cannot.
+const posted = typeof result === 'bigint' ? result : JSON.parse(JSON.stringify(result ?? null));
+parentPort.postMessage({ type: 'done', ms: performance.now() - t0, result: posted });

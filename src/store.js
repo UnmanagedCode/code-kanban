@@ -17,20 +17,44 @@ export function ensureProjectDirs(project) {
 }
 
 // Atomic write: tmp file in the same dir + rename (rename is atomic within a
-// filesystem, so a reader never sees a half-written card).
-function atomicWrite(file, content) {
+// filesystem, so a reader never sees a half-written card). Exported for
+// board.js's plan ingest, which writes its copy the same way.
+export function atomicWrite(file, content) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-  fs.writeFileSync(tmp, content);
-  fs.renameSync(tmp, file);
+  try {
+    fs.writeFileSync(tmp, content);
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    // Best effort: a failed write or rename must not leave its temp file behind.
+    try { fs.rmSync(tmp, { force: true }); } catch { /* the original error is the one to report */ }
+    throw e;
+  }
+}
+
+// A card id or epic slug names its record's FILE (`<name>.md`), so it must be one
+// plain filename segment: a `/`, a `\\` or a `..` would point the path anywhere.
+// The ONE rule for that, kept here because every record path is built here. Every
+// reader below answers "no such record" for a non-segment (so board.js refuses
+// CARD_UNKNOWN / EPIC_UNKNOWN with no check of its own), and every path builder
+// throws on one, so a writer cannot be steered outside the board either.
+const RECORD_NAME_RE = /^[A-Za-z0-9._-]+$/;
+export function isRecordName(name) {
+  return typeof name === 'string' && RECORD_NAME_RE.test(name) && name !== '.' && name !== '..';
+}
+
+function recordFile(dir, name) {
+  if (!isRecordName(name)) throw new Error(`unsafe record name: ${JSON.stringify(name)}`);
+  return path.join(dir, `${name}.md`);
 }
 
 function cardPath(project, state, id) {
-  return path.join(stateDir(project, state), `${id}.md`);
+  return recordFile(stateDir(project, state), id);
 }
 
 // Locate a card file by id across all state dirs. Returns {file, state} or null.
 export function findCardFile(project, id) {
+  if (!isRecordName(id)) return null;
   for (const state of STATES) {
     const file = cardPath(project, state, id);
     if (fs.existsSync(file)) return { file, state };
@@ -63,24 +87,34 @@ export function findCardFile(project, id) {
 // floor independently; board.js's sync merge seeds its own id allocator from
 // idFloor() too, so a reassigned incoming card can't reuse a locally-deleted
 // high id either — never against the peer's floor, which isn't on the wire.
+//
+// Sequence numbers are BigInt throughout: an id number is unbounded text, and a
+// float stops counting at 2^53 (`2^53 + 1` rounds back down), so `max + 1` would
+// re-mint an existing id and the merge's allocator would never find a free one.
 function idFloorPath(project) {
   return path.join(projectDir(project), '.id-seq');
 }
 
 // Highest card-id number ever committed to disk in this project, including
 // ids whose card has since been deleted. Read-only peek.
+// -> BigInt (0n when absent or unreadable).
 export function idFloor(project) {
-  try {
-    const n = Number.parseInt(fs.readFileSync(idFloorPath(project), 'utf8').trim(), 10);
-    return Number.isFinite(n) && n >= 0 ? n : 0;
-  } catch {
-    return 0;
-  }
+  let text;
+  try { text = fs.readFileSync(idFloorPath(project), 'utf8').trim(); }
+  catch { return 0n; }
+  return /^\d+$/.test(text) ? BigInt(text) : 0n;
 }
 
-// Raise the persisted floor to at least `n` (never regress it).
+// Raise the persisted floor to at least `n` (a BigInt; never regress it).
 function bumpIdFloor(project, n) {
   if (n > idFloor(project)) atomicWrite(idFloorPath(project), String(n));
+}
+
+// The display id for sequence number `seq` (a BigInt): `<year>-<NNNN>`, padded to
+// four digits and never truncated. The one formatter — nextId and the sync merge's
+// allocator (board.js's mergeProject) both mint through it.
+export function formatId(year, seq) {
+  return `${year}-${String(seq).padStart(4, '0')}`;
 }
 
 // Next id for a project: current year + a project-wide monotonic sequence.
@@ -96,17 +130,19 @@ export function nextId(project) {
     catch { continue; }
     for (const name of names) {
       const m = /-(\d+)\.md$/.exec(name);
-      if (m) max = Math.max(max, Number.parseInt(m[1], 10));
+      if (m) {
+        const n = BigInt(m[1]);
+        if (n > max) max = n;
+      }
     }
   }
-  const year = new Date().getFullYear();
-  return `${year}-${String(max + 1).padStart(4, '0')}`;
+  return formatId(new Date().getFullYear(), max + 1n);
 }
 
 export function writeCard(project, state, task) {
   atomicWrite(cardPath(project, state, task.id), cardfile.serialize({ ...task, project }));
   const m = /-(\d+)$/.exec(task.id ?? '');
-  if (m) bumpIdFloor(project, Number.parseInt(m[1], 10));
+  if (m) bumpIdFloor(project, BigInt(m[1]));
 }
 
 export function readCardById(project, id) {
@@ -172,11 +208,11 @@ export function listCards(project, { state } = {}) {
 // ---- epics ----
 
 function epicPath(project, slug) {
-  return path.join(epicsDir(project), `${slug}.md`);
+  return recordFile(epicsDir(project), slug);
 }
 
 export function epicExists(project, slug) {
-  return fs.existsSync(epicPath(project, slug));
+  return isRecordName(slug) && fs.existsSync(epicPath(project, slug));
 }
 
 // ---- the shared epic codec ----
@@ -268,6 +304,7 @@ export function writeEpic(project, epic) {
 }
 
 export function readEpic(project, slug) {
+  if (!isRecordName(slug)) return null;
   const file = epicPath(project, slug);
   if (!fs.existsSync(file)) return null;
   return parseEpicFile(fs.readFileSync(file, 'utf8'), {
@@ -289,11 +326,11 @@ export function listEpicSlugs(project) {
 // a card's depends_on: `[a, b]`) instead of a single `project`.
 
 function crossEpicPath(slug) {
-  return path.join(crossEpicsDir(), `${slug}.md`);
+  return recordFile(crossEpicsDir(), slug);
 }
 
 export function crossEpicExists(slug) {
-  return fs.existsSync(crossEpicPath(slug));
+  return isRecordName(slug) && fs.existsSync(crossEpicPath(slug));
 }
 
 export function writeCrossEpic(epic) {
@@ -304,6 +341,7 @@ export function writeCrossEpic(epic) {
 }
 
 export function readCrossEpic(slug) {
+  if (!isRecordName(slug)) return null;
   const file = crossEpicPath(slug);
   if (!fs.existsSync(file)) return null;
   return parseEpicFile(fs.readFileSync(file, 'utf8'), {

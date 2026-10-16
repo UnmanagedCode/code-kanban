@@ -83,6 +83,22 @@ test('nextId does not regress after the highest-numbered card is deleted', async
   } finally { await cleanup(root); }
 });
 
+// Pins: the persisted floor is read back EXACTLY above 2^53. With the card deleted the floor is
+// the only record of its number, and a float read rounds 2^53 + 1 down to 2^53, so nextId would
+// re-mint the deleted id.
+test('the persisted id floor is exact above 2^53: a deleted id is never reused', async () => {
+  const root = await freshRoot();
+  try {
+    store.ensureProjectDirs('demo');
+    const year = new Date().getFullYear();
+    const big = `${year}-9007199254740993`;
+    store.writeCard('demo', 'triage', baseTask(big));
+    assert.equal(store.deleteCard('demo', big), true);
+    assert.equal(store.idFloor('demo'), 9007199254740993n);
+    assert.equal(store.nextId('demo'), `${year}-9007199254740994`);
+  } finally { await cleanup(root); }
+});
+
 test('moveCard relocates the file and removes the old one', async () => {
   const root = await freshRoot();
   try {
@@ -104,6 +120,22 @@ test('atomicWrite leaves no .tmp- residue', async () => {
     const names = fs.readdirSync(stateDir('demo', 'triage'));
     assert.equal(names.some((n) => n.includes('.tmp-')), false);
   } finally { await cleanup(root); }
+});
+
+// Pins: a write whose rename fails leaves no temp file behind, and the caller sees the rename's
+// own error. The failure is injected through a scoped fs.renameSync hook, restored afterwards.
+test('atomicWrite removes its temp file and rethrows when the rename fails', async () => {
+  const root = await freshRoot();
+  const realRename = fs.renameSync;
+  try {
+    store.ensureProjectDirs('demo');
+    const boom = Object.assign(new Error('EXDEV: injected rename failure'), { code: 'EXDEV' });
+    fs.renameSync = () => { throw boom; };
+    try {
+      assert.throws(() => store.writeCard('demo', 'triage', baseTask('2026-0001')), (e) => e === boom);
+    } finally { fs.renameSync = realRename; }
+    assert.deepEqual(fs.readdirSync(stateDir('demo', 'triage')).filter((n) => n.includes('.tmp-')), []);
+  } finally { fs.renameSync = realRename; await cleanup(root); }
 });
 
 // Characterization pins for the two epic codec PAIRS, written before the
@@ -315,6 +347,35 @@ test('epic write->read round-trips the plan link and the logbook (project AND cr
     assert.equal(bare.plan, null);
     assert.deepEqual(bare.logbook, []);
   } finally { await cleanup(root); }
+});
+
+// Pins: the store's path builders refuse a name that is not one plain segment, so no writer can
+// be steered outside the board even by a caller that skipped the readers' checks.
+test('writeCard, writeEpic and writeCrossEpic throw on a traversing name and write nothing outside the board', async () => {
+  const root = await freshRoot();
+  try {
+    store.ensureProjectDirs('demo');
+    const outside = () => fs.readdirSync(root).filter((n) => n !== '.conduct');
+    const epic = { slug: '../../../../../escaped', title: 't', created: '2026-01-01T00:00:00.000Z', goal: '', logbook: [] };
+    assert.throws(() => store.writeCard('demo', 'triage', baseTask('../../../../../escaped')), /unsafe record name/);
+    assert.throws(() => store.writeEpic('demo', epic), /unsafe record name/);
+    assert.throws(() => store.writeCrossEpic({ ...epic, slug: '../../../escaped', projects: ['a', 'b'] }), /unsafe record name/);
+    for (const name of ['', '.', '..', 'a/b', 'a\\b', 'a b']) {
+      assert.throws(() => store.writeCard('demo', 'triage', baseTask(name)), /unsafe record name/, JSON.stringify(name));
+    }
+    assert.deepEqual(outside(), []);
+  } finally { await cleanup(root); }
+});
+
+// Pins: the rule admits every id shape the board holds — minted, past 9999, and the legacy
+// non-shape ids local reads tolerate — and refuses only non-segments.
+test('isRecordName: one plain filename segment, nothing else', () => {
+  for (const ok of ['2026-0001', '2026-10000', 'zz-legacy', '2026-5a', '999-9999', 'auth', 'a.b_c-d']) {
+    assert.equal(store.isRecordName(ok), true, ok);
+  }
+  for (const bad of ['', '.', '..', '../x', 'a/b', 'a\\b', 'a b', 'a\nb', 42, null, undefined, ['a']]) {
+    assert.equal(store.isRecordName(bad), false, JSON.stringify(bad) ?? String(bad));
+  }
 });
 
 test('ensureProjectDirs creates plans/ (the board: plan-link base)', async () => {
