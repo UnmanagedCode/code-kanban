@@ -16,8 +16,9 @@ team surface. Same extension pattern as the sibling plugins `code-hub` and `code
   an explicit `id` (+ required `project`) to target a specific in-progress or done card directly.
 - **Epics:** first-class, per-state rollups computed on read; project-scoped **or** cross-project
   (spanning several projects with an aggregated rollup).
-- **Web GUI:** a local zero-build board UI is served at `/` (manifest `frontend.path`), in-process
-  over the same `board.js` service layer.
+- **Web GUI:** a React board UI built on `npm install` (`frontend/dist`) is served at `/` (manifest
+  `frontend.path`), in-process over the same `board.js` service layer. It follows
+  code-conductor's light/dark theme when embedded and the OS theme standalone.
 - **Cross-instance sync:** a **Sync** button pulls another instance's board (over a
   code-hub-forwarded URL) and merges it in, union + card-level last-edit-wins. Two-click, one-way
   per click. See [docs/architecture.md](docs/architecture.md) "Cross-instance sync".
@@ -29,16 +30,17 @@ See [docs/features.md](docs/features.md) for the full tool table.
 Out-of-process HTTP server the conductor spawns via `npm start`. All board logic lives in one
 service layer, `src/board.js` (the single source of truth and the GUI integration seam), guarded
 by a per-project async mutex — the sole write path. Thin surfaces sit on top: `src/mcp.js`
-(MCP tool dispatch) and, later, the web GUI (in-process, importing `board.js` directly).
+(MCP tool dispatch) and the web GUI's HTTP routes (`src/routes.js`, in-process).
 
 ```
-server.js                 Express: /api/health + /api/mcp, listens on $PORT
+server.js                 Express: /api routes + the built UI, CSP on every response, listens on $PORT
 conductor.plugin.json     plugin manifest (id: code-kanban)
 src/
   board.js                ★ service layer / single source of truth / GUI seam
   store.js                file store (atomic fs, no git), id sequence, epics
   cardfile.js             card markdown <-> object
   paths.js projects.js mutex.js mcp.js routes.js
+frontend/                 web GUI source (React + Vite + Tailwind); built to frontend/dist
 docs/{features,protocol,architecture}.md
 tests/                    node:test suites (run.mjs)
 harness/playwright/       visual-verification wrapper over ../code-playwright
@@ -51,7 +53,8 @@ Board **data** lives in the conductor's tree, not here:
 ## Key defaults
 
 - Resolves `PROJECTS_ROOT` from the injected env (falls back to the repo's parent dir).
-- Standalone port `7100` (the conductor injects `$PORT` in a supervised run).
+- Standalone port `7100` on `127.0.0.1` (the conductor injects `$PORT` in a supervised run).
+- Node `>=22.18`.
 - Card ids: `${year}-${NNNN}`, project-wide monotonic (no per-year reset).
 - Card priority: `CRITICAL | HIGH | MEDIUM | LOW`, or **unset** when omitted — there is no default,
   since unset means "nobody has judged this yet". Set it at filing time via `file_card`. Listings
@@ -63,9 +66,11 @@ Board **data** lives in the conductor's tree, not here:
 ## Run / test
 
 ```bash
-npm install
+npm install        # also builds the UI into frontend/dist (the `prepare` script)
 npm start          # standalone on http://127.0.0.1:7100
 npm test           # node:test suites
+npm run typecheck  # tsc over frontend/
+npm run dev        # Vite dev server, API proxied to a running `npm start`
 ```
 
 Under code-conductor: ship `conductor.plugin.json` at the repo root, enable the plugin; the host
@@ -73,8 +78,10 @@ spawns `npm start` and forwards MCP calls to `/api/mcp`.
 
 ## Known limitations
 
-- The web GUI is served at the plugin root (`/`); the host-mounted / sub-path serving case is
-  reasoned but not harness-verified (see `docs/architecture.md`).
+- `npm install` under `NODE_ENV=production` or `npm_config_omit=dev` skips the devDependencies, so
+  the UI is not built and the page answers 503 until a full `npm install`.
+- Setting `HOST` to a non-loopback address exposes the API, which has no authentication, to the
+  network.
 - Single-writer design assumes the GUI runs **in this process**; a cross-process GUI would need
   an HTTP board API first (see `.wiki/architecture/service-layer-seam.md`).
 - No git writes to `.conduct` by design — board snapshotting is the conductor's job.

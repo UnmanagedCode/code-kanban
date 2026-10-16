@@ -306,7 +306,8 @@ rather than in prose. See `.wiki/architecture/card-epic-tool-split.md`.
 
 ## Web GUI HTTP routes
 
-The in-process web GUI (`frontend/`, served at `/` by `express.static`) talks to the same
+The in-process web GUI (`frontend/`, built to `frontend/dist` and served at `/`; see UI serving
+and response headers below) talks to the same
 `board.js` service layer over `GET`/`POST`/`PATCH` routes under `/api`. They are a **thin 1:1
 delegate**: each route calls the matching `board.js` function and passes its `{ok}` envelope
 through unchanged as the HTTP body.
@@ -314,7 +315,9 @@ through unchanged as the HTTP body.
 **Envelope rule (same as the MCP bridge):** a domain refusal `{ok:false, code, reason}` is a
 **normal result returned as HTTP 200** — not a transport failure. Only malformed JSON
 (`entity.parse.failed`) → **400** `{error:"invalid request body"}`, and an unexpected throw →
-**500** `{error}`. So `GET /api/board/ghost/cards` returns 200 `{ok:false, code:"PROJECT_UNKNOWN",
+**500** `{error}`. An `/api` path no route matches → **404** `text/plain` `Not found`; a
+malformed path segment (`/api/board/%E0%A4%A/cards`) or an oversized body → its client status
+(400, 413) as `text/plain`. So `GET /api/board/ghost/cards` returns 200 `{ok:false, code:"PROJECT_UNKNOWN",
 …}`, and an illegal move returns 200 `{ok:false, code:"INVALID_STATE", …}`.
 
 | Method + path | Delegate | Body / query | Returns |
@@ -376,3 +379,33 @@ Notes:
   a code-hub peer is a public host); set `CODE_KANBAN_SYNC_ALLOW_PRIVATE=1` to permit private
   targets for local dev / the visual harness. See `docs/architecture.md` and
   `.wiki/architecture/cross-instance-sync.md`.
+
+## UI serving and response headers
+
+`server.js`, for every path outside the API routes:
+
+| Request | Response |
+|---|---|
+| `/` | `frontend/dist/index.html`, 200 `text/html` |
+| `/theme-init.js`, `/assets/*` (hashed names) | the built file, 200 |
+| any path ending `.map` | 404 `text/plain` `Not found` (none are built; never served) |
+| `/pluginBridge.js`, `/pluginTheme.css` (standalone), any other path | 404 `text/plain` `Not found`: no SPA fallback |
+| any non-`/api` path while `frontend/dist/index.html` is missing | 503 `text/plain` `UI not built — run npm install`; `/api/*` and `/api/health` stay up, unknown `/api` paths stay 404, and start-up logs `UI not built: <entry> is missing — run npm install` once |
+| an error reaching the terminal handler | `text/plain`; a client status is kept with its message, a 500 says `Internal error` |
+
+Every response — page, asset, API result, 404, 503, error — carries
+`X-Content-Type-Options: nosniff` and `Content-Security-Policy` = `CSP` (exported by `server.js`):
+
+| Directive | Why |
+|---|---|
+| `default-src 'none'` | Deny anything not listed |
+| `script-src 'self'` | The bundle, `theme-init.js`, and code-conductor's `/pluginBridge.js` (same origin when embedded); no inline script, no `eval` |
+| `style-src 'self' 'unsafe-inline'` | The CSS bundle and cc's `/pluginTheme.css`; `'unsafe-inline'` only for the `<style>` the Radix Dialog scroll lock injects (content never reaches a `style` attribute or element) |
+| `font-src 'self'` | The Geist fonts cc's theme sheet serves |
+| `connect-src 'self'` | The API, by relative URL |
+| `frame-ancestors 'self'` | Framed only by code-conductor on the same origin |
+| `base-uri 'none'`, `form-action 'self'` | No `<base>` rewrite; forms never post off-origin (they are all handled in script) |
+
+The page itself requests only relative URLs, plus the two host URLs (`/pluginBridge.js` blocking
+and first in `<head>`, then `/pluginTheme.css`). The UI stores one `localStorage` key,
+`code-kanban:selected-project`.

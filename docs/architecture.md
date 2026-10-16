@@ -251,3 +251,19 @@ Parsers of untrusted lines carry two suites ([.wiki/gotchas/linear-line-parsers.
 - `tests/parserTiming.test.mjs` — **timing**: each pathological shape at 200 000 characters through
   a public entry point, run in a worker (`tests/_parserTimingWorker.mjs`) that is terminated at a
   2 s deadline, so a super-linear regression fails in about 2 s instead of hanging the file.
+
+The UI has no DOM in `npm test`; its claims split three ways:
+- **Pure decisions** — `tests/frontendLogic.test.mjs`, `tests/persist.test.mjs`,
+  `tests/acceptanceEdit.test.mjs` import `frontend/src/lib/*.ts` directly (type stripping), with a
+  stubbed `globalThis.fetch` for `api()`.
+- **Source-scan guards** — `tests/frontendTheme.test.mjs` (host URL order, fallback coverage,
+  token-only colours, no own theme toggle, the button-role rule) and
+  `tests/frontendSafety.test.mjs` (no raw-HTML sink, no expression `href`/`src`, no `style`, no
+  `/api` literal, one `fetch` site, one `localStorage` site) read the source as text through
+  `tests/_sourceScan.mjs`'s brace- and string-aware JSX tag scanner. Each has a liveness floor.
+- **Serving** — `tests/server.test.mjs` against a fixture build (`createServer({distDir})`);
+  `tests/dist.test.mjs` against the real `frontend/dist`, skipped when it is not built.
+- **Everything rendered** (wiring, layout, focus, theme, console) — the Playwright harness:
+  `harness/playwright/snap-gui.mjs`, `snap-sync.mjs`, `snap-theme.mjs` (each boots its own scratch
+  server and sandbox root) and `snap-embedded.mjs` (a scratch code-conductor; see "Verifying
+  embedded").

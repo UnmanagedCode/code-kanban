@@ -37,7 +37,7 @@ const PROSE_ROOTS = ['docs', '.wiki', 'conventions', 'harness', 'README.md', 'CO
 
 // Directory prefixes that name THIS repo's tree. A citation must start with one
 // to be checked at all, which is what keeps bare prose words out.
-const CITATION_RE = /\b(?:src|tests|frontend|harness|docs|conventions)\/[A-Za-z0-9_.\-/]*\.(?:js|mjs|json|md|css|html)\b/g;
+const CITATION_RE = /\b(?:src|tests|frontend|harness|docs|conventions)\/[A-Za-z0-9_.\-/]*\.(?:js|mjs|json|md|css|html|ts|tsx)\b/g;
 
 // Cross-repo citations: paths that live in a SIBLING project, not here. Each
 // entry must say which repo owns it, so an entry can never be a quiet way to
@@ -47,6 +47,12 @@ const CROSS_REPO = new Map([
   // validator as `code-conductor/src/plugins/manifest.js`; the regex above sees
   // it from `src/` onward. Owned by the code-conductor repo, not this one.
   ['src/plugins/manifest.js', 'code-conductor'],
+  // The host's MCP bridge and text-payload builder (docs/protocol.md's raw-text
+  // channel, .wiki/gotchas/result-envelope-vs-ok-shape.md) and its plan-file
+  // store (.wiki/gotchas/plan-link-and-sync-gap.md), cited from `src/` onward.
+  ['src/plugins/mcpBridge.ts', 'code-conductor'],
+  ['src/mcp/content.ts', 'code-conductor'],
+  ['src/planFile.ts', 'code-conductor'],
 ]);
 
 function walk(rel) {
@@ -68,12 +74,11 @@ function walk(rel) {
 // SURVIVES a forced `continue`, because the CROSS_REPO skip runs after
 // extraction. Here, every deadening shape yields exactly 0.
 //
-// The floor is 40 against a measured 125 (126 extracted, 1 allowlisted). Sized
-// for ordinary doc churn, not as a tripwire on the real count: the five
-// heaviest-citing files together hold 69 citations, so losing all five at once
-// still leaves 56 and stays green, while any do-nothing mutation reads 0. A
-// floor near 125 would fail every time a doc legitimately shrinks; a floor of 0
-// is the defect this constant exists to close.
+// The floor sits far under the real count of checked citations. Sized for
+// ordinary doc churn, not as a tripwire on the real count: losing the
+// heaviest-citing files at once must still stay green, while any do-nothing
+// mutation reads 0. A floor near the real count would fail every time a doc
+// legitimately shrinks; a floor of 0 is the defect this constant exists to close.
 const MIN_CITATIONS_CHECKED = 40;
 
 test('every in-repo file path cited in the docs/wiki/conventions prose exists', () => {

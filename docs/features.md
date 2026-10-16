@@ -112,8 +112,30 @@ Every tool takes a `project` (validated against the live project list), except:
 ## Web GUI
 
 A local web app to view + manage the board is served at `/` (manifest `frontend.path`). It is a
-**secondary** surface: zero-build vanilla ESM (`frontend/`), served in-process by `express.static`
-so it shares the same `board.js` service layer and per-project mutex as the MCP tools — one writer.
+**secondary** surface: a React UI (`frontend/`, built to `frontend/dist` by `npm install`), served
+in-process, so it shares the same `board.js` service layer and per-project mutex as the MCP tools —
+one writer.
+
+- **Theme** — inside code-conductor the page follows cc's light/dark live (the sidebar toggle, or
+  the OS while cc is on "system") and uses cc's palette and Geist fonts. Standalone it follows the
+  OS colour scheme, live. It has no theme toggle of its own.
+- **Status line** — under the top bar, announced to screen readers. Success messages clear after
+  2.5 s; errors stay until replaced. A mutation's message (`Moved A → B.`, `Saved.`, `Filed <id>
+  into triage.`, `Epic <slug> saved.`, the sync summary) stays readable: the board reload that
+  follows it does not overwrite it. Project selection and **Refresh** report `Loading…` then
+  `Loaded N card(s) across M epic(s).`
+- **Loading, empty and error states** — placeholder tiles while a project's board loads (a
+  refresh keeps the board on screen and spins the Refresh icon instead); "No cards" / "No planned
+  cards" in an empty lane; "No epics yet."; "No projects available." for an empty catalog; a
+  failed start-up shows an error panel with **Retry**; a card or epic that cannot be read shows
+  the reason inside its dialog (and on the status line).
+- **Keyboard** — every control is reachable by Tab in reading order (project, Has plan, New card,
+  New epic, Sync, Refresh, then the cards lane by lane, then the epics' Open buttons). A card is a
+  button: Enter or Space opens it. Dialogs trap focus, close on Esc, the ✕ or a backdrop click, and
+  return focus to what opened them.
+- **Phone layout** — below 640px the top bar wraps (title + Refresh, then the project select, then
+  the other controls), lanes stack one per row with each lane's header sticking to the top while
+  its cards scroll past, epic rows stack, and dialogs fill the width and scroll inside.
 
 - **Project selector** — picks from the live project catalog (`GET /api/projects`); auto-selects
   the first project on load, and remembers your last pick in the browser (`localStorage` key
@@ -130,8 +152,8 @@ so it shares the same `board.js` service layer and per-project mutex as the MCP 
   The board is **viewport-height** and **each lane scrolls on its own**: a long `done` lane no
   longer stretches the page past every other lane header. Lane headers (name + count) stay visible
   while their cards scroll, each lane keeps its own offset, and an offset survives a
-  refresh/move/edit re-render. Two window shapes fall back to page scrolling, differently: on a
-  **narrow** window (below 980px, where the grid reflows to two lanes per row) the board reverts to
+  refresh/move/edit/filter. Two window shapes fall back to page scrolling, differently: on a
+  **narrow** window (below 1024px, where the grid reflows to two lanes per row; one below 640px) the board reverts to
   its content height and the lanes stop scrolling internally; on a **short** but wide window the
   board stops shrinking at its minimum height, so the lanes keep clipping and scrolling internally
   and the page scrolls to reach the lower part of the board. Either way every card stays reachable.
@@ -145,16 +167,17 @@ so it shares the same `board.js` service layer and per-project mutex as the MCP 
   textarea that preserves ticks on unchanged text and clears the list when left empty; priority is
   a **select** over the four levels (never a
   number field), populated from `GET /api/board/meta`'s `priorities` and led by an `— unset —`
-  option that clears the level. Save or Cancel returns to the
-  read view. Logbook, Commit and the plan link are not editable in the GUI. Acceptance **is**
+  option that clears the level. **Save** closes the dialog and reloads the board; **Cancel**
+  returns to the read view. Logbook, Commit and the plan link are not editable in the GUI. Acceptance **is**
   editable: the Edit form's textarea round-trips one criterion per line, keeping a criterion's tick
   when its text is unchanged; saving with an empty box clears the list. Per-item ticking (toggling a
   single checkbox without touching the wording) is not exposed in the GUI — use `update_card`'s
   `{op:'done'}` over MCP for that, so the read-view checkboxes stay `disabled`.
 - **Epics** — rollup table; a row carries a `plan` badge (the link as its tooltip) when the epic
-  links a plan. "open" reads one epic (+ its cards) and, when linked, ends with a **Plan** section
+  links a plan. **Open** reads one epic (+ its cards) and, when linked, ends with a **Plan** section
   exactly like a card's: the link plus the file body, `(file not found)` for a dead link. New-epic form upserts by slug; its
-  "Span projects" multi-select makes a cross-project epic when ≥2 are picked (else project-scoped).
+  "Span projects" checkbox list makes a cross-project epic when ≥2 are ticked, a project-scoped one
+  when none are, and refuses exactly one.
   Cross-project epics show a badge + member list; their detail lists each card's project. The
   rollup pane is capped at ~25% of the viewport height with its own scroller (a short list just
   sizes to content), so a project with many epics can no longer push the board down.
