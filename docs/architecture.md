@@ -194,7 +194,7 @@ log line (and in-progress ownership); it never leaves a stuck owner.
   6. error handler: `text/plain`, client statuses kept, 500 → `Internal error`, logged.
 - `distDir` defaults to `frontend/dist`; tests pass a fixture.
 - Asset URLs are relative (`base: './'`), so the page works at `/` standalone and under
-  `/plugins/code-kanban/` in code-conductor.
+  `/plugins/code-kanban/` in code-conductor; `harness/playwright/snap-embedded.mjs` drives the latter.
 
 ### `frontend/src` layout
 
@@ -235,7 +235,7 @@ code-conductor (never your own):
    `CONVENTIONS.md`.
 3. `POST /api/plugins/rescan`, `POST /api/plugins/code-kanban/enable`, `POST /api/plugins/code-kanban/start`.
 4. Seed through `http://127.0.0.1:<port>/plugins/code-kanban/api/board/<project>/…`.
-5. Open `http://127.0.0.1:<port>/#plugin/code-kanban/`.
+5. `CC_URL=http://127.0.0.1:<port> PROJECT=<project> [PROJECT2=<other>] node harness/playwright/snap-embedded.mjs`.
 6. `POST /api/plugins/code-kanban/stop` before stopping cc (plugin backends outlive it).
 
 ## Test patterns

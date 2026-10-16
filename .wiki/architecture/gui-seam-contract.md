@@ -81,8 +81,8 @@ refusal can still surface on a race (card moved between meta-load and the move P
 ## Harness hooks
 
 The Playwright harness (`harness/playwright/`) selects by role and accessible name plus these
-`data-*` attributes, which are part of this contract — rename one and update the harness's
-selectors:
+`data-*` attributes, which are part of this contract — rename one and update
+`harness/playwright/kanban-ui.mjs`:
 
 | Hook | On |
 |---|---|

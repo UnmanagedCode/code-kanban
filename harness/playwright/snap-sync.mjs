@@ -8,8 +8,10 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs/promises';
+import assert from 'node:assert/strict';
 import { withPage, waitForServer } from '../../../code-playwright/browser.mjs';
 import { bootKanban } from './boot-kanban.mjs';
+import { sel, selectProject, waitDialog, waitDialogClosed, statusText, consoleGuard } from './kanban-ui.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = path.join(__dirname, 'screenshots');
@@ -47,31 +49,33 @@ async function main() {
     });
     await seed(local.url, local.sandbox.dirs.PROJECTS_ROOT, { cards: [{ title: 'Local card' }] });
 
-    await withPage(async (page) => {
+    await withPage(async (page, { context }) => {
+      const guard = consoleGuard(context);
       await page.goto(local.url + '/', { waitUntil: 'domcontentloaded' });
-      await page.selectOption('#project-select', PROJECT);
-      await page.waitForSelector('.card', { timeout: 10_000 });
+      await selectProject(page, PROJECT);
+      await page.waitForSelector(sel.tiles, { timeout: 10_000 });
 
       // Open the Sync dialog and screenshot it (own-URL field + peer field + scope).
-      await page.click('#sync-btn');
-      await page.waitForSelector('#form-overlay:not(.hidden) input[name="peerUrl"]', { timeout: 10_000 });
+      await page.getByRole('button', { name: 'Sync' }).click();
+      const dialog = await waitDialog(page);
+      assert.equal(await dialog.getByLabel('This board’s URL (share with the peer)').inputValue(), `${local.url}/`);
       await page.screenshot({ path: path.join(SHOTS, 'sync-1-dialog.png'), fullPage: true });
       console.log('snapped sync dialog');
 
       // Drive a real pull from the peer.
-      await page.fill('input[name="peerUrl"]', peer.url);
-      await page.selectOption('select[name="scope"]', 'project');
-      await page.click('#form-overlay button[type="submit"]');
-      await page.waitForSelector('#form-overlay', { state: 'hidden', timeout: 10_000 });
+      await dialog.getByLabel('Peer board URL').fill(peer.url);
+      await dialog.getByLabel('Scope').selectOption('project');
+      await dialog.getByRole('button', { name: 'Pull from peer' }).click();
+      await waitDialogClosed(page);
       // Merged board: 1 local + 3 peer cards = 4, and the peer's 'auth' epic now
-      // renders in the epics rollup (proving the epic synced with the cards).
-      await page.waitForFunction(() => document.querySelectorAll('.card').length === 4, { timeout: 10_000 });
-      await page.waitForSelector('.epic-row', { timeout: 10_000 });
-      const epicSynced = await page.evaluate(() => document.querySelector('#epics')?.textContent?.includes('auth'));
-      if (!epicSynced) throw new Error('synced epic "auth" did not render in the epics rollup');
+      // renders in the epics pane (proving the epic synced with the cards).
+      await page.waitForFunction(() => document.querySelectorAll('[data-card-id]').length === 4, { timeout: 10_000 });
+      await page.waitForSelector(sel.epicRow('auth'), { timeout: 10_000 });
+      const status = await statusText(page);
+      assert.match(status, /^Sync: 3 added/);
       await page.screenshot({ path: path.join(SHOTS, 'sync-2-merged.png'), fullPage: true });
-      const status = await page.textContent('#status');
       console.log(`snapped merged board (epic synced) — status: ${status}`);
+      guard.assertClean('sync');
     }, { headless: true, viewport: { width: 1440, height: 900 } });
   } finally {
     await local.close();
