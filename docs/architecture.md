@@ -287,9 +287,11 @@ Parsers of untrusted lines carry two suites ([.wiki/gotchas/linear-line-parsers.
 - `tests/parserTiming.test.mjs` — **timing**: each pathological shape at 200 000 characters through
   a public entry point, run in a worker (`tests/_parserTimingWorker.mjs`) that is terminated at a
   2 s deadline, so a super-linear regression fails in about 2 s instead of hanging the file. It
-  also times `parsePlan` (`frontend/src/lib/planMarkdown.ts`) on hostile plan bodies: deep quote
+  also times `parsePlan` (`frontend/src/lib/planMarkdown.ts`) on hostile plan bodies (deep quote
   and list runs, unmatched emphasis, bracket and backtick runs, rescanned link destinations, a
-  header thousands of columns wide.
+  header thousands of columns wide) at two sizes, 8x apart and run alternately, fastest run of
+  each: the larger must stay under the 2 s ceiling, and the time may grow at most `GROWTH_MAX`
+  times (linear is about 8x, quadratic 64x) once the larger run passes `GROWTH_FLOOR_MS`.
 
 The UI has no DOM in `npm test`; its claims split three ways:
 - **Pure decisions** — `tests/frontendLogic.test.mjs`, `tests/persist.test.mjs`,
@@ -297,7 +299,7 @@ The UI has no DOM in `npm test`; its claims split three ways:
   stubbed `globalThis.fetch` for `api()`.
 - **Source-scan guards** — `tests/frontendTheme.test.mjs` (host URL order, fallback coverage,
   token-only colours, no own theme toggle, the button-role rule) and
-  `tests/frontendSafety.test.mjs` (no raw-HTML, eval, attribute-write, navigation, cookie or cross-frame sink, no expression `href`/`src` — except `href={safeHref(<name>)}` in `frontend/src/components/PlanMarkdown.tsx`, which must import `safeHref` from `@/lib/planMarkdown` and define none of its own —, every `<a>` in feature code carrying the literal `target="_blank" rel="noopener noreferrer"`, no style by any
+  `tests/frontendSafety.test.mjs` (no raw-HTML, eval, attribute-write, navigation, cookie or cross-frame sink, no expression `href`/`src`, attribute names in any letter case — except `href={safeHref(<name>)}` in `frontend/src/components/PlanMarkdown.tsx`, which must import `safeHref` from `@/lib/planMarkdown` and name it nowhere else (no declaration, alias or shadowing parameter) —, no element built outside JSX (`createElement`, `cloneElement`, `jsx`/`jsxs`/`jsxDEV`, the `react/jsx-runtime` module) and no URL property (`.href`, `.src`, …) written onto an element, every `<a>` in feature code carrying the literal `target="_blank" rel="noopener noreferrer"`, no style by any
   route and in any letter case — attribute, `<style>`, any `style` key, bare or quoted (a type's
   included), a `.style` access —, no `/api` literal, one
   `fetch` site, one `localStorage` site, no JSX spread props in feature code) read the source as text through

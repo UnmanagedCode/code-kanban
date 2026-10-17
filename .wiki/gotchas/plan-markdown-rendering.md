@@ -41,7 +41,11 @@ blocks, no reference links, autolinks or bare-URL linkify, no entity decoding, n
   only, an href written exactly `href={safeHref(<one name>)}` is exempt from the expression-link rule
   (re-checking at the sink). The exemption is deliberately narrower than "starts with
   `safeHref(`": `href={safeHref(u) || u}` would pass an unchecked URL, so it trips. The file must
-  import `safeHref` unaliased from `@/lib/planMarkdown` and declare none of its own. Every `<a>` in
+  import `safeHref` unaliased from `@/lib/planMarkdown`, and every other `safeHref` in it must be
+  the call at an `href={…}` sink. The count check (`linkHomeOffences`) is what rules out a
+  shadowing binding: a parameter, destructured parameter or arrow parameter named `safeHref` would
+  satisfy the sink's shape while calling something else. The sink match is case-sensitive on
+  `safeHref` for the same reason. Every `<a>` in
   feature code must carry the literal `target="_blank" rel="noopener noreferrer"`: a new top-level
   context can never navigate the host frame, and gets no `window.opener` and no Referer.
 - **Name a prop `action` and the guard fires.** The expression-link rule also guards `<form action>`,
@@ -71,7 +75,12 @@ regex trap they avoid):
   over a hundred million cells. A short row renders with fewer cells.
 
 `tests/planMarkdown.test.mjs` pins the vocabulary, the allowlist, each construct and both caps;
-`tests/parserTiming.test.mjs` runs each hostile shape at 200 000 characters under its 2 s deadline.
+`tests/parserTiming.test.mjs` runs each hostile shape at two sizes 8x apart, alternating and keeping
+each size's fastest run, and bounds both the larger run's time and the growth (linear about 8x,
+quadratic 64x). The ratio is what makes a quadratic regression fail on any machine: the code-span
+closer pointer, reset to 0, still parses the backtick-pair shape under 2 s at 200 000 characters.
+The caps are pinned at link depth as well as emphasis depth (a link whose text is already
+`MAX_INLINE_NEST` deep stays literal), and at the list dispatch itself (`- a` at the container cap).
 
 ## Rendering notes
 

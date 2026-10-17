@@ -34,34 +34,58 @@ const CASES = {
   idNumber: () => { const id = `${'1'.repeat(n)}a`; return () => board.trailingIdNumber(id); },
 };
 
-// Hostile plan bodies for parsePlan, built before the clock starts.
-const backtickRuns = () => { let s = ''; for (let i = 1; s.length < n; i++) s += `${'`'.repeat(i)}a`; return s; };
+// Hostile plan bodies for parsePlan, each built at a given size `m` before the clock starts.
+const backtickRuns = (m) => { let s = ''; for (let i = 1; s.length < m; i++) s += `${'`'.repeat(i)}a`; return s; };
 const PLAN_INPUTS = {
-  quoteRun: () => `${'> '.repeat(n / 2)}x`,
-  listRun: () => `${'- '.repeat(n / 2)}x`,
-  quoteLines: () => Array.from({ length: 600 }, (_, k) => `${'>'.repeat(k + 1)} x`).join('\n'),
-  starOpeners: () => '*a '.repeat(n / 3),
+  quoteRun: (m) => `${'> '.repeat(m / 2)}x`,
+  listRun: (m) => `${'- '.repeat(m / 2)}x`,
+  // Lines of increasing `>` depth, about m characters in all.
+  quoteLines: (m) => Array.from({ length: Math.round(Math.sqrt(2 * m)) }, (_, k) => `${'>'.repeat(k + 1)} x`).join('\n'),
+  starOpeners: (m) => '*a '.repeat(m / 3),
   // Led by a letter, or the run would be a thematic break.
-  starRun: () => `x${'**'.repeat(n / 2)}`,
-  starUnderscore: () => '*_'.repeat(n / 2),
-  tildes: () => '~~a'.repeat(n / 3),
+  starRun: (m) => `x${'**'.repeat(m / 2)}`,
+  starUnderscore: (m) => '*_'.repeat(m / 2),
+  tildes: (m) => '~~a'.repeat(m / 3),
   backtickRuns,
-  backtickPairs: () => 'a`'.repeat(n / 2),
-  openBrackets: () => '['.repeat(n),
-  linkOpeners: () => '[a]('.repeat(n / 4),
-  carriageReturn: () => `${'a'.repeat(n)}\r`,
-  wideTable: () => `${'|a'.repeat(n / 4)}\n${'|-'.repeat(n / 4)}`,
-  fences: () => '```\n~~~\n'.repeat(n / 8),
-  backslashes: () => '\\'.repeat(n),
+  backtickPairs: (m) => 'a`'.repeat(m / 2),
+  openBrackets: (m) => '['.repeat(m),
+  linkOpeners: (m) => '[a]('.repeat(m / 4),
+  carriageReturn: (m) => `${'a'.repeat(m)}\r`,
+  wideTable: (m) => `${'|a'.repeat(m / 4)}\n${'|-'.repeat(m / 4)}`,
+  fences: (m) => '```\n~~~\n'.repeat(m / 8),
+  backslashes: (m) => '\\'.repeat(m),
 };
 /** Every text and code string in the tree, concatenated: a cheap check the parse kept the input. */
 const textOf = (nodes) => nodes.map((x) => (typeof x.text === 'string' ? x.text : '')
   + textOf(x.children ?? []) + textOf((x.items ?? []).map((it) => ({ children: it.children })))
   + textOf([...(x.head ?? []), ...(x.rows ?? []).flat()].map((cell) => ({ children: cell })))).join('');
+/** Wall time of one parse of `src`, in ms, and its blocks. */
+const timed = (src) => {
+  const t0 = performance.now();
+  const blocks = parsePlan(src);
+  return { ms: performance.now() - t0, blocks };
+};
+// Timed at n/2 and at 4n (8x the input): about 8x the time when linear, 64x when quadratic,
+// whatever the machine's speed. The two sizes alternate, so a burst of load on a shared
+// machine slows both, and each keeps its fastest run (load only ever adds time).
+const ROUNDS = 4;
 for (const [name, build] of Object.entries(PLAN_INPUTS)) {
   CASES[`plan:${name}`] = () => {
-    const src = build();
-    return () => { const blocks = parsePlan(src); return { blocks: blocks.length, last: textOf(blocks).slice(-1) }; };
+    const small = build(n / 2);
+    const large = build(4 * n);
+    parsePlan(build(n / 4));
+    return () => {
+      let s = Infinity;
+      let l = Infinity;
+      let blocks;
+      for (let r = 0; r < ROUNDS; r++) {
+        s = Math.min(s, timed(small).ms);
+        const run = timed(large);
+        l = Math.min(l, run.ms);
+        blocks = run.blocks;
+      }
+      return { small: s, large: l, blocks: blocks.length, last: textOf(blocks).slice(-1) };
+    };
   };
 }
 

@@ -262,4 +262,44 @@ test('inline nesting stops at MAX_INLINE_NEST and the deeper delimiters stay lit
 test('empty and whitespace-only input is no blocks', () => {
   assert.deepEqual(parsePlan(''), []);
   assert.deepEqual(parsePlan('  \n\n\t\n'), []);
+  assert.deepEqual(parsePlan('\r\n \t\r\n\n'), []);
+  assert.deepEqual(parsePlan('\n'), []);
+});
+
+test('the nesting caps are 8 container levels and 16 inline levels', () => {
+  // The values behind the documented "deeper markers stay text" behaviour.
+  assert.equal(MAX_NEST, 8);
+  assert.equal(MAX_INLINE_NEST, 16);
+});
+
+test('a list marker at the container cap stays paragraph text: the list dispatch itself honours MAX_NEST', () => {
+  // `- a` alone at the cap reaches only the block dispatch, never a paragraph-interruption check.
+  const blocks = parsePlan(`${'> '.repeat(MAX_NEST)}- a`);
+  assert.equal(containerDepth(blocks), MAX_NEST);
+  let inner = blocks;
+  for (let d = 0; d < MAX_NEST; d++) inner = inner[0].children;
+  assert.deepEqual(inner, p([t('- a')]));
+  // One level shallower, the same marker is a list: the cap, not the marker, decides.
+  let shallow = parsePlan(`${'> '.repeat(MAX_NEST - 1)}- a`);
+  for (let d = 0; d < MAX_NEST - 1; d++) shallow = shallow[0].children;
+  assert.equal(shallow[0].kind, 'list');
+});
+
+/** How many link nodes `nodes` holds, at any depth. */
+const linkCount = (nodes) => [...walkInline(nodes)].filter((n) => n.kind === 'link').length;
+
+test('a link whose text is already MAX_INLINE_NEST deep stays literal: links obey the inline cap', () => {
+  const linkAround = (levels) => `[${'*a '.repeat(levels)}x${' a*'.repeat(levels)}](https://x.test)`;
+  const atCap = inl(linkAround(MAX_INLINE_NEST));
+  assert.equal(linkCount(atCap), 0);
+  assert.equal(inlineDepth(atCap), MAX_INLINE_NEST);
+  assert.ok(plainText(atCap).startsWith('[') && plainText(atCap).endsWith('](https://x.test)'), 'the link source shows');
+  // One level less fits: the link forms at exactly the cap.
+  const under = inl(linkAround(MAX_INLINE_NEST - 1));
+  assert.equal(linkCount(under), 1);
+  assert.equal(inlineDepth(under), MAX_INLINE_NEST);
+  // A link innermost in deep emphasis forms first; the emphasis past the cap is what stays literal.
+  const inner = inl(`${'*a '.repeat(MAX_INLINE_NEST + 1)}[t](https://x.test)${' a*'.repeat(MAX_INLINE_NEST + 1)}`);
+  assert.equal(linkCount(inner), 1);
+  assert.equal(inlineDepth(inner), MAX_INLINE_NEST);
 });

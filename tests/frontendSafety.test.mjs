@@ -8,6 +8,13 @@ import { listFiles, listUiCode, read, blankComments, openingTags, attrValue, has
 // The plan renderer: the one file allowed a content-built link, and only as `href={safeHref(x)}`.
 const LINK_HOME = 'frontend/src/components/PlanMarkdown.tsx';
 
+/** `word` as a regex source matching it in any letter case (HTML attribute names fold case). */
+const anyCase = (word) => [...word].map((c) => (/[a-z]/i.test(c) ? `[${c.toLowerCase()}${c.toUpperCase()}]` : c)).join('');
+// The attributes that load or navigate to a URL. `href` is listed apart: only it has a home exemption.
+const URL_ATTRS = ['src', 'srcSet', 'action', 'formAction', 'xlinkHref'].map(anyCase).join('|');
+// The exact sink shape, case-sensitive on purpose: `SafeHref(` is not the imported binding.
+const SINK_CALL = String.raw`\s*=\s*\{\s*safeHref\s*\(\s*[\w$.]+\s*\)\s*\}`;
+
 // DOM-safety guards over the UI's source. A plugin page is same-origin with
 // code-conductor and unsandboxed, so model- or user-written content must only ever
 // reach the DOM as text: no raw-HTML sinks, no content-built link or style, no
@@ -46,17 +53,37 @@ const RULES = [
   },
   {
     name: 'expression-built link, source or form target',
-    re: /\b(?:href|src|srcSet|action|formAction|xlinkHref)\s*=\s*\{/,
-    bad: ['<a href={u}>', '<img src={u} />', '<img srcSet={u} />', '<form action={u}>', '<button formAction={u}>', '<use xlinkHref={u} />'],
+    // Attribute names in any letter case: the DOM folds `HREF` to a live href.
+    re: new RegExp(String.raw`\b(?:${anyCase('href')}|${URL_ATTRS})\s*=\s*\{`),
+    bad: [
+      '<a href={u}>', '<img src={u} />', '<img srcSet={u} />', '<form action={u}>', '<button formAction={u}>', '<use xlinkHref={u} />',
+      '<a HREF={u}>', '<a Href={u}>', '<img SRC={u} />', '<img SRCSET={u} />', '<form ACTION={u}>', '<button FORMACTION={u}>', '<use XLINKHREF={u} />',
+    ],
     // In LINK_HOME alone, an href that is exactly `{safeHref(<one name>)}` is exempt; every
     // other expression attribute, and every other href shape, still trips.
     home: LINK_HOME,
-    homeRe: /\b(?:href(?!\s*=\s*\{\s*safeHref\s*\(\s*[\w$.]+\s*\)\s*\})|src|srcSet|action|formAction|xlinkHref)\s*=\s*\{/,
+    homeRe: new RegExp(String.raw`\b(?:${anyCase('href')}(?!${SINK_CALL})|${URL_ATTRS})\s*=\s*\{`),
     homeBad: [
-      '<a href={u}>', '<a href={ safe(u) }>', '<a href={safeHref(u) || u}>', '<a href={safeHref(u, base)}>',
+      '<a href={u}>', '<a href={ safe(u) }>', '<a href={safeHref(u) || u}>', '<a href={safeHref(u, base)}>', '<a href={SafeHref(u)}>',
       '<img src={safeHref(u)} />', '<img srcSet={u} />', '<form action={u}>', '<button formAction={u}>', '<use xlinkHref={u} />',
+      '<a HREF={u}>', '<img SRC={safeHref(u)} />', '<img SrcSet={u} />', '<form Action={u}>', '<button FormAction={u}>', '<use XlinkHref={u} />',
     ],
     homeOk: ['<a href={safeHref(n.href)}>', '<a href={ safeHref( node.href ) }>'],
+  },
+  {
+    // React elements are built only as JSX, where the attribute rules can read them: a props
+    // object (`createElement('a', { href: u })`, `jsx(…)`, `cloneElement(el, { href: u })`) carries
+    // any URL past them, and React refuses only `javascript:` on a lowercase `href`. The names are
+    // denied outright, a string or a member access included (`React['createElement']`), as is the
+    // runtime module they come from, and a URL property written onto an element through a ref.
+    name: 'element built or URL set outside JSX',
+    re: /\b(?:createElement|cloneElement|jsxs?|jsxDEV)\b|react\/jsx-(?:dev-)?runtime|\.\s*(?:href|src|srcset|action|formAction)\s*=(?![=>])/i,
+    bad: [
+      "React.createElement('a', { href: u })", "createElement('a', { href: u })", "document.createElement('a')",
+      'cloneElement(el, { href: u })', "jsx('a', { href: u })", "jsxs('a', { href: u, children: [x] })", "jsxDEV('a', { href: u })",
+      "React['createElement']('a', p)", "import { jsx as h } from 'react/jsx-runtime';", "import { jsxDEV } from 'react/jsx-dev-runtime';",
+      'ref.current.href = u', 'img.src = u', 'img.srcset = u', 'form.action = u', 'btn.formAction = u', 'a . HREF = u',
+    ],
   },
   {
     // UI source never styles an element from code, by any route, in any letter case: the JSX/HTML
@@ -91,13 +118,20 @@ const ONLY_IN = [
   { name: 'localStorage use', re: /\blocalStorage\b/, home: 'frontend/src/lib/persist.ts', bad: ["localStorage.setItem('k', v)"] },
 ];
 
-/** What LINK_HOME's text breaks: it must import `safeHref` (unaliased) from the lib and never define its own. */
+/**
+ * What LINK_HOME's text breaks. It must import `safeHref` (unaliased) from the lib, and every other
+ * `safeHref` in it must be the call at an href sink: any further occurrence (a declaration, an alias,
+ * a parameter or destructured parameter that shadows the import, a bare reference) is a binding the
+ * sink could resolve to instead, or the import escaping the sink.
+ */
 function linkHomeOffences(text) {
   const out = [];
   const imports = [...text.matchAll(/\bimport\s*\{([^}]*)\}\s*from\s*['"]@\/lib\/planMarkdown['"]/g)];
-  const named = imports.flatMap((m) => m[1].split(',').map((x) => x.trim()));
-  if (!named.includes('safeHref')) out.push('safeHref not imported from @/lib/planMarkdown');
-  if (/\b(?:const|let|var|function|class)\s+safeHref\b|\bas\s+safeHref\b/.test(text)) out.push('safeHref declared locally');
+  const imported = imports.flatMap((m) => m[1].split(',').map((x) => x.trim())).filter((x) => x === 'safeHref').length;
+  if (!imported) out.push('safeHref not imported from @/lib/planMarkdown');
+  const sinks = text.match(new RegExp(String.raw`\b${anyCase('href')}\s*=\s*\{\s*safeHref\s*\(`, 'g'))?.length ?? 0;
+  const named = text.match(/\bsafeHref\b/g)?.length ?? 0;
+  if (named > imported + sinks) out.push('safeHref named outside its import and the href sink');
   return out;
 }
 const LINK_HOME_BAD = [
@@ -110,6 +144,14 @@ const LINK_HOME_BAD = [
   "import { safeHref } from '@/lib/planMarkdown';\nfunction safeHref(u) { return u; }",
   "import { safeHref } from '@/lib/planMarkdown';\nclass safeHref {}",
   "import { safeHref } from '@/lib/planMarkdown';\nimport { id as safeHref } from './x';",
+  // A parameter shadowing the import: plain, destructured, arrow, bare arrow, and a catch binding.
+  "import { safeHref } from '@/lib/planMarkdown';\nfunction P(safeHref, u) { return <a href={safeHref(u)} />; }",
+  "import { safeHref } from '@/lib/planMarkdown';\nfunction Shadowed({ safeHref, u }) { return <a href={safeHref(u)} />; }",
+  "import { safeHref } from '@/lib/planMarkdown';\nconst A = (safeHref, u) => <a href={safeHref(u)} />;",
+  "import { safeHref } from '@/lib/planMarkdown';\nconst B = safeHref => <a href={safeHref(u)} />;",
+  "import { safeHref } from '@/lib/planMarkdown';\ntry { f(); } catch (safeHref) { g(<a href={safeHref(u)} />); }",
+  // The import used anywhere but the sink.
+  "import { safeHref } from '@/lib/planMarkdown';\nconst f = safeHref;",
 ];
 
 /** Every `<a>` in `text` that does not open in a new context with no opener and no referrer, by string literal. */
@@ -227,6 +269,7 @@ test('the link home exempts only the exact safeHref href shape, which the genera
     }
   }
   assert.deepEqual(linkHomeOffences("import { parsePlan, safeHref } from '@/lib/planMarkdown';"), []);
+  assert.deepEqual(linkHomeOffences("import { safeHref } from '@/lib/planMarkdown';\nconst L = ({ n }) => <><a href={safeHref(n.href)} /><a href={ safeHref(n.alt) } /></>;"), []);
   assert.deepEqual(anchorOffences('<a href={safeHref(n.href)} target="_blank" rel="noopener noreferrer">x</a>'), { anchors: 1, bad: 0 });
 });
 
@@ -259,7 +302,8 @@ const FIXTURE = {
   'frontend/src/components/ui/slot.tsx': 'export const Slot = (p: object) => <span {...p} />;',
   // The link home with a bare href, beside the exempt shape over a local, unimported safeHref.
   [LINK_HOME]: [
-    'const safeHref = (u: string) => u;',
+    "import { safeHref } from '@/lib/planMarkdown';",
+    'const S = ({ safeHref, u }) => <a href={safeHref(u)} target="_blank" rel="noopener noreferrer">s</a>;',
     'export const L = ({ u }) => <><a href={u} target="_blank" rel="noopener noreferrer">x</a>'
       + '<a href={safeHref(u)} target="_blank" rel="noopener noreferrer">y</a></>;',
   ].join('\n'),
@@ -267,6 +311,11 @@ const FIXTURE = {
   'frontend/src/Elsewhere.tsx': "import { safeHref } from '@/lib/planMarkdown';\n"
     + 'export const E = ({ u }) => <a href={safeHref(u)} target="_blank" rel="noopener noreferrer">x</a>;',
   'frontend/src/NoRel.tsx': 'export const N = () => <a href="https://x.test" target="_blank">x</a>;',
+  // An attribute name in upper case is still an expression-built link.
+  'frontend/src/Upper.tsx': 'export const U = ({ u }) => <a HREF={u} target="_blank" rel="noopener noreferrer">x</a>;',
+  // An element built from a props object, and a URL written through a ref.
+  'frontend/src/lib/build.ts': "import { cloneElement } from 'react';\nexport const b = (el, u) => cloneElement(el, { href: u });",
+  'frontend/src/lib/refWrite.js': 'export const w = (r, u) => { r.current.href = u; };',
   'frontend/src/styles.css': '.x { font-style: italic; }\n.y { FONT-STYLE: normal; }',
 };
 
@@ -285,16 +334,19 @@ test('each rule fires on every script type the bundle can contain', () => {
       `frontend/src/NoRel.tsx: ${ANCHOR_RULE}`,
       'frontend/src/Spread.tsx: JSX spread props',
       'frontend/src/Styled.jsx: a style by any route (attribute, <style>, a style key, .style access)',
+      'frontend/src/Styled.jsx: element built or URL set outside JSX',
+      'frontend/src/Upper.tsx: expression-built link, source or form target',
       `frontend/src/View.jsx: ${ANCHOR_RULE}`,
       'frontend/src/View.jsx: expression-built link, source or form target',
       'frontend/src/components/PlanMarkdown.tsx: expression-built link, source or form target',
-      'frontend/src/components/PlanMarkdown.tsx: link home: safeHref declared locally',
-      'frontend/src/components/PlanMarkdown.tsx: link home: safeHref not imported from @/lib/planMarkdown',
+      'frontend/src/components/PlanMarkdown.tsx: link home: safeHref named outside its import and the href sink',
       'frontend/src/k.ts: localStorage use',
+      'frontend/src/lib/build.ts: element built or URL set outside JSX',
       'frontend/src/lib/cookie.cts: raw-HTML, eval or cross-frame sink',
       'frontend/src/lib/legacy.cjs: raw-HTML, eval or cross-frame sink',
       'frontend/src/lib/nav.mts: raw-HTML, eval or cross-frame sink',
       'frontend/src/lib/paint.js: a style by any route (attribute, <style>, a style key, .style access)',
+      'frontend/src/lib/refWrite.js: element built or URL set outside JSX',
       'frontend/src/lib/tint.ts: a style by any route (attribute, <style>, a style key, .style access)',
       'frontend/src/lib/x.js: raw-HTML, eval or cross-frame sink',
       'frontend/src/lib/y.mjs: root-relative /api literal',
