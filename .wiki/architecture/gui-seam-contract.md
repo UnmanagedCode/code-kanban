@@ -94,6 +94,8 @@ The Playwright harness (`harness/playwright/`) selects by role and accessible na
 | `data-epic-slug="<slug>"` | an epics-pane row |
 | `data-rollup="<state>"`, `data-zero="true\|false"` | a rollup pill |
 | `data-plan-link` | the Plan section's link text |
+| `data-plan-body="markdown\|raw"` | the Plan section's body in its current view (absent for an empty, missing body) |
+| `data-section-head` | a dialog section's head row, when the section has a control beside its `h3` (the Plan view toggle); `sel.section()` matches both shapes |
 | `data-skeleton` | a loading placeholder |
 | `aria-busy` / `data-loading` on `section[aria-label="Board"]` | lists pending (project switch) / any load in flight |
 

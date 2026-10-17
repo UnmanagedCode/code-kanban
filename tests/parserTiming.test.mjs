@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { freshRoot, cleanup } from './_helpers.mjs';
 
-// Linear-time pins for the card, epic and sync parsers of untrusted text. Each
+// Linear-time pins for the card, epic, sync and plan-Markdown parsers of untrusted text. Each
 // case feeds the pathological shape that made the replaced regex quadratic or
 // cubic (a long whitespace or digit run followed by a character the pattern
 // refuses) through a public entry point, in a worker that is terminated at the
@@ -77,3 +77,22 @@ test('board.trailingIdNumber: a long digit run before a non-digit reads in linea
   assert.ok(ms < DEADLINE_MS, `${ms} ms`);
   assert.equal(result, 0n);
 }));
+
+// parsePlan runs on the UI thread, over a model-written body: each shape below is
+// one a naive Markdown parser goes super-linear on (deep container nesting, unmatched
+// delimiter and bracket runs, rescanned link destinations, backtick runs of every
+// length, a header with thousands of columns). `last` is the final character of the
+// parsed text, so a parser that gives up early and drops input fails too.
+const PLAN_CASES = [
+  ['quoteRun', 'x'], ['listRun', 'x'], ['quoteLines', 'x'], ['starOpeners', 'a'], ['starRun', '*'], ['starUnderscore', '_'],
+  ['tildes', 'a'], ['backtickRuns', 'a'], ['backtickPairs', 'a'], ['openBrackets', '['], ['linkOpeners', '('],
+  ['carriageReturn', 'a'], ['wideTable', 'a'], ['fences', '~'], ['backslashes', '\\'],
+];
+for (const [name, last] of PLAN_CASES) {
+  test(`parsePlan: ${name} parses in linear time and keeps its text`, opts, () => withRoot(async (root) => {
+    const { ms, result } = await timeCase(`plan:${name}`, root);
+    assert.ok(ms < DEADLINE_MS, `${ms} ms`);
+    assert.ok(result.blocks > 0);
+    assert.equal(result.last, last);
+  }));
+}

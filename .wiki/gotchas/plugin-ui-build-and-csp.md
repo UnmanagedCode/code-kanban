@@ -47,7 +47,7 @@ scan; the fixture tree in `tests/frontendSafety.test.mjs` holds one file per ext
 
 ## Pure `lib/*.ts` must stay importable by `node:test`
 
-The tests import `frontend/src/lib/{board,forms,api,persist,acceptanceEdit}.ts` through Node's
+The tests import `frontend/src/lib/{board,forms,api,persist,acceptanceEdit,planMarkdown}.ts` through Node's
 built-in type stripping (unflagged from Node 22.18, hence `engines.node`). So those modules:
 - use erasable TypeScript only (no enums, namespaces, parameter properties: `erasableSyntaxOnly`
   in `frontend/tsconfig.json` enforces it at typecheck);
