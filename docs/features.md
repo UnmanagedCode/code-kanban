@@ -161,8 +161,11 @@ one writer.
   the card is unjudged rather than showing blank),
   Acceptance checklist, the
   append-only Logbook, (once landed) the Commit hash, and — when the card has a plan link — a Plan
-  section showing the link plus the plan file's text (`(file not found)` for a dead link,
-  `(truncated)` past the size cap), plus a Move control. An Edit button swaps in a form
+  section showing the link plus the plan file's body (`(file not found)` for a dead link,
+  `(truncated)` past the size cap, `—` for an empty file), plus a Move control. The body renders
+  as **Markdown** by default; a **Markdown / Raw** toggle in the section header (shown only when
+  there is a body) switches to the file's raw text. The toggle is not remembered: every open of
+  the dialog starts in Markdown. See "Plan Markdown" below for what renders. An Edit button swaps in a form
   (title/goal/acceptance/epic/priority/depends_on), with acceptance as a one-criterion-per-line
   textarea that preserves ticks on unchanged text and clears the list when left empty; priority is
   a **select** over the four levels (never a
@@ -175,12 +178,27 @@ one writer.
   `{op:'done'}` over MCP for that, so the read-view checkboxes stay `disabled`.
 - **Epics** — rollup table; a row carries a `plan` badge (the link as its tooltip) when the epic
   links a plan. **Open** reads one epic (+ its cards) and, when linked, ends with a **Plan** section
-  exactly like a card's: the link plus the file body, `(file not found)` for a dead link. New-epic form upserts by slug; its
+  exactly like a card's: the link plus the file body as Markdown with the Markdown / Raw toggle,
+  `(file not found)` for a dead link. New-epic form upserts by slug; its
   "Span projects" checkbox list makes a cross-project epic when ≥2 are ticked, a project-scoped one
   when none are, and refuses exactly one.
   Cross-project epics show a badge + member list; their detail lists each card's project. The
   rollup pane is capped at ~25% of the viewport height with its own scroller (a short list just
   sizes to content), so a project with many epics can no longer push the board down.
+- **Plan Markdown** — the Plan section's rendered view (card and epic alike) supports a subset,
+  chosen for what plans use; the **Raw** view covers anything outside it:
+
+  | Renders | Shows as literal text |
+  |---|---|
+  | ATX headings (`#`…`######`, each rendered three levels down, under the section's own `h3`) | any HTML tag, `<script>`/`<img onerror>` included — only a bare `<br>` / `<br/>` / `<br />` breaks a line |
+  | ` ``` ` / `~~~` fences (unclosed runs to the end), inline code | images `![alt](url)` — never loaded, their source shows |
+  | bullet / ordered (keeps its start number) / nested lists, task items `[ ]` `[x]` (disabled checkboxes) | a link whose URL is not absolute `http:`, `https:` or `mailto:` (relative, `#anchor`, `javascript:`…) — its whole `[text](url)` source shows |
+  | YAML frontmatter: line 0 exactly `---` through the next line exactly `---` shows verbatim, as one code block (unclosed, or not at line 0, it is an ordinary rule and text) | |
+  | GFM tables (per-column alignment, `\|` a literal pipe; a row longer than the header is cut, a shorter one is not padded; a table may follow paragraph text with no blank line between, its header row ending the paragraph) | setext underlines (`---` under text is always a rule), indented code blocks, reference links, autolinks / bare URLs, `&amp;` entities, hard breaks other than `<br>` |
+  | blockquotes, `---` / `***` / `___` rules, `*em*` `_em_` `**strong**` `__strong__` `~~strike~~`, `\` escapes | quote/list nesting deeper than `MAX_NEST`, emphasis/link nesting deeper than `MAX_INLINE_NEST` (both in `frontend/src/lib/planMarkdown.ts`) — the deeper markers stay as text |
+
+  Live links open in a new tab (`target="_blank" rel="noopener noreferrer"`), never in the board's
+  own frame. The Markdown box scrolls at the same height cap as the raw one.
 - **New card** — files into `triage` (acceptance is one line per line → checkboxes), with a
   Priority select that opens on `— unset —` so the form asks for a level without pre-answering it
   (matching `file_card`: a pre-selected `MEDIUM` would fabricate a judgement the same way a

@@ -8,7 +8,9 @@
 //   4. a landed card's detail showing the stamped Commit field
 //   5. the project selection surviving a reload (localStorage restore)
 //   6. the plan badge on a card carrying a plan link
-//   7. that card's detail showing the Plan section (link + file body)
+//   7. that card's detail showing the Plan section (link + file body) rendered
+//      as Markdown (its YAML frontmatter as one verbatim block), light and dark; hostile content inert; the live link opening a
+//      popup; 7b. the Raw view, light and dark; the view resetting on reopen
 //   8. the board with the "Has plan" filter on (only planned cards remain)
 //   9–13. priority badges, "unset" in the detail, the edit and new-card selects
 //   14. the edit form's Acceptance textarea prefilled one criterion per line
@@ -25,9 +27,10 @@
 //       `Completed · N` separator, then completed epics; the epic <select>s
 //       list completed epics in a "Completed" optgroup
 //   22. an epic's plan: the `plan` badge on its epics-pane row, its detail's
-//       Plan section (link + file body) for a project-scoped and a
-//       cross-project epic, an unplanned epic showing no Plan section, and a
-//       deleted plan file rendering "(file not found)"
+//       Plan section (link + Markdown body + view toggle) for a project-scoped
+//       and a cross-project epic, an unplanned epic showing no Plan section, an
+//       empty plan file showing "—" and a deleted one "(file not found)", both
+//       without a toggle
 //   23. epic rollup pills: each pill shows its lane label and its count, zero included (dimmed)
 //   24. phone (390×844): no horizontal scroll, sticky lane header, dialogs fit,
 //       the new-card form files a card
@@ -59,7 +62,35 @@ const PROJECT4 = 'rollup'; // own project for step 23, so no other step's counts
 const PROJECT5 = 'bare'; // own project for step 26: no cards, no epics
 const DESKTOP = { width: 1440, height: 900 };
 
+/** Switches the emulated OS theme and waits until the page has followed it, transitions finished. */
+async function setScheme(page, colorScheme) {
+  await page.emulateMedia({ colorScheme });
+  await page.waitForFunction((dark) => document.documentElement.classList.contains('dark') === dark
+    && document.getAnimations().every((a) => a.playState !== 'running'), colorScheme === 'dark');
+}
+
 const shot = (page, name, fullPage = false) => page.screenshot({ path: path.join(SHOTS, `${name}.png`), fullPage });
+
+// Step 7's card plan: every construct the renderer maps, plus hostile content that
+// must stay inert (a javascript: link, an <img onerror>, a remote image beacon and a
+// <script> in a fence), long enough to overflow the scroll box. Its one live link
+// points at the harness's own server, so clicking it needs no network.
+const richPlan = (base) => [
+  '---', 'title: Build the search index', 'status: approved', '---', '',
+  '# Plan — build the `search` index', '',
+  '1. Tokenize documents.', '2. Build the inverted index.', '3. Wire the query path.', '',
+  '- Storage', '  - postings on disk', '  - ~~in-memory only~~ dropped', '',
+  '- [x] Spike the tokenizer', '- [ ] Benchmark BM25', '',
+  '| Stage | Cost | Notes |', '|:--|--:|:-:|', '| tokenize | 2 ms | split<br>stem |', '| index | 40 ms | **hot** path |', '',
+  '```html', '<script>window.__pwned = 1</script>', '```', '',
+  '> Keep the index rebuildable from the docs.', '',
+  `See [the board](${base}/) and [x](javascript:window.__pwned=1).`, '',
+  '<img src=x onerror="window.__pwned=1">', '',
+  `![b](${base}/beacon.png)`, '',
+  '## Notes', '',
+  ...Array.from({ length: 16 }, (_, i) => `- Note ${i + 1}: keep _each_ step reversible.`),
+  '',
+].join('\n');
 
 // Seed a project through the real API (goes through board.js — the single
 // writer). In standalone mode (no CONDUCTOR_URL) the project list is the set of
@@ -115,7 +146,7 @@ async function seed(base, projectsRoot) {
   // The plan FILE must exist before update_card accepts the link.
   const planFile = path.join(plansDir(PROJECT), `${c.id}.md`);
   await fs.mkdir(path.dirname(planFile), { recursive: true });
-  await fs.writeFile(planFile, `# Plan — build the search index\n\n1. Tokenize documents.\n2. Build the inverted index.\n3. Wire the query path.\n`);
+  await fs.writeFile(planFile, richPlan(base));
   await call(`/api/board/${PROJECT}/cards/${c.id}`, { method: 'PATCH', body: { plan: `${c.id}.md` } }, 'plan link on c');
 
   // Bulk-fill `done` so the lane genuinely overflows a 900px-tall viewport. They
@@ -231,11 +262,90 @@ async function main() {
       await shot(page, 'gui-6-plan-badge', true);
       console.log('snapped plan badge');
 
-      // 7. Plan detail: the link AND the file's body (via ?includePlan=1).
+      // 7. Plan detail: the link AND the file's body (via ?includePlan=1), rendered
+      //    as Markdown by default, hostile content inert, Raw a toggle away, and the
+      //    view not remembered across opens.
+      const requests = [];
+      context.on('request', (r) => requests.push(r.url()));
       await openCard(page, seeded.c.id);
-      await page.locator(`${sel.section('Plan')} pre`, { hasText: 'Build the inverted index' }).waitFor({ timeout: 10_000 });
-      await shot(page, 'gui-7-plan-detail', true);
-      console.log('snapped plan detail (link + body)');
+      const plan = page.locator(sel.section('Plan'));
+      const viewButton = (name) => plan.getByRole('group', { name: 'Plan view' }).getByRole('button', { name, exact: true });
+      const md = plan.locator('[data-plan-body="markdown"]');
+      await md.locator('ol li', { hasText: 'Build the inverted index' }).waitFor({ timeout: 10_000 });
+      assert.equal(await viewButton('Markdown').getAttribute('aria-pressed'), 'true');
+      assert.equal(await viewButton('Raw').getAttribute('aria-pressed'), 'false');
+      // The frontmatter is one verbatim block ahead of the body, not rules around a run-on paragraph.
+      assert.equal(await md.locator(':scope > pre').first().textContent(), '---\ntitle: Build the search index\nstatus: approved\n---');
+      assert.equal(await md.locator(':scope > hr').count(), 0);
+      assert.match(await md.locator('h4').first().textContent(), /^Plan — build the search index$/);
+      assert.equal(await md.locator('h4 code').textContent(), 'search');
+      assert.equal(await md.locator('table').count(), 1);
+      assert.deepEqual(await md.locator('th').evaluateAll((ns) => ns.map((n) => getComputedStyle(n).textAlign)), ['left', 'right', 'center']);
+      assert.equal(await md.locator('td br').count(), 1, 'the <br> in a cell is a line break');
+      assert.equal(await md.locator('[role="checkbox"][disabled]').count(), 2);
+      assert.equal(await md.getByRole('checkbox', { name: 'Spike the tokenizer' }).getAttribute('aria-checked'), 'true');
+      assert.equal(await md.locator('pre code').count(), 2, 'the frontmatter block and the fence');
+      assert.equal(await md.locator('pre code').nth(1).textContent(), '<script>window.__pwned = 1</script>');
+      assert.equal(await md.locator('blockquote').count(), 1);
+      assert.equal(await md.locator('del').textContent(), 'in-memory only');
+      // Hostile content stays text: no element, no script run, no request.
+      assert.equal(await plan.locator('img, script, iframe, style').count(), 0, 'no img/script/iframe/style in the plan');
+      assert.equal(await page.evaluate(() => window.__pwned), undefined);
+      const text = await md.textContent();
+      for (const literal of ['[x](javascript:window.__pwned=1)', '<img src=x onerror="window.__pwned=1">', `![b](${srv.url}/beacon.png)`]) {
+        assert.ok(text.includes(literal), `shows as text: ${literal}`);
+      }
+      const anchors = await plan.locator('a').evaluateAll((ns) => ns.map((a) => ({ href: a.getAttribute('href'), target: a.target, rel: a.rel })));
+      assert.deepEqual(anchors, [{ href: `${srv.url}/`, target: '_blank', rel: 'noopener noreferrer' }]);
+      // A bounded scroll box (max-h-96 = 384px) that the plan overflows.
+      const box = async (view) => plan.locator(`[data-plan-body="${view}"]`).evaluate((el) => ({ client: el.clientHeight, scroll: el.scrollHeight }));
+      const mdBox = await box('markdown');
+      assert.ok(mdBox.client <= 384 && mdBox.scroll > mdBox.client, `markdown box ${JSON.stringify(mdBox)}`);
+      // Every block at its content height: a fence or table squeezed by its scroll container is clipped.
+      const squeezed = await md.locator('pre, div.overflow-x-auto').evaluateAll((ns) => ns.filter((n) => n.scrollHeight > n.clientHeight + 1).length);
+      assert.equal(squeezed, 0, 'a fence or table is clipped to less than its content height');
+      await plan.scrollIntoViewIfNeeded();
+      await shot(page, 'gui-7-plan-detail');
+      await md.evaluate((el) => { el.scrollTop = 330; });
+      await shot(page, 'gui-7c-plan-markdown-scrolled');
+      await md.evaluate((el) => { el.scrollTop = 0; });
+      await setScheme(page, 'dark');
+      await shot(page, 'gui-7-plan-detail-dark');
+      await setScheme(page, 'light');
+      // The live link opens a new top-level context; the board page stays put.
+      const before7 = page.url();
+      const [popup] = await Promise.all([context.waitForEvent('page'), plan.getByRole('link', { name: 'the board' }).click()]);
+      await popup.waitForLoadState('domcontentloaded');
+      assert.equal(page.url(), before7);
+      assert.equal(await popup.evaluate(() => window.opener), null);
+      await popup.close();
+      // Raw: today's <pre>, byte for byte.
+      await viewButton('Raw').click();
+      assert.equal(await viewButton('Raw').getAttribute('aria-pressed'), 'true');
+      assert.equal(await viewButton('Markdown').getAttribute('aria-pressed'), 'false');
+      const raw = plan.locator('[data-plan-body="raw"]');
+      assert.equal(await raw.evaluate((el) => el.tagName), 'PRE');
+      const rawText = await raw.textContent();
+      assert.ok(rawText.startsWith('---\ntitle: Build the search index\n') && rawText.includes('\n# Plan — build the `search` index\n')
+        && rawText.includes('<img src=x onerror='), 'raw shows the source');
+      assert.equal(await plan.locator('[data-plan-body="markdown"]').count(), 0);
+      const rawBox = await box('raw');
+      assert.ok(rawBox.client <= 384 && rawBox.scroll > rawBox.client, `raw box ${JSON.stringify(rawBox)}`);
+      await shot(page, 'gui-7b-plan-raw');
+      await setScheme(page, 'dark');
+      await shot(page, 'gui-7b-plan-raw-dark');
+      await setScheme(page, 'light');
+      // Not remembered: the next open starts in Markdown again.
+      await closeDialog(page);
+      await openCard(page, seeded.c.id);
+      await md.waitFor({ timeout: 10_000 });
+      assert.equal(await viewButton('Markdown').getAttribute('aria-pressed'), 'true');
+      // The log is live: it holds this card's plan-body read, so an empty filter below means no beacon,
+      // not a listener attached too late.
+      assert.ok(requests.some((u) => u.includes(`/cards/${seeded.c.id}?includePlan=1`)), `request log is live (${requests.length} requests)`);
+      assert.deepEqual(requests.filter((u) => /beacon/.test(u)), [], 'the image beacon was never requested');
+      assert.equal(await page.evaluate(() => window.__pwned), undefined);
+      console.log('snapped plan detail (markdown light/dark, raw light/dark, inert hostile content, popup link, view reset)');
       await closeDialog(page);
 
       // 8. Has-plan filter drops every card WITHOUT a plan, and lanes left empty
@@ -493,7 +603,7 @@ async function main() {
     //     untouched. The HTTP epic routes take no `plan`, so attach it through
     //     the MCP bridge's create_epic (an upsert that keeps title/goal).
     const epicPlan = path.join(plansDir(PROJECT), 'epic-search.md');
-    await fs.writeFile(epicPlan, '# Plan — search epic\n\nRank results by BM25.\n');
+    await fs.writeFile(epicPlan, '# Plan — search epic\n\n- Rank results by BM25.\n- Cache hot queries.\n');
     const createEpic = async (args) => {
       const mcp = await fetch(`${srv.url}/api/mcp`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
@@ -504,7 +614,7 @@ async function main() {
     await createEpic({ project: PROJECT, slug: 'search', title: 'Search', plan: 'epic-search.md' });
     const crossPlan = path.join(boardPlansDir(), 'epic-platform.md');
     await fs.mkdir(path.dirname(crossPlan), { recursive: true });
-    await fs.writeFile(crossPlan, '# Plan — platform epic\n\nOne logger, one config service.\n');
+    await fs.writeFile(crossPlan, '# Plan — platform epic\n\n1. One logger, one config service.\n2. One deploy pipeline.\n');
     await createEpic({ projects: [PROJECT, PROJECT2], slug: 'platform', title: 'Platform', plan: 'epic-platform.md' });
 
     await withPage(async (page, { context }) => {
@@ -518,17 +628,29 @@ async function main() {
       await page.locator(sel.epicsPane).screenshot({ path: path.join(SHOTS, 'gui-22a-epic-plan-badge.png') });
 
       const planLink = () => page.locator(`${sel.dialog} [data-plan-link]`).textContent();
+      const planToggle = () => page.locator(sel.section('Plan')).getByRole('group', { name: 'Plan view' });
       await openEpic(page, 'search');
-      await page.locator(`${sel.section('Plan')} pre`, { hasText: 'Rank results by BM25' }).waitFor({ timeout: 10_000 });
+      await page.locator(`${sel.section('Plan')} [data-plan-body="markdown"] ul li`, { hasText: 'Rank results by BM25' }).waitFor({ timeout: 10_000 });
+      assert.equal(await page.locator(`${sel.section('Plan')} [data-plan-body="markdown"] h4`).textContent(), 'Plan — search epic');
+      assert.equal(await planToggle().count(), 1);
       assert.equal(await planLink(), 'board:epic-search.md');
       await shot(page, 'gui-22b-epic-plan-detail');
       await closeDialog(page);
 
       // Cross-project branch: reads through api/epics/:slug.
       await openEpic(page, 'platform');
-      await page.locator(`${sel.section('Plan')} pre`, { hasText: 'One logger, one config service.' }).waitFor({ timeout: 10_000 });
+      await page.locator(`${sel.section('Plan')} [data-plan-body="markdown"] ol li`, { hasText: 'One logger, one config service.' }).waitFor({ timeout: 10_000 });
+      assert.equal(await planToggle().count(), 1);
       assert.equal(await planLink(), 'board:epic-platform.md');
       await shot(page, 'gui-22d-cross-epic-plan-detail');
+      await closeDialog(page);
+
+      // An empty plan file: the dash placeholder, and no toggle.
+      await fs.writeFile(crossPlan, '');
+      await openEpic(page, 'platform');
+      await page.locator(`${sel.section('Plan')} pre`, { hasText: '—' }).waitFor({ timeout: 10_000 });
+      assert.equal(await planToggle().count(), 0, 'an empty plan has no view toggle');
+      assert.equal(await page.locator(`${sel.section('Plan')} ${sel.planBody}`).count(), 0);
       await closeDialog(page);
 
       await openEpic(page, 'auth');
@@ -538,6 +660,7 @@ async function main() {
       await fs.rm(epicPlan);
       await openEpic(page, 'search');
       await page.locator(sel.section('Plan'), { hasText: '(file not found)' }).waitFor({ timeout: 10_000 });
+      assert.equal(await planToggle().count(), 0, 'a missing plan has no view toggle');
       assert.equal(await planLink(), 'board:epic-search.md');
       await shot(page, 'gui-22c-epic-plan-missing');
       console.log('snapped epic plan (badge, detail body, unplanned witness, missing file)');

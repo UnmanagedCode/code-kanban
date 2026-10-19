@@ -41,13 +41,21 @@ those, along with `document.cookie`, `parent.postMessage` (cc's frame is same-or
 `setAttributeNS` and `insertAdjacentElement` next to the raw-HTML and `eval` family. A bare
 `Function(` is deliberately not matched (too many false hits); `new Function` is.
 
+Elements are built only as JSX, where the attribute rules can read them. A props object
+(`createElement('a', { href: u })`, `jsx(…)`, `cloneElement(el, { href: u })`) would carry any URL
+past them, and React itself refuses only `javascript:` on a lowercase `href`, so `data:`,
+`//host` and `/api/x` would go through. The names are denied everywhere the guards read (no file
+uses them, the copied `components/ui/` included), and so is writing `.href` / `.src` /
+`.action` / `.formAction` / `.srcset` onto an element through a ref. The expression-link rule
+matches attribute names in any letter case: the DOM folds `HREF={u}` to a live href.
+
 Every guard reads each script extension Vite bundles — `UI_CODE_EXTS` in `tests/_sourceScan.mjs`,
 `.mts`/`.cts`/`.cjs` included — so moving code into an unusual extension never takes it out of the
 scan; the fixture tree in `tests/frontendSafety.test.mjs` holds one file per extension.
 
 ## Pure `lib/*.ts` must stay importable by `node:test`
 
-The tests import `frontend/src/lib/{board,forms,api,persist,acceptanceEdit}.ts` through Node's
+The tests import `frontend/src/lib/{board,forms,api,persist,acceptanceEdit,planMarkdown}.ts` through Node's
 built-in type stripping (unflagged from Node 22.18, hence `engines.node`). So those modules:
 - use erasable TypeScript only (no enums, namespaces, parameter properties: `erasableSyntaxOnly`
   in `frontend/tsconfig.json` enforces it at typecheck);

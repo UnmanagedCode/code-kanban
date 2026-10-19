@@ -17,8 +17,10 @@ export const sel = {
   epicRow: (slug) => `[data-epic-slug="${slug}"]`,
   pills: '[data-rollup]',
   dialog: '[role="dialog"]',
-  // A dialog section by its heading text.
-  section: (label) => `[role="dialog"] section:has(> h3:text-is("${label}"))`,
+  // A dialog section by its heading text (bare, or in a head row beside a control).
+  section: (label) => `[role="dialog"] section:is(:has(> h3:text-is("${label}")), :has(> [data-section-head] > h3:text-is("${label}")))`,
+  // The Plan section's body, in either view (data-plan-body="markdown" | "raw").
+  planBody: '[data-plan-body]',
 };
 
 /** Waits until the board shows `project`'s lists (not the loading placeholders). */
