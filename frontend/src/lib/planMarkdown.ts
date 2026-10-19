@@ -63,7 +63,11 @@ export function parsePlan(src: string): Block[] {
   const lines = src.split('\n').map((l) => (l.endsWith('\r') ? l.slice(0, -1) : l));
   // A final newline ends the last line; it does not start an empty one (an unclosed fence would keep it).
   if (lines[lines.length - 1] === '') lines.pop();
-  return parseBlocks(lines, 0);
+  // YAML frontmatter: line 0 exactly `---` up to the next line exactly `---` shows verbatim, so its
+  // keys are not run together into one paragraph between two rules. Unclosed, it is ordinary text.
+  const close = lines[0] === '---' ? lines.indexOf('---', 1) : -1;
+  if (close === -1) return parseBlocks(lines, 0);
+  return [{ kind: 'code', text: lines.slice(0, close + 1).join('\n') }, ...parseBlocks(lines.slice(close + 1), 0)];
 }
 
 // ---------------------------------------------------------------- line helpers

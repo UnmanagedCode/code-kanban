@@ -99,6 +99,7 @@ const PLAN_CASES = [
   ['quoteRun', 'x'], ['listRun', 'x'], ['quoteLines', 'x'], ['starOpeners', 'a'], ['starRun', '*'], ['starUnderscore', '_'],
   ['tildes', 'a'], ['backtickRuns', 'a'], ['backtickPairs', 'a'], ['openBrackets', '['], ['linkOpeners', '('],
   ['carriageReturn', 'a'], ['wideTable', 'a'], ['fences', '~'], ['backslashes', '\\'],
+  ['frontmatterUnclosed', 'v'],
 ];
 for (const [name, last] of PLAN_CASES) {
   test(`parsePlan: ${name} parses in linear time (bounded growth N/2 → 4N) and keeps its text`, { timeout: 60_000 }, () => withRoot(async (root) => {

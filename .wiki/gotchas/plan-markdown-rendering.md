@@ -15,6 +15,18 @@ renderer treats it as an attacker's input.
 - `tests/frontendSafety.test.mjs` forbids expression `href`s and JSX spreads; library `components`
   overrides are idiomatically spreads. The in-house renderer needs exactly one guarded `href` sink.
 
+Two extensions over CommonMark, both because real plans rely on them:
+- **YAML frontmatter.** Most plan files open with a `---` / `key: value` / `---` block. Read as
+  CommonMark it is a rule, the keys soft-wrapped into one run-on paragraph, and another rule. So
+  `parsePlan` takes line 0 exactly `---` through the next line exactly `---` as one verbatim `code`
+  block (no new node kind: the vocabulary stays closed). Only that exact, closed pair at line 0
+  counts; an unclosed opener, a leading blank line or `--- ` / `----` parse as before. One
+  `indexOf` for the closer, so the scan stays linear (`frontmatterUnclosed` in the timing suite).
+- **A table straight after paragraph text.** `Expected results:\n| a | b |\n|---|---|` is a
+  paragraph then a table: a header row whose next line is a matching delimiter row ends the
+  paragraph (the paragraph loop checks `tableAt` on every continuation line). GFM's reference
+  implementation does the same; plans lean on it.
+
 The price is fidelity: not CommonMark-complete. The deviations (also listed for users in
 `docs/features.md`, "Plan Markdown"): no setext headings (`---` is always a rule), no indented code
 blocks, no reference links, autolinks or bare-URL linkify, no entity decoding, no hard breaks but

@@ -54,6 +54,8 @@ const PLAN_INPUTS = {
   wideTable: (m) => `${'|a'.repeat(m / 4)}\n${'|-'.repeat(m / 4)}`,
   fences: (m) => '```\n~~~\n'.repeat(m / 8),
   backslashes: (m) => '\\'.repeat(m),
+  // A frontmatter opener that never closes: one scan for the closer, then the ordinary parse.
+  frontmatterUnclosed: (m) => `---\n${'k: v\n'.repeat(m / 5)}`,
 };
 /** Every text and code string in the tree, concatenated: a cheap check the parse kept the input. */
 const textOf = (nodes) => nodes.map((x) => (typeof x.text === 'string' ? x.text : '')

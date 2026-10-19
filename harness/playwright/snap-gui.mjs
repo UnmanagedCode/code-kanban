@@ -9,7 +9,7 @@
 //   5. the project selection surviving a reload (localStorage restore)
 //   6. the plan badge on a card carrying a plan link
 //   7. that card's detail showing the Plan section (link + file body) rendered
-//      as Markdown, light and dark; hostile content inert; the live link opening a
+//      as Markdown (its YAML frontmatter as one verbatim block), light and dark; hostile content inert; the live link opening a
 //      popup; 7b. the Raw view, light and dark; the view resetting on reopen
 //   8. the board with the "Has plan" filter on (only planned cards remain)
 //   9–13. priority badges, "unset" in the detail, the edit and new-card selects
@@ -76,6 +76,7 @@ const shot = (page, name, fullPage = false) => page.screenshot({ path: path.join
 // <script> in a fence), long enough to overflow the scroll box. Its one live link
 // points at the harness's own server, so clicking it needs no network.
 const richPlan = (base) => [
+  '---', 'title: Build the search index', 'status: approved', '---', '',
   '# Plan — build the `search` index', '',
   '1. Tokenize documents.', '2. Build the inverted index.', '3. Wire the query path.', '',
   '- Storage', '  - postings on disk', '  - ~~in-memory only~~ dropped', '',
@@ -273,6 +274,9 @@ async function main() {
       await md.locator('ol li', { hasText: 'Build the inverted index' }).waitFor({ timeout: 10_000 });
       assert.equal(await viewButton('Markdown').getAttribute('aria-pressed'), 'true');
       assert.equal(await viewButton('Raw').getAttribute('aria-pressed'), 'false');
+      // The frontmatter is one verbatim block ahead of the body, not rules around a run-on paragraph.
+      assert.equal(await md.locator(':scope > pre').first().textContent(), '---\ntitle: Build the search index\nstatus: approved\n---');
+      assert.equal(await md.locator(':scope > hr').count(), 0);
       assert.match(await md.locator('h4').first().textContent(), /^Plan — build the search index$/);
       assert.equal(await md.locator('h4 code').textContent(), 'search');
       assert.equal(await md.locator('table').count(), 1);
@@ -280,7 +284,8 @@ async function main() {
       assert.equal(await md.locator('td br').count(), 1, 'the <br> in a cell is a line break');
       assert.equal(await md.locator('[role="checkbox"][disabled]').count(), 2);
       assert.equal(await md.getByRole('checkbox', { name: 'Spike the tokenizer' }).getAttribute('aria-checked'), 'true');
-      assert.equal(await md.locator('pre code').textContent(), '<script>window.__pwned = 1</script>');
+      assert.equal(await md.locator('pre code').count(), 2, 'the frontmatter block and the fence');
+      assert.equal(await md.locator('pre code').nth(1).textContent(), '<script>window.__pwned = 1</script>');
       assert.equal(await md.locator('blockquote').count(), 1);
       assert.equal(await md.locator('del').textContent(), 'in-memory only');
       // Hostile content stays text: no element, no script run, no request.
@@ -321,7 +326,8 @@ async function main() {
       const raw = plan.locator('[data-plan-body="raw"]');
       assert.equal(await raw.evaluate((el) => el.tagName), 'PRE');
       const rawText = await raw.textContent();
-      assert.ok(rawText.startsWith('# Plan — build the `search` index') && rawText.includes('<img src=x onerror='), 'raw shows the source');
+      assert.ok(rawText.startsWith('---\ntitle: Build the search index\n') && rawText.includes('\n# Plan — build the `search` index\n')
+        && rawText.includes('<img src=x onerror='), 'raw shows the source');
       assert.equal(await plan.locator('[data-plan-body="markdown"]').count(), 0);
       const rawBox = await box('raw');
       assert.ok(rawBox.client <= 384 && rawBox.scroll > rawBox.client, `raw box ${JSON.stringify(rawBox)}`);
@@ -334,6 +340,9 @@ async function main() {
       await openCard(page, seeded.c.id);
       await md.waitFor({ timeout: 10_000 });
       assert.equal(await viewButton('Markdown').getAttribute('aria-pressed'), 'true');
+      // The log is live: it holds this card's plan-body read, so an empty filter below means no beacon,
+      // not a listener attached too late.
+      assert.ok(requests.some((u) => u.includes(`/cards/${seeded.c.id}?includePlan=1`)), `request log is live (${requests.length} requests)`);
       assert.deepEqual(requests.filter((u) => /beacon/.test(u)), [], 'the image beacon was never requested');
       assert.equal(await page.evaluate(() => window.__pwned), undefined);
       console.log('snapped plan detail (markdown light/dark, raw light/dark, inert hostile content, popup link, view reset)');

@@ -193,7 +193,8 @@ one writer.
   | ATX headings (`#`…`######`, each rendered three levels down, under the section's own `h3`) | any HTML tag, `<script>`/`<img onerror>` included — only a bare `<br>` / `<br/>` / `<br />` breaks a line |
   | ` ``` ` / `~~~` fences (unclosed runs to the end), inline code | images `![alt](url)` — never loaded, their source shows |
   | bullet / ordered (keeps its start number) / nested lists, task items `[ ]` `[x]` (disabled checkboxes) | a link whose URL is not absolute `http:`, `https:` or `mailto:` (relative, `#anchor`, `javascript:`…) — its whole `[text](url)` source shows |
-  | GFM tables (per-column alignment, `\|` a literal pipe; a row longer than the header is cut, a shorter one is not padded) | setext underlines (`---` under text is always a rule), indented code blocks, reference links, autolinks / bare URLs, `&amp;` entities, hard breaks other than `<br>` |
+  | YAML frontmatter: line 0 exactly `---` through the next line exactly `---` shows verbatim, as one code block (unclosed, or not at line 0, it is an ordinary rule and text) | |
+  | GFM tables (per-column alignment, `\|` a literal pipe; a row longer than the header is cut, a shorter one is not padded; a table may follow paragraph text with no blank line between, its header row ending the paragraph) | setext underlines (`---` under text is always a rule), indented code blocks, reference links, autolinks / bare URLs, `&amp;` entities, hard breaks other than `<br>` |
   | blockquotes, `---` / `***` / `___` rules, `*em*` `_em_` `**strong**` `__strong__` `~~strike~~`, `\` escapes | quote/list nesting deeper than `MAX_NEST`, emphasis/link nesting deeper than `MAX_INLINE_NEST` (both in `frontend/src/lib/planMarkdown.ts`) — the deeper markers stay as text |
 
   Live links open in a new tab (`target="_blank" rel="noopener noreferrer"`), never in the board's

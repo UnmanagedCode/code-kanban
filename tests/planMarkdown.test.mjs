@@ -259,6 +259,35 @@ test('inline nesting stops at MAX_INLINE_NEST and the deeper delimiters stay lit
   assert.equal(text.replace(/[^*_]/g, '').length, 4 * levels - 2 * MAX_INLINE_NEST);
 });
 
+test('YAML frontmatter at line 0 is one verbatim block, and the body after it parses normally', () => {
+  assert.deepEqual(parsePlan('---\ntitle: x\nstatus: draft *not em*\n---\n# Body\ntext'), [
+    { kind: 'code', text: '---\ntitle: x\nstatus: draft *not em*\n---' },
+    { kind: 'heading', level: 1, children: [t('Body')] },
+    ...p([t('text')]),
+  ]);
+  // CRLF line endings, an empty block, and a later `---` that is a rule again.
+  assert.deepEqual(parsePlan('---\r\na: b\r\n---\r\nx\r\n\r\n---'), [{ kind: 'code', text: '---\na: b\n---' }, ...p([t('x')]), { kind: 'hr' }]);
+  assert.deepEqual(parsePlan('---\n---\nx'), [{ kind: 'code', text: '---\n---' }, ...p([t('x')])]);
+});
+
+test('only an exact, closed `---` pair at line 0 is frontmatter; anything else parses as before', () => {
+  // Unclosed: a rule, then ordinary text.
+  assert.deepEqual(parsePlan('---\ntitle: x'), [{ kind: 'hr' }, ...p([t('title: x')])]);
+  // Not at line 0: a leading blank line, or text before it.
+  assert.deepEqual(parsePlan('\n---\na: b\n---'), [{ kind: 'hr' }, ...p([t('a: b')]), { kind: 'hr' }]);
+  assert.deepEqual(parsePlan('intro\n\n---\na: b\n---'), [...p([t('intro')]), { kind: 'hr' }, ...p([t('a: b')]), { kind: 'hr' }]);
+  // Not exactly `---`: trailing space on the opener, a longer closer.
+  assert.deepEqual(parsePlan('--- \na: b\n---'), [{ kind: 'hr' }, ...p([t('a: b')]), { kind: 'hr' }]);
+  assert.deepEqual(parsePlan('---\na: b\n----'), [{ kind: 'hr' }, ...p([t('a: b')]), { kind: 'hr' }]);
+});
+
+test('a table may follow paragraph text with no blank line: its header row ends the paragraph', () => {
+  assert.deepEqual(parsePlan('Expected results:\n| a | b |\n|---|---|\n| 1 | 2 |'), [
+    ...p([t('Expected results:')]),
+    { kind: 'table', align: [null, null], head: [[t('a')], [t('b')]], rows: [[[t('1')], [t('2')]]] },
+  ]);
+});
+
 test('empty and whitespace-only input is no blocks', () => {
   assert.deepEqual(parsePlan(''), []);
   assert.deepEqual(parsePlan('  \n\n\t\n'), []);
