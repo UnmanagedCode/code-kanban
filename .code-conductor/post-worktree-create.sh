@@ -43,5 +43,10 @@ if [ ! -d "$PARENT_NM" ]; then
     exit 0
 fi
 
-ln -s "$PARENT_NM" node_modules
-echo "[post-worktree-create] Symlinked node_modules from ${PARENT_NM}."
+# A missing link is recoverable with `npm install`, so a failed symlink must not
+# fail worktree creation (set -e would otherwise exit 1 with no clear message).
+if ln -s "$PARENT_NM" node_modules; then
+    echo "[post-worktree-create] Symlinked node_modules from ${PARENT_NM}."
+else
+    echo "[post-worktree-create] WARNING: could not symlink node_modules; continuing." >&2
+fi
