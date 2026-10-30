@@ -10,6 +10,22 @@
 
 set -e
 
+# Share the parent checkout's .wiki with this worktree. .wiki is kept out of
+# git (.git/info/exclude), so every worktree links to the one real copy.
+# Runs before the node_modules logic, which exits early on some paths. Never
+# fails the hook: called in an `||` context, so `set -e` does not apply inside.
+link_wiki() {
+    [ -n "${CC_PARENT_PATH}" ] || return 0
+    local src="${CC_PARENT_PATH}/.wiki"
+    [ -d "$src" ] || return 0
+    if [ -e .wiki ] || [ -L .wiki ]; then
+        return 0
+    fi
+    ln -s "$src" .wiki || return 1
+    echo "[post-worktree-create] Symlinked .wiki from ${src}."
+}
+link_wiki || echo "[post-worktree-create] WARNING: could not symlink .wiki; continuing." >&2
+
 if [ -e node_modules ] || [ -L node_modules ]; then
     echo "[post-worktree-create] node_modules already exists - skipping symlink."
     exit 0
